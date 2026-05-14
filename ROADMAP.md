@@ -28,10 +28,10 @@
 Без FEC, без TCP fallback — только основной путь.
 
 ### 1.1 Handshake и аутентификация
-- 📋 Протокол handshake: ClientHello → ServerChallenge → ClientAuth → SessionReady
-- 📋 Обмен session_id при успешной аутентификации
-- 📋 Деривация сессионного ключа из пароля (HKDF как в crypto.go)
-- 📋 Таймаут и повтор при неудаче
+- ✅ Протокол handshake: ClientHello → ServerChallenge → ClientAuth → SessionReady
+- ✅ Обмен session_id при успешной аутентификации
+- ✅ Деривация сессионного ключа из пароля (HKDF как в crypto.go)
+- ✅ Таймаут и повтор при неудаче
 
 ### 1.2 Сервер — основной loop
 - 📋 UDP listener: читает фреймы, парсит Header, роутит по hub_id + session_id
@@ -42,15 +42,15 @@
 - 📋 Graceful shutdown
 
 ### 1.3 Клиент — основной loop
-- 📋 Dial UDP → handshake → получить session_id
-- 📋 Запуск bridge.RunUpstream() в горутине
-- 📋 Receive loop: получать фреймы с сервера → bridge.Inject()
-- 📋 Keepalive ping
-- 📋 Reconnect при потере соединения (exponential backoff)
+- ✅ Dial UDP → handshake → получить session_id
+- ✅ Запуск bridge.RunUpstream() в горутине
+- ✅ Receive loop: получать фреймы с сервера → bridge.Inject()
+- ✅ Keepalive ping
+- ✅ Reconnect при потере соединения (exponential backoff)
 
 ### 1.4 Windows клиент — WinTun интеграция
-- 📋 Создание WinTun адаптера при старте
-- 📋 ReadFrame / WriteFrame через wintun.Session
+- ✅ Создание WinTun адаптера при старте
+- ✅ ReadFrame / WriteFrame через wintun.Session
 - 📋 Установка IP-адреса на WinTun интерфейсе (необязательно — мы L2)
 - 📋 Сборка как Windows Service (golang.org/x/sys/windows/svc)
 - 📋 Инсталлятор (NSIS или WiX) с wintun.dll в комплекте
@@ -160,12 +160,12 @@
 
 | Ограничение | Когда исправить |
 |---|---|
-| ~~FEC: только XOR (R=1), нет полного RS~~ | ✅ Исправлено | 
-| tun_windows.go: WaitForSingleObject без таймаута | Фаза 1.4 |
+| ~~FEC: только XOR (R=1), нет полного RS~~ | ✅ Исправлено |
+| ~~tun_windows.go: WaitForSingleObject без таймаута~~ | ✅ Исправлено |
 | hub.go: импорт net только для документации | Фаза 1.2 |
 | config.go: TOML не парсится, только структуры | Фаза 1.5 |
-| Нет reconnect логики на клиенте | Фаза 1.3 |
-| Нет keepalive | Фаза 1.2 |
+| ~~Нет reconnect логики на клиенте~~ | ✅ Исправлено |
+| ~~Нет keepalive~~ | ✅ Исправлено |
 
 ---
 
