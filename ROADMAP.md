@@ -9,7 +9,7 @@
 - ✅ Структура проекта (Go модуль, пакеты, build tags)
 - ✅ Шифрование AES-128-GCM (перенесено из myvpn, не изменяется)
 - ✅ Wire format (proto/packet.go): FrameType, Header
-- ✅ FEC скелет: Encoder/Decoder с XOR parity
+- ✅ FEC: XOR (R=1) + Reed-Solomon (R>1) с тестами — Encoder/Decoder API готов
 - ✅ Hub скелет: MAC-таблица, unicast/broadcast forwarding
 - ✅ Bridge скелет: детект 169.254.0.0/16, Framer interface
 - ✅ Transport: UDP реализация
@@ -67,16 +67,16 @@
 Цель: случайные потери до 5% восстанавливаются на лету без retransmit.
 
 ### 2.1 Полная реализация Reed-Solomon
-- 📋 Замена XOR parity на Reed-Solomon над GF(2^8)
-- 📋 Поддержка R > 1 (восстановление нескольких потерь в блоке)
-- 📋 Тесты: инжект N% случайных потерь, проверка восстановления
+- ✅ Замена XOR parity на Reed-Solomon над GF(2^8) (github.com/klauspost/reedsolomon)
+- ✅ Поддержка R > 1 (восстановление нескольких потерь в блоке)
+- ✅ Тесты: потери от 1 до R пакетов, out-of-order, block expiry
 - 📋 Бенчмарки: overhead vs скорость при разных K/R
 
 ### 2.2 FEC в транспорте
 - 📋 Encoder встраивается в send-path на клиенте и сервере
 - 📋 Decoder встраивается в receive-path
 - 📋 Repair-фреймы передаются в том же UDP потоке (FrameRepair тип)
-- 📋 Block reordering tolerance: буфер на M блоков вперёд
+- ✅ Block reordering tolerance: буфер на 8 блоков вперёд (maxOldBlocks)
 
 ### 2.3 Адаптивный FEC
 - 📋 Мониторинг реального процента потерь (скользящее окно)
@@ -91,7 +91,7 @@
 
 ### 3.1 TCP транспорт
 - 📋 TLS 1.3 обёртка поверх TCP (SNI mimicry — выглядит как HTTPS)
-- 📋 Framing поверх TCP: length-prefixed frames (2 байта длина + данные)
+- ✅ Framing поверх TCP: length-prefixed frames (2 байта длина + данные) — TCPTransport готов
 - 📋 Тот же wire format внутри TLS
 
 ### 3.2 Автопереключение UDP → TCP
@@ -160,7 +160,7 @@
 
 | Ограничение | Когда исправить |
 |---|---|
-| FEC: только XOR (R=1), нет полного RS | Фаза 2 |
+| ~~FEC: только XOR (R=1), нет полного RS~~ | ✅ Исправлено | 
 | tun_windows.go: WaitForSingleObject без таймаута | Фаза 1.4 |
 | hub.go: импорт net только для документации | Фаза 1.2 |
 | config.go: TOML не парсится, только структуры | Фаза 1.5 |
