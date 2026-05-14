@@ -10,6 +10,7 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 )
 
@@ -68,11 +69,23 @@ type Framer interface {
 	Close() error
 }
 
+// Config holds the parameters for creating a Bridge.
+type Config struct {
+	Iface     Interface
+	Framer    Framer
+	SessionID uint32
+	HubID     uint16
+	// Send sends an encrypted+framed packet to the server.
+	Send func(plainFrame []byte) error
+}
+
 // Bridge connects a local Framer (tap interface) to the remote hub.
 type Bridge struct {
-	iface  Interface
-	framer Framer
-	send   func(frame []byte) error // sends frame to server
+	iface     Interface
+	framer    Framer
+	send      func(frame []byte) error // sends frame to server
+	SessionID uint32
+	HubID     uint16
 }
 
 func New(iface Interface, framer Framer, send func(frame []byte) error) *Bridge {
@@ -80,6 +93,7 @@ func New(iface Interface, framer Framer, send func(frame []byte) error) *Bridge 
 }
 
 // RunUpstream reads frames from local interface and sends to server.
+// Returns the error that caused the loop to stop so the caller can reconnect.
 func (b *Bridge) RunUpstream(ctx context.Context) error {
 	for {
 		frame, err := b.framer.ReadFrame(ctx)
@@ -88,6 +102,24 @@ func (b *Bridge) RunUpstream(ctx context.Context) error {
 		}
 		if err := b.send(frame); err != nil {
 			return fmt.Errorf("bridge: send upstream: %w", err)
+		}
+	}
+}
+
+// RunDownstream injects frames received from the server into the local network interface.
+// frames channel is closed when the connection is lost.
+func (b *Bridge) RunDownstream(ctx context.Context, frames <-chan []byte) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case frame, ok := <-frames:
+			if !ok {
+				return io.EOF
+			}
+			if err := b.framer.WriteFrame(frame); err != nil {
+				return err
+			}
 		}
 	}
 }

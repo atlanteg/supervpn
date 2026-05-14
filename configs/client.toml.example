@@ -1,0 +1,9 @@
+server     = "vpn.example.com:5555"
+server_tcp = "vpn.example.com:443"
+hub_id     = 1
+login      = "alice"
+password   = "your-password-here"
+
+[fec]
+k = 20
+r = 1
