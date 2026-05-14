@@ -11,22 +11,28 @@ package fec
 import (
 	"errors"
 	"fmt"
+	"sync"
+
+	"github.com/klauspost/reedsolomon"
 )
 
 const (
-	DefaultK = 20 // data packets per block
-	DefaultR = 1  // repair packets per block (≈5% overhead)
-	MaxK     = 64
-	MaxR     = 16
+	DefaultK     = 20  // data packets per block
+	DefaultR     = 1   // repair packets per block (≈5% overhead)
+	MaxK         = 128
+	MaxR         = 32
+	maxOldBlocks = 8 // drop decoder state for blocks this many behind current
 )
 
 var ErrUnrecoverable = errors.New("fec: too many losses in block, unrecoverable")
 
-// Encoder groups outgoing packets into blocks and emits repair symbols.
+// Encoder groups outgoing data packets into blocks and generates repair symbols.
+// For R=1 it uses fast XOR. For R>1 it uses Reed-Solomon over GF(2^8).
 type Encoder struct {
 	k, r    int
-	buf     [][]byte // accumulated data packets for current block
+	buf     [][]byte
 	blockID uint32
+	enc     reedsolomon.Encoder // nil when r==1
 }
 
 func NewEncoder(k, r int) (*Encoder, error) {
@@ -36,150 +42,285 @@ func NewEncoder(k, r int) (*Encoder, error) {
 	if r < 0 || r > MaxR {
 		return nil, fmt.Errorf("fec: r=%d out of range [0,%d]", r, MaxR)
 	}
-	return &Encoder{k: k, r: r, buf: make([][]byte, 0, k)}, nil
+	e := &Encoder{k: k, r: r, buf: make([][]byte, 0, k)}
+	if r > 1 {
+		var err error
+		e.enc, err = reedsolomon.New(k, r)
+		if err != nil {
+			return nil, fmt.Errorf("fec: rs init: %w", err)
+		}
+	}
+	return e, nil
 }
 
-// Add accepts a data packet. Returns non-nil repair symbols when a block is full.
-// Caller must send data packet + repair symbols (if any) in order.
-func (e *Encoder) Add(pkt []byte) (repairs [][]byte) {
+// Add accepts one data packet. Returns repair symbols when a block is full (every K calls).
+// Returns nil otherwise. The caller must send data + repairs in order.
+func (e *Encoder) Add(pkt []byte) [][]byte {
 	cp := make([]byte, len(pkt))
 	copy(cp, pkt)
 	e.buf = append(e.buf, cp)
 	if len(e.buf) < e.k {
 		return nil
 	}
-	repairs = buildRepairs(e.buf, e.blockID, e.r)
+	var repairs [][]byte
+	if e.r == 0 {
+		repairs = nil
+	} else if e.r == 1 {
+		repairs = [][]byte{xorAll(e.buf)}
+	} else {
+		repairs = rsEncode(e.enc, e.buf, e.k, e.r)
+	}
 	e.buf = e.buf[:0]
 	e.blockID++
 	return repairs
 }
 
-// Decoder reassembles a block, recovering lost packets when possible.
+// BlockID returns the current block ID (incremented after each full block).
+func (e *Encoder) BlockID() uint32 { return e.blockID }
+
+// Decoder reassembles FEC blocks, recovering lost packets when possible.
 type Decoder struct {
 	k, r    int
-	blocks  map[uint32]*block
+	mu      sync.Mutex
+	blocks  map[uint32]*decBlock
+	maxSeen uint32
+	enc     reedsolomon.Encoder // nil when r==1
 }
 
-type block struct {
-	data    [][]byte
-	repair  [][]byte
-	present []bool
-	seen    int
+type decBlock struct {
+	data    [][]byte // k slots; nil = not received
+	repair  [][]byte // r slots; nil = not received
+	present []bool   // k+r flags
+	count   int      // received count
+	done    bool
 }
 
-func NewDecoder(k, r int) *Decoder {
-	return &Decoder{k: k, r: r, blocks: make(map[uint32]*block)}
-}
-
-// AddData records a received data packet. Returns recovered slice when block is complete.
-func (d *Decoder) AddData(blockID uint32, idx int, pkt []byte) ([][]byte, error) {
-	return d.tryComplete(blockID, idx, pkt, false)
-}
-
-// AddRepair records a received repair symbol.
-func (d *Decoder) AddRepair(blockID uint32, idx int, pkt []byte) ([][]byte, error) {
-	return d.tryComplete(blockID, idx, pkt, true)
-}
-
-func (d *Decoder) tryComplete(blockID uint32, idx int, pkt []byte, isRepair bool) ([][]byte, error) {
-	b, ok := d.blocks[blockID]
-	if !ok {
-		b = &block{
-			data:    make([][]byte, d.k),
-			repair:  make([][]byte, d.r),
-			present: make([]bool, d.k+d.r),
+func NewDecoder(k, r int) (*Decoder, error) {
+	d := &Decoder{k: k, r: r, blocks: make(map[uint32]*decBlock)}
+	if r > 1 {
+		var err error
+		d.enc, err = reedsolomon.New(k, r)
+		if err != nil {
+			return nil, fmt.Errorf("fec: rs decoder init: %w", err)
 		}
-		d.blocks[blockID] = b
 	}
+	return d, nil
+}
+
+// AddData records a received data packet. idx is the packet's index within its block [0,K).
+// Returns the complete block (k data packets) when recovery is possible, nil otherwise.
+func (d *Decoder) AddData(blockID uint32, idx int, pkt []byte) ([][]byte, error) {
+	return d.add(blockID, idx, pkt, false)
+}
+
+// AddRepair records a received FEC repair symbol. idx is the repair index [0,R).
+func (d *Decoder) AddRepair(blockID uint32, idx int, pkt []byte) ([][]byte, error) {
+	return d.add(blockID, idx, pkt, true)
+}
+
+func (d *Decoder) add(blockID uint32, idx int, pkt []byte, isRepair bool) ([][]byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// track max seen block for expiry
+	if blockID > d.maxSeen {
+		d.maxSeen = blockID
+		d.expire()
+	}
+
+	b := d.getOrCreate(blockID)
+	if b.done {
+		return nil, nil
+	}
+
 	cp := make([]byte, len(pkt))
 	copy(cp, pkt)
+
 	if isRepair {
-		if idx >= d.r {
+		if idx < 0 || idx >= d.r || b.present[d.k+idx] {
 			return nil, nil
 		}
 		b.repair[idx] = cp
 		b.present[d.k+idx] = true
 	} else {
-		if idx >= d.k {
+		if idx < 0 || idx >= d.k || b.present[idx] {
 			return nil, nil
 		}
 		b.data[idx] = cp
 		b.present[idx] = true
 	}
-	b.seen++
-	if b.seen < d.k {
-		return nil, nil
+	b.count++
+
+	return d.tryRecover(blockID, b)
+}
+
+func (d *Decoder) getOrCreate(id uint32) *decBlock {
+	if b, ok := d.blocks[id]; ok {
+		return b
 	}
-	result, err := reconstruct(b, d.k, d.r)
+	b := &decBlock{
+		data:    make([][]byte, d.k),
+		repair:  make([][]byte, d.r),
+		present: make([]bool, d.k+d.r),
+	}
+	d.blocks[id] = b
+	return b
+}
+
+func (d *Decoder) expire() {
+	if d.maxSeen < uint32(maxOldBlocks) {
+		return
+	}
+	threshold := d.maxSeen - uint32(maxOldBlocks)
+	for id := range d.blocks {
+		if id < threshold {
+			delete(d.blocks, id)
+		}
+	}
+}
+
+func (d *Decoder) tryRecover(id uint32, b *decBlock) ([][]byte, error) {
+	// count missing data packets
+	missing := 0
+	for i := 0; i < d.k; i++ {
+		if !b.present[i] {
+			missing++
+		}
+	}
+	if missing == 0 {
+		b.done = true
+		delete(d.blocks, id)
+		return b.data, nil
+	}
+	// count available repair symbols
+	repairs := 0
+	for i := 0; i < d.r; i++ {
+		if b.present[d.k+i] {
+			repairs++
+		}
+	}
+	if missing > repairs {
+		return nil, nil // wait for more packets
+	}
+	// attempt recovery
+	var result [][]byte
+	var err error
+	if d.r == 1 {
+		result, err = xorRecover(b.data, b.repair[0], d.k)
+	} else {
+		result, err = rsRecover(d.enc, b.data, b.repair, d.k, d.r)
+	}
 	if err != nil {
 		return nil, err
 	}
-	delete(d.blocks, blockID)
+	b.done = true
+	delete(d.blocks, id)
 	return result, nil
 }
 
-// buildRepairs generates R XOR/RS repair symbols for K data packets.
-// Phase 1: simple row-XOR parity (sufficient for single-loss recovery).
-// TODO: replace with full Reed-Solomon for multi-loss recovery (R>1).
-func buildRepairs(data [][]byte, blockID uint32, r int) [][]byte {
-	if r == 0 {
-		return nil
+// xorAll computes XOR of all packets, padding shorter ones with zeros.
+func xorAll(pkts [][]byte) []byte {
+	maxLen := 0
+	for _, p := range pkts {
+		if len(p) > maxLen {
+			maxLen = len(p)
+		}
 	}
+	out := make([]byte, maxLen)
+	for _, p := range pkts {
+		for i, b := range p {
+			out[i] ^= b
+		}
+	}
+	return out
+}
+
+// xorRecover recovers the single missing data packet via XOR.
+func xorRecover(data [][]byte, repair []byte, k int) ([][]byte, error) {
+	// Find the missing index
+	missingIdx := -1
+	for i, p := range data {
+		if p == nil {
+			if missingIdx >= 0 {
+				return nil, ErrUnrecoverable // more than 1 missing
+			}
+			missingIdx = i
+		}
+	}
+	if missingIdx < 0 {
+		return data, nil // nothing missing
+	}
+	// recovered = repair XOR all_present_data
+	recovered := make([]byte, len(repair))
+	copy(recovered, repair)
+	for i, p := range data {
+		if i == missingIdx {
+			continue
+		}
+		for j, b := range p {
+			if j < len(recovered) {
+				recovered[j] ^= b
+			}
+		}
+	}
+	data[missingIdx] = recovered
+	return data, nil
+}
+
+// rsEncode generates R repair symbols for K data shards using Reed-Solomon.
+func rsEncode(enc reedsolomon.Encoder, data [][]byte, k, r int) [][]byte {
+	// RS requires all shards to be the same length; pad to max
 	maxLen := 0
 	for _, p := range data {
 		if len(p) > maxLen {
 			maxLen = len(p)
 		}
 	}
-	repairs := make([][]byte, r)
-	for i := range repairs {
-		repairs[i] = make([]byte, maxLen+4) // +4 for block metadata
-		// embed blockID and repair index
-		repairs[i][0] = byte(blockID >> 24)
-		repairs[i][1] = byte(blockID >> 16)
-		repairs[i][2] = byte(blockID >> 8)
-		repairs[i][3] = byte(blockID)
+	shards := make([][]byte, k+r)
+	for i, p := range data {
+		shard := make([]byte, maxLen)
+		copy(shard, p)
+		shards[i] = shard
 	}
-	// XOR all data packets into repair[0]
-	for _, pkt := range data {
-		for j, b := range pkt {
-			repairs[0][j+4] ^= b
-		}
+	for i := k; i < k+r; i++ {
+		shards[i] = make([]byte, maxLen)
 	}
-	return repairs
+	if err := enc.Encode(shards); err != nil {
+		return nil
+	}
+	return shards[k:]
 }
 
-func reconstruct(b *block, k, r int) ([][]byte, error) {
-	missing := 0
-	missingIdx := -1
-	for i := 0; i < k; i++ {
-		if !b.present[i] {
-			missing++
-			missingIdx = i
+// rsRecover reconstructs missing data shards using Reed-Solomon.
+func rsRecover(enc reedsolomon.Encoder, data, repair [][]byte, k, r int) ([][]byte, error) {
+	maxLen := 0
+	for _, p := range data {
+		if len(p) > maxLen {
+			maxLen = len(p)
 		}
 	}
-	if missing == 0 {
-		return b.data, nil
+	for _, p := range repair {
+		if len(p) > maxLen {
+			maxLen = len(p)
+		}
 	}
-	if missing > r {
+	shards := make([][]byte, k+r)
+	for i, p := range data {
+		if p != nil {
+			shard := make([]byte, maxLen)
+			copy(shard, p)
+			shards[i] = shard
+		}
+	}
+	for i, p := range repair {
+		if p != nil {
+			shard := make([]byte, maxLen)
+			copy(shard, p)
+			shards[k+i] = shard
+		}
+	}
+	if err := enc.ReconstructData(shards); err != nil {
 		return nil, ErrUnrecoverable
 	}
-	// Single-loss recovery via XOR repair symbol
-	if missing == 1 && r >= 1 && b.present[k] {
-		recovered := make([]byte, len(b.repair[0])-4)
-		copy(recovered, b.repair[0][4:])
-		for i, pkt := range b.data {
-			if i == missingIdx {
-				continue
-			}
-			for j, byt := range pkt {
-				if j < len(recovered) {
-					recovered[j] ^= byt
-				}
-			}
-		}
-		b.data[missingIdx] = recovered
-		return b.data, nil
-	}
-	return nil, ErrUnrecoverable
+	return shards[:k], nil
 }
