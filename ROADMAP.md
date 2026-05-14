@@ -94,9 +94,9 @@
 Цель: работа в сетях с UDP-блокировкой (ТСПУ, корпоративные firewalls).
 
 ### 3.1 TCP транспорт
-- 📋 TLS 1.3 обёртка поверх TCP (SNI mimicry — выглядит как HTTPS)
+- ✅ TLS 1.3 обёртка поверх TCP (SNI mimicry, self-signed cert, InsecureSkipVerify)
 - ✅ Framing поверх TCP: length-prefixed frames (2 байта длина + данные) — TCPTransport готов
-- 📋 Тот же wire format внутри TLS
+- ✅ TLSTransport: DialTLS, ListenTLS, AcceptTLS, NewServerTLSConfig
 
 ### 3.2 Автопереключение UDP → TCP
 - 📋 Клиент пробует UDP первым (3 попытки × 1s)

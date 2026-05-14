@@ -10,10 +10,11 @@ import (
 
 // ServerConfig is the server-side configuration.
 type ServerConfig struct {
-	Listen     string      `toml:"listen"`      // e.g. "0.0.0.0:5555"
-	ListenTCP  string      `toml:"listen_tcp"`  // TCP fallback, e.g. "0.0.0.0:443"
-	Hubs       []HubConfig `toml:"hub"`
-	FEC        FECConfig   `toml:"fec"`
+	Listen     string          `toml:"listen"`      // e.g. "0.0.0.0:5555"
+	ListenTCP  string          `toml:"listen_tcp"`  // TCP fallback, e.g. "0.0.0.0:443"
+	Hubs       []HubConfig     `toml:"hub"`
+	FEC        FECConfig       `toml:"fec"`
+	TLS        TLSServerConfig `toml:"tls"`
 }
 
 // HubConfig defines one hub instance.
@@ -31,12 +32,13 @@ type UserConfig struct {
 
 // ClientConfig is the client-side configuration.
 type ClientConfig struct {
-	Server    string    `toml:"server"`     // host:port UDP
-	ServerTCP string    `toml:"server_tcp"` // host:port TCP fallback
-	HubID     uint16    `toml:"hub_id"`
-	Login     string    `toml:"login"`
-	Password  string    `toml:"password"`
-	FEC       FECConfig `toml:"fec"`
+	Server    string          `toml:"server"`     // host:port UDP
+	ServerTCP string          `toml:"server_tcp"` // host:port TCP fallback
+	HubID     uint16          `toml:"hub_id"`
+	Login     string          `toml:"login"`
+	Password  string          `toml:"password"`
+	FEC       FECConfig       `toml:"fec"`
+	TLS       TLSClientConfig `toml:"tls"`
 	// Timeout is expressed as a string (e.g. "30s") and parsed manually to
 	// avoid TOML's lack of native time.Duration support.
 	Timeout string `toml:"timeout"`
@@ -107,4 +109,23 @@ func DefaultServerConfigPath() string {
 		return p
 	}
 	return "/etc/supervpn/server.toml"
+}
+
+// TLSServerConfig configures the server-side TLS listener.
+type TLSServerConfig struct {
+	// CertFile and KeyFile are paths to PEM-encoded cert and key.
+	// If both are empty, a self-signed ECDSA cert is generated at startup.
+	CertFile string `toml:"cert_file"`
+	KeyFile  string `toml:"key_file"`
+}
+
+// TLSClientConfig configures the client-side TLS dialer.
+type TLSClientConfig struct {
+	// SNI is the server name sent in the TLS ClientHello.
+	// Set to a popular domain (e.g. "microsoft.com") to mimic HTTPS traffic.
+	// Defaults to the server hostname if empty.
+	SNI string `toml:"sni"`
+	// SkipVerify disables certificate verification (always true for supervpn
+	// since the server uses a self-signed cert). Field is informational only.
+	SkipVerify bool `toml:"skip_verify"`
 }
