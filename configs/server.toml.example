@@ -1,5 +1,6 @@
-listen     = "0.0.0.0:5555"
-listen_tcp = "0.0.0.0:443"
+listen        = "0.0.0.0:5555"
+listen_tcp    = "0.0.0.0:443"
+status_listen = "127.0.0.1:9090"   # GET /status — JSON list of hubs and connected clients
 
 [fec]
 k = 20
