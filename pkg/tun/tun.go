@@ -1,7 +1,8 @@
-// Package tun provides platform-specific L2 frame capture/inject (TAP/WinTun).
+// Package tun provides platform-specific frame capture/inject.
 // The Framer interface is implemented per OS in separate files:
-//   tun_linux.go   — Linux TAP via /dev/net/tun
-//   tun_windows.go — Windows WinTun driver (github.com/WireGuard/wintun)
+//   tun_linux.go   — Linux TAP via /dev/net/tun (Ethernet frames)
+//   tun_windows.go — Windows WinTun driver (raw IP packets)
+//   tun_darwin.go  — macOS utun via SYSPROTO_CONTROL (raw IP packets)
 package tun
 
 import "github.com/atlanteg/supervpn/internal/bridge"
