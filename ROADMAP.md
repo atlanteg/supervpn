@@ -62,7 +62,7 @@
 
 ---
 
-## Фаза 2 — FEC: устойчивость к потере пакетов
+## Фаза 2 — FEC ✅
 
 Цель: случайные потери до 5% восстанавливаются на лету без retransmit.
 
@@ -70,13 +70,16 @@
 - ✅ Замена XOR parity на Reed-Solomon над GF(2^8) (github.com/klauspost/reedsolomon)
 - ✅ Поддержка R > 1 (восстановление нескольких потерь в блоке)
 - ✅ Тесты: потери от 1 до R пакетов, out-of-order, block expiry
-- 📋 Бенчмарки: overhead vs скорость при разных K/R
+- ✅ Бенчмарки: overhead vs скорость при разных K/R
 
 ### 2.2 FEC в транспорте
 - ✅ FECPipe реализован: прозрачный encode/decode wrapper для сессий
 - ✅ Repair-фреймы передаются через FrameRepair (PackRepairSeq/UnpackRepairSeq)
-- 📋 FECPipe интегрирован в сервер (следующий шаг)
-- 📋 FECPipe интегрирован в клиент (следующий шаг)
+- ✅ FECPipe интегрирован в сервер
+- ✅ FECPipe интегрирован в клиент
+- ✅ Encoder встраивается в send-path (через FECPipe)
+- ✅ Decoder встраивается в receive-path (через FECPipe)
+- ✅ Repair-фреймы передаются в том же UDP потоке (FrameRepair тип)
 - ✅ Block reordering tolerance: буфер на 8 блоков вперёд (maxOldBlocks)
 
 ### 2.3 Адаптивный FEC
@@ -137,6 +140,7 @@
 - ✅ auth tests
 - ✅ transport TCP tests
 - ✅ bridge routing tests
+- ✅ Loss simulation: end-to-end 5% random + burst loss recovery tests
 - 📋 Integration тесты: виртуальная сеть (veth pairs), клиент↔сервер без реального железа
 - 📋 Loss simulation: `tc netem loss 5%` в CI для проверки FEC
 - 📋 Нагрузочные тесты: N клиентов, X Mbit/s, проверка CPU/RAM
