@@ -34,12 +34,12 @@
 - ✅ Таймаут и повтор при неудаче
 
 ### 1.2 Сервер — основной loop
-- 📋 UDP listener: читает фреймы, парсит Header, роутит по hub_id + session_id
-- 📋 Hub manager: создаёт хабы из конфига, хранит map[hubID]*Hub
-- 📋 Сессионный менеджер: map[sessionID]*Session, добавление/удаление клиентов
-- 📋 Forwarding: Hub.Forward() вызывается для каждого входящего L2-фрейма
-- 📋 Ping/Pong keepalive (30s интервал, 90s таймаут)
-- 📋 Graceful shutdown
+- ✅ UDP listener: читает фреймы, парсит Header, роутит по hub_id + session_id
+- ✅ Hub manager: создаёт хабы из конфига, хранит map[hubID]*Hub
+- ✅ Сессионный менеджер: map[sessionID]*Session, добавление/удаление клиентов
+- ✅ Forwarding: Hub.Forward() вызывается для каждого входящего L2-фрейма
+- ✅ Ping/Pong keepalive (25s ping, 90s сессионный таймаут)
+- ✅ Graceful shutdown (context cancellation)
 
 ### 1.3 Клиент — основной loop
 - ✅ Dial UDP → handshake → получить session_id
@@ -56,9 +56,9 @@
 - 📋 Инсталлятор (NSIS или WiX) с wintun.dll в комплекте
 
 ### 1.5 Конфигурация и утилиты
-- 📋 Парсинг TOML конфига (сервер + клиент)
-- 📋 `supervpn-server hashpw <password>` — генерация bcrypt хеша
-- 📋 `supervpn-server status` — список хабов и клиентов
+- ✅ Парсинг TOML конфига (сервер + клиент, BurntSushi/toml)
+- ✅ `supervpn-server hashpw <password>` — генерация bcrypt хеша
+- 📋 `supervpn-server status` — список хабов и клиентов (HTTP API, Фаза 4)
 
 ---
 
@@ -167,8 +167,8 @@
 |---|---|
 | ~~FEC: только XOR (R=1), нет полного RS~~ | ✅ Исправлено |
 | ~~tun_windows.go: WaitForSingleObject без таймаута~~ | ✅ Исправлено |
-| hub.go: импорт net только для документации | Фаза 1.2 |
-| config.go: TOML не парсится, только структуры | Фаза 1.5 |
+| ~~hub.go: импорт net только для документации~~ | ✅ Исправлено |
+| ~~config.go: TOML не парсится, только структуры~~ | ✅ Исправлено |
 | ~~Нет reconnect логики на клиенте~~ | ✅ Исправлено |
 | ~~Нет keepalive~~ | ✅ Исправлено |
 
@@ -181,5 +181,5 @@
 | `golang.org/x/crypto` | HKDF, bcrypt |
 | `golang.org/x/sys` | Linux syscalls, Windows API |
 | `golang.zx2c4.com/wintun` | Windows TUN driver |
-| TBD: `github.com/BurntSushi/toml` | TOML конфиг |
-| TBD: `github.com/klauspost/reedsolomon` | Reed-Solomon GF(2^8) для Фазы 2 |
+| `github.com/BurntSushi/toml` | TOML конфиг |
+| `github.com/klauspost/reedsolomon` | Reed-Solomon GF(2^8) |
