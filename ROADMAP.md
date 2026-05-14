@@ -73,9 +73,10 @@
 - 📋 Бенчмарки: overhead vs скорость при разных K/R
 
 ### 2.2 FEC в транспорте
-- 📋 Encoder встраивается в send-path на клиенте и сервере
-- 📋 Decoder встраивается в receive-path
-- 📋 Repair-фреймы передаются в том же UDP потоке (FrameRepair тип)
+- ✅ FECPipe реализован: прозрачный encode/decode wrapper для сессий
+- ✅ Repair-фреймы передаются через FrameRepair (PackRepairSeq/UnpackRepairSeq)
+- 📋 FECPipe интегрирован в сервер (следующий шаг)
+- 📋 FECPipe интегрирован в клиент (следующий шаг)
 - ✅ Block reordering tolerance: буфер на 8 блоков вперёд (maxOldBlocks)
 
 ### 2.3 Адаптивный FEC
