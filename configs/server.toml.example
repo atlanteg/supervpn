@@ -3,7 +3,7 @@ listen_tcp = "0.0.0.0:443"
 
 [fec]
 k = 20
-r = 1
+r = 4
 
 [[hub]]
 id   = 1

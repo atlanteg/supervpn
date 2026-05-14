@@ -18,7 +18,7 @@ import (
 
 const (
 	DefaultK     = 20  // data packets per block
-	DefaultR     = 1   // repair packets per block (≈5% overhead)
+	DefaultR     = 4   // repair packets per block — handles burst of 4, ≈20% overhead, 99%+ recovery at 5% loss
 	MaxK         = 128
 	MaxR         = 32
 	maxOldBlocks = 8 // drop decoder state for blocks this many behind current

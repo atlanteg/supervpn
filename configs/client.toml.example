@@ -6,4 +6,4 @@ password   = "your-password-here"
 
 [fec]
 k = 20
-r = 1
+r = 4
