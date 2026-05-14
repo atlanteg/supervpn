@@ -1,5 +1,5 @@
 // supervpn-server — L2 VPN server with multi-hub support.
-// Listens on UDP (primary) and TCP (fallback) for client connections.
+// Listens on UDP (primary) and TCP+TLS (fallback) for client connections.
 // Each Hub is an independent L2 broadcast domain (transparent Ethernet switch).
 //
 // Usage:
@@ -29,6 +29,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/fec"
 	"github.com/atlanteg/supervpn/internal/hub"
 	"github.com/atlanteg/supervpn/internal/proto"
+	"github.com/atlanteg/supervpn/internal/transport"
 )
 
 var version = "dev"
@@ -85,7 +86,7 @@ type Session struct {
 	ID       uint32
 	HubID    uint16
 	Login    string
-	Addr     *net.UDPAddr
+	sendRaw  func([]byte) error // send a raw wire packet back to this client (UDP or TCP)
 	cipher   *crypto.Cipher
 	replay   crypto.ReplayWindow // per-session replay window; must not be copied after first use
 	pipe     *fec.Pipe           // per-session FEC encoder/decoder
@@ -93,7 +94,7 @@ type Session struct {
 	mu       sync.Mutex
 }
 
-// Server is the UDP server that handles auth, data forwarding, and ping/pong.
+// Server handles auth, data forwarding, and ping/pong over UDP and TLS/TCP.
 type Server struct {
 	cfg      *config.ServerConfig
 	manager  *hub.Manager
@@ -102,7 +103,8 @@ type Server struct {
 	mu       sync.RWMutex
 }
 
-// Run starts the UDP listener and blocks until ctx is cancelled or a fatal error occurs.
+// Run starts the UDP listener (and TLS/TCP listener if configured) and blocks
+// until ctx is cancelled or a fatal error occurs.
 func (s *Server) Run(ctx context.Context) error {
 	addr, err := net.ResolveUDPAddr("udp", s.cfg.Listen)
 	if err != nil {
@@ -114,6 +116,11 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.conn = conn
 	log.Printf("listening UDP %s", s.cfg.Listen)
+
+	// Start TLS/TCP listener if configured.
+	if s.cfg.ListenTCP != "" {
+		go s.runTCPListener(ctx)
+	}
 
 	go s.cleanupLoop(ctx)
 
@@ -131,7 +138,6 @@ func (s *Server) Run(ctx context.Context) error {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				continue
 			}
-			// If we get here after ctx cancellation the conn is closed; return gracefully.
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -141,47 +147,124 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
-		go s.handlePacket(pkt, raddr)
+		// Capture raddr in the closure so the goroutine always replies to the
+		// correct source address even if raddr changes between UDP reads.
+		ra := raddr
+		go s.handlePacket(pkt, func(p []byte) error {
+			_, err := s.conn.WriteToUDP(p, ra)
+			return err
+		})
 	}
 }
 
-func (s *Server) handlePacket(pkt []byte, raddr *net.UDPAddr) {
+// runTCPListener accepts TLS connections on ListenTCP and spawns a goroutine
+// per connection that feeds packets into the same handlePacket pipeline.
+func (s *Server) runTCPListener(ctx context.Context) {
+	tlsCfg, err := transport.NewServerTLSConfig(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+	if err != nil {
+		log.Printf("TLS config error, TCP listener disabled: %v", err)
+		return
+	}
+	ln, err := transport.ListenTLS(s.cfg.ListenTCP, tlsCfg)
+	if err != nil {
+		log.Printf("TLS listen %s failed: %v", s.cfg.ListenTCP, err)
+		return
+	}
+	log.Printf("listening TLS/TCP %s", s.cfg.ListenTCP)
+
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				log.Printf("TLS accept error: %v", err)
+				continue
+			}
+		}
+		go s.handleTCPConn(ctx, conn)
+	}
+}
+
+// handleTCPConn reads frames from a TLS connection and dispatches them to handlePacket.
+// When the connection closes, any session created on it is removed immediately.
+func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
+	tr := transport.AcceptTLS(conn)
+	defer tr.Close()
+
+	sendReply := func(pkt []byte) error {
+		return tr.Send(transport.Frame{Data: pkt})
+	}
+
+	var sessionID uint32
+
+	for {
+		f, err := tr.Recv(ctx)
+		if err != nil {
+			if sessionID != 0 {
+				s.removeSession(sessionID)
+			}
+			return
+		}
+		if sid := s.handlePacket(f.Data, sendReply); sid != 0 {
+			sessionID = sid
+		}
+	}
+}
+
+// handlePacket dispatches one wire packet to the appropriate handler.
+// sendReply is called to send auth responses and pongs back to the originating client.
+// Returns the new session ID when an auth packet creates a session; 0 otherwise.
+func (s *Server) handlePacket(pkt []byte, sendReply func([]byte) error) uint32 {
 	hdr, ok := proto.ParseHeader(pkt)
 	if !ok {
-		return
+		return 0
 	}
 	payload := pkt[proto.HeaderSize:]
 	switch hdr.Type {
 	case proto.FrameAuth:
-		s.handleAuth(payload, raddr)
+		return s.handleAuth(payload, sendReply)
 	case proto.FrameData:
-		s.handleData(hdr, payload, raddr)
+		s.handleData(hdr, payload)
 	case proto.FrameRepair:
 		s.handleRepair(hdr, payload)
 	case proto.FramePing:
-		s.handlePing(hdr, raddr)
+		s.handlePing(hdr, sendReply)
 	}
+	return 0
 }
 
-func (s *Server) handleAuth(payload []byte, raddr *net.UDPAddr) {
-	if len(payload) == 0 {
-		return
+// handleAuth processes an AuthHello, creates a session, and replies with AuthOK or AuthError.
+// Returns the new session ID on success, 0 on failure.
+func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error) uint32 {
+	replyError := func(msg string) {
+		ae := proto.AuthError{Message: msg}
+		p := append([]byte{proto.AuthMsgError}, ae.Marshal()...)
+		hdr := make([]byte, proto.HeaderSize)
+		proto.Header{Type: proto.FrameAuth}.Marshal(hdr)
+		_ = sendReply(append(hdr, p...))
 	}
-	if payload[0] != proto.AuthMsgHello {
-		return
+
+	if len(payload) == 0 || payload[0] != proto.AuthMsgHello {
+		return 0
 	}
 	hello, err := proto.ParseAuthHello(payload[1:])
 	if err != nil {
-		s.sendAuthError(raddr, 0, "malformed auth request")
-		return
+		replyError("malformed auth request")
+		return 0
 	}
 	h, ok := s.manager.Get(hello.HubID)
 	if !ok {
-		s.sendAuthError(raddr, 0, "hub not found")
-		return
+		replyError("hub not found")
+		return 0
 	}
 
-	// Find user in config.
 	var storedHash string
 	for _, hcfg := range s.cfg.Hubs {
 		if hcfg.ID == hello.HubID {
@@ -193,33 +276,32 @@ func (s *Server) handleAuth(payload []byte, raddr *net.UDPAddr) {
 		}
 	}
 	if storedHash == "" {
-		s.sendAuthError(raddr, 0, "invalid credentials")
-		return
+		replyError("invalid credentials")
+		return 0
 	}
 
-	// The client sends SHA-256(rawPassword) as 32 raw bytes.
-	// Convert to hex string — that is the "plain" value we stored as bcrypt(sha256hex(password)).
+	// The client sends SHA-256(rawPassword) as 32 raw bytes on the wire.
+	// We convert to hex — that is the "plain" value stored as bcrypt(sha256hex(password)).
 	wireHex := hex.EncodeToString(hello.PWHash[:])
 	if err := auth.CheckPassword(wireHex, storedHash); err != nil {
-		s.sendAuthError(raddr, 0, "invalid credentials")
-		return
+		replyError("invalid credentials")
+		return 0
 	}
 
-	// Create session.
 	// Key derivation uses wireHex as token and "hub<ID>" as network name — both sides
-	// must agree on these values. The hub's configured name is intentionally NOT used
-	// here so the client can derive the same key without knowing it.
+	// must agree on these values. The hub's display name is NOT used so the client
+	// can derive the same key without knowing it.
 	sessionID := s.newSessionID()
 	hubNetName := fmt.Sprintf("hub%d", hello.HubID)
 	key, err := crypto.DeriveKey(wireHex, hubNetName, "server", hello.Login)
 	if err != nil {
-		s.sendAuthError(raddr, 0, "internal error")
-		return
+		replyError("internal error")
+		return 0
 	}
 	cipher, err := crypto.NewCipher(key, sessionID)
 	if err != nil {
-		s.sendAuthError(raddr, 0, "internal error")
-		return
+		replyError("internal error")
+		return 0
 	}
 
 	fecCfg := s.cfg.FEC.WithDefaults()
@@ -228,12 +310,12 @@ func (s *Server) handleAuth(payload []byte, raddr *net.UDPAddr) {
 		ID:       sessionID,
 		HubID:    hello.HubID,
 		Login:    hello.Login,
-		Addr:     raddr,
+		sendRaw:  sendReply,
 		cipher:   cipher,
 		lastSeen: time.Now(),
 	}
 
-	// Create FEC pipe — sendData and sendRepair callbacks encrypt and send back to client.
+	// FEC pipe — sendData and sendRepair encrypt and deliver back to client.
 	pipe, err := fec.NewPipe(
 		fecCfg.K,
 		fecCfg.R,
@@ -245,8 +327,8 @@ func (s *Server) handleAuth(payload []byte, raddr *net.UDPAddr) {
 		},
 	)
 	if err != nil {
-		s.sendAuthError(raddr, 0, "internal error")
-		return
+		replyError("internal error")
+		return 0
 	}
 	sess.pipe = pipe
 
@@ -263,11 +345,17 @@ func (s *Server) handleAuth(payload []byte, raddr *net.UDPAddr) {
 		},
 	}
 	h.Join(client)
-	log.Printf("auth ok: %s@hub%d session=%d from=%s", hello.Login, hello.HubID, sessionID, raddr)
-	s.sendAuthOK(raddr, sessionID)
+	log.Printf("auth ok: %s@hub%d session=%d", hello.Login, hello.HubID, sessionID)
+
+	okMsg := proto.AuthOK{SessionID: sessionID}
+	p := append([]byte{proto.AuthMsgOK}, okMsg.Marshal()...)
+	hdr := make([]byte, proto.HeaderSize)
+	proto.Header{Type: proto.FrameAuth}.Marshal(hdr)
+	_ = sendReply(append(hdr, p...))
+	return sessionID
 }
 
-func (s *Server) handleData(hdr proto.Header, payload []byte, raddr *net.UDPAddr) {
+func (s *Server) handleData(hdr proto.Header, payload []byte) {
 	s.mu.RLock()
 	sess, ok := s.sessions[hdr.SessionID]
 	s.mu.RUnlock()
@@ -279,18 +367,15 @@ func (s *Server) handleData(hdr proto.Header, payload []byte, raddr *net.UDPAddr
 	sess.lastSeen = time.Now()
 	sess.mu.Unlock()
 
-	// Use the per-session replay window (stored in the Session struct).
 	frame, err := sess.cipher.Open(payload, &sess.replay)
 	if err != nil {
 		return
 	}
 
-	// Extract FEC metadata from Seq field.
 	blockID, pktIdx := proto.UnpackDataSeq(hdr.Seq)
 
-	// Feed to FEC decoder; Decoder has its own internal mutex.
 	// Do NOT hold sess.mu here to avoid deadlock when hub.Forward calls
-	// pipe.Send on another session while that session also holds sess.mu.
+	// pipe.Send on another session while that session also holds its sess.mu.
 	recovered, err := sess.pipe.RecvData(blockID, pktIdx, frame)
 	if err != nil || recovered == nil {
 		return
@@ -301,7 +386,7 @@ func (s *Server) handleData(hdr proto.Header, payload []byte, raddr *net.UDPAddr
 		return
 	}
 	for _, f := range recovered {
-		if len(f) >= 14 { // minimum Ethernet frame
+		if len(f) >= 14 {
 			h.Forward(hdr.SessionID, f)
 		}
 	}
@@ -315,7 +400,6 @@ func (s *Server) handleRepair(hdr proto.Header, payload []byte) {
 		return
 	}
 
-	// Decrypt repair symbol (repair symbols are also encrypted).
 	frame, err := sess.cipher.Open(payload, &sess.replay)
 	if err != nil {
 		return
@@ -323,7 +407,6 @@ func (s *Server) handleRepair(hdr proto.Header, payload []byte) {
 
 	blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
 
-	// Feed to FEC decoder; Decoder is internally mutex-protected.
 	recovered, err := sess.pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
 	if err != nil || recovered == nil {
 		return
@@ -340,7 +423,7 @@ func (s *Server) handleRepair(hdr proto.Header, payload []byte) {
 	}
 }
 
-func (s *Server) handlePing(hdr proto.Header, raddr *net.UDPAddr) {
+func (s *Server) handlePing(hdr proto.Header, sendReply func([]byte) error) {
 	s.mu.RLock()
 	sess, ok := s.sessions[hdr.SessionID]
 	s.mu.RUnlock()
@@ -351,11 +434,10 @@ func (s *Server) handlePing(hdr proto.Header, raddr *net.UDPAddr) {
 	}
 	pong := make([]byte, proto.HeaderSize)
 	proto.Header{Type: proto.FramePong, SessionID: hdr.SessionID}.Marshal(pong)
-	s.conn.WriteToUDP(pong, raddr)
+	_ = sendReply(pong)
 }
 
-// sendFECData encrypts one data frame and sends it to the client.
-// Called by the FEC pipe's sendData callback.
+// sendFECData encrypts one data frame and delivers it to the client via sess.sendRaw.
 func (s *Server) sendFECData(sess *Session, blockID uint32, pktIdx uint16, frame []byte) error {
 	encrypted, err := sess.cipher.Seal(frame)
 	if err != nil {
@@ -368,12 +450,10 @@ func (s *Server) sendFECData(sess *Session, blockID uint32, pktIdx uint16, frame
 		SessionID: sess.ID,
 		Seq:       proto.PackDataSeq(blockID, pktIdx),
 	}.Marshal(hdr)
-	pkt := append(hdr, encrypted...)
-	_, err = s.conn.WriteToUDP(pkt, sess.Addr)
-	return err
+	return sess.sendRaw(append(hdr, encrypted...))
 }
 
-// sendFECRepair encrypts one repair symbol and sends it to the client.
+// sendFECRepair encrypts one repair symbol and delivers it to the client via sess.sendRaw.
 func (s *Server) sendFECRepair(sess *Session, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) error {
 	encrypted, err := sess.cipher.Seal(data)
 	if err != nil {
@@ -386,25 +466,7 @@ func (s *Server) sendFECRepair(sess *Session, blockID uint32, repairIdx, blockK,
 		SessionID: sess.ID,
 		Seq:       proto.PackRepairSeq(blockID, repairIdx, blockK, blockR),
 	}.Marshal(hdr)
-	pkt := append(hdr, encrypted...)
-	_, err = s.conn.WriteToUDP(pkt, sess.Addr)
-	return err
-}
-
-func (s *Server) sendAuthOK(raddr *net.UDPAddr, sessionID uint32) {
-	ok := proto.AuthOK{SessionID: sessionID}
-	payload := append([]byte{proto.AuthMsgOK}, ok.Marshal()...)
-	hdr := make([]byte, proto.HeaderSize)
-	proto.Header{Type: proto.FrameAuth}.Marshal(hdr)
-	s.conn.WriteToUDP(append(hdr, payload...), raddr)
-}
-
-func (s *Server) sendAuthError(raddr *net.UDPAddr, sessionID uint32, msg string) {
-	ae := proto.AuthError{Message: msg}
-	payload := append([]byte{proto.AuthMsgError}, ae.Marshal()...)
-	hdr := make([]byte, proto.HeaderSize)
-	proto.Header{Type: proto.FrameAuth, SessionID: sessionID}.Marshal(hdr)
-	s.conn.WriteToUDP(append(hdr, payload...), raddr)
+	return sess.sendRaw(append(hdr, encrypted...))
 }
 
 func (s *Server) newSessionID() uint32 {
@@ -415,6 +477,23 @@ func (s *Server) newSessionID() uint32 {
 		id = 1
 	}
 	return id
+}
+
+// removeSession removes a session from the map and leaves its hub. Used when
+// a TCP connection closes before the 90-second cleanup fires.
+func (s *Server) removeSession(id uint32) {
+	s.mu.Lock()
+	sess, ok := s.sessions[id]
+	if ok {
+		delete(s.sessions, id)
+	}
+	s.mu.Unlock()
+	if ok {
+		if h, ok2 := s.manager.Get(sess.HubID); ok2 {
+			h.Leave(id)
+		}
+		log.Printf("session %d closed (%s)", id, sess.Login)
+	}
 }
 
 func (s *Server) cleanupLoop(ctx context.Context) {
