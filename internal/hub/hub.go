@@ -12,7 +12,7 @@
 package hub
 
 import (
-	"net"
+	"context"
 	"sync"
 	"time"
 )
@@ -130,5 +130,56 @@ func (h *Hub) purgeMACTable() {
 	h.mu.Unlock()
 }
 
-// ensure net is imported (used for MAC type doc context)
-var _ = net.HardwareAddr{}
+// StartMACPurge runs a background goroutine that purges stale MAC table entries
+// every minute. It stops when ctx is cancelled.
+func (h *Hub) StartMACPurge(ctx context.Context) {
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				h.purgeMACTable()
+			}
+		}
+	}()
+}
+
+// Manager holds a set of hubs indexed by ID.
+type Manager struct {
+	mu   sync.RWMutex
+	hubs map[uint16]*Hub
+}
+
+// NewManager creates an empty Manager.
+func NewManager() *Manager {
+	return &Manager{hubs: make(map[uint16]*Hub)}
+}
+
+// Add registers a hub with the manager. Overwrites any existing hub with the same ID.
+func (m *Manager) Add(h *Hub) {
+	m.mu.Lock()
+	m.hubs[h.id] = h
+	m.mu.Unlock()
+}
+
+// Get looks up a hub by ID.
+func (m *Manager) Get(id uint16) (*Hub, bool) {
+	m.mu.RLock()
+	h, ok := m.hubs[id]
+	m.mu.RUnlock()
+	return h, ok
+}
+
+// List returns all registered hubs in an unspecified order.
+func (m *Manager) List() []*Hub {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*Hub, 0, len(m.hubs))
+	for _, h := range m.hubs {
+		out = append(out, h)
+	}
+	return out
+}

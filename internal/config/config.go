@@ -4,7 +4,8 @@ package config
 import (
 	"fmt"
 	"os"
-	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 // ServerConfig is the server-side configuration.
@@ -30,13 +31,15 @@ type UserConfig struct {
 
 // ClientConfig is the client-side configuration.
 type ClientConfig struct {
-	Server    string        `toml:"server"`      // host:port UDP
-	ServerTCP string        `toml:"server_tcp"`  // host:port TCP fallback
-	HubID     uint16        `toml:"hub_id"`
-	Login     string        `toml:"login"`
-	Password  string        `toml:"password"`
-	FEC       FECConfig     `toml:"fec"`
-	Timeout   time.Duration `toml:"timeout"`
+	Server    string    `toml:"server"`     // host:port UDP
+	ServerTCP string    `toml:"server_tcp"` // host:port TCP fallback
+	HubID     uint16    `toml:"hub_id"`
+	Login     string    `toml:"login"`
+	Password  string    `toml:"password"`
+	FEC       FECConfig `toml:"fec"`
+	// Timeout is expressed as a string (e.g. "30s") and parsed manually to
+	// avoid TOML's lack of native time.Duration support.
+	Timeout string `toml:"timeout"`
 }
 
 // FECConfig controls redundancy parameters.
@@ -76,6 +79,26 @@ func (c *ClientConfig) Validate() error {
 		return fmt.Errorf("config: login and password are required")
 	}
 	return nil
+}
+
+// LoadServerConfig reads and validates a server config from a TOML file.
+func LoadServerConfig(path string) (*ServerConfig, error) {
+	var cfg ServerConfig
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return nil, fmt.Errorf("config: decode %s: %w", path, err)
+	}
+	cfg.FEC = cfg.FEC.WithDefaults()
+	return &cfg, cfg.Validate()
+}
+
+// LoadClientConfig reads and validates a client config from a TOML file.
+func LoadClientConfig(path string) (*ClientConfig, error) {
+	var cfg ClientConfig
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return nil, fmt.Errorf("config: decode %s: %w", path, err)
+	}
+	cfg.FEC = cfg.FEC.WithDefaults()
+	return &cfg, cfg.Validate()
 }
 
 // DefaultServerConfigPath returns the default path to the server config file.

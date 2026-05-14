@@ -1,0 +1,14 @@
+listen     = "0.0.0.0:5555"
+listen_tcp = "0.0.0.0:443"
+
+[fec]
+k = 20
+r = 1
+
+[[hub]]
+id   = 1
+name = "main"
+
+  [[hub.user]]
+  login         = "alice"
+  password_hash = "$2a$10$replacethis"
