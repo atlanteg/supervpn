@@ -22,6 +22,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/bridge"
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/crypto"
+	"github.com/atlanteg/supervpn/internal/fec"
 	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/transport"
 	"github.com/atlanteg/supervpn/pkg/tun"
@@ -128,10 +129,27 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	}
 	log.Printf("authenticated: session=%d", sessionID)
 
+	fecCfg := cfg.FEC.WithDefaults()
+
+	// FEC pipe: sendFECData/sendFECRepair callbacks use the same cipher+transport.
+	pipe, err := fec.NewPipe(
+		fecCfg.K,
+		fecCfg.R,
+		func(blockID uint32, pktIdx uint16, data []byte) error {
+			return sendFECData(tr, sessionID, cfg.HubID, sessionCipher, blockID, pktIdx, data)
+		},
+		func(blockID uint32, repairIdx uint8, data []byte) error {
+			return sendFECRepair(tr, sessionID, cfg.HubID, sessionCipher, blockID, repairIdx, uint8(fecCfg.K), uint8(fecCfg.R), data)
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("fec pipe: %w", err)
+	}
+
 	// Set up bridge.
 	downstream := make(chan []byte, 64)
 	b := bridge.New(iface, framer, func(frame []byte) error {
-		return sendData(tr, sessionID, cfg.HubID, sessionCipher, frame)
+		return pipe.Send(frame)
 	})
 
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
@@ -148,7 +166,7 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	// Receive loop: UDP → downstream channel.
 	recvErr := make(chan error, 1)
 	go func() {
-		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, downstream)
+		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, downstream)
 	}()
 
 	// Keepalive ping every 25 seconds.
@@ -248,9 +266,10 @@ func wireHashHex(password string) string {
 	return string(buf)
 }
 
-// recvLoop reads UDP frames from the server, decrypts data frames, and forwards
-// them to the downstream channel. Returns on context cancellation or transport error.
-func recvLoop(ctx context.Context, tr *transport.UDPTransport, sessionID uint32, cipher *crypto.Cipher, out chan<- []byte) error {
+// recvLoop reads UDP frames from the server, decrypts data and repair frames,
+// feeds them to the FEC pipe decoder, and forwards recovered frames to the
+// downstream channel. Returns on context cancellation or transport error.
+func recvLoop(ctx context.Context, tr *transport.UDPTransport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, out chan<- []byte) error {
 	var replay crypto.ReplayWindow
 	for {
 		f, err := tr.Recv(ctx)
@@ -261,36 +280,91 @@ func recvLoop(ctx context.Context, tr *transport.UDPTransport, sessionID uint32,
 		if !ok {
 			continue
 		}
+		if hdr.SessionID != sessionID && hdr.Type != proto.FrameAuth {
+			continue
+		}
 		payload := f.Data[proto.HeaderSize:]
+
 		switch hdr.Type {
 		case proto.FrameData:
-			if hdr.SessionID != sessionID {
-				continue
-			}
 			frame, err := cipher.Open(payload, &replay)
 			if err != nil {
-				// Replay or decryption error — skip silently.
 				continue
 			}
-			select {
-			case out <- frame:
-			case <-ctx.Done():
-				return ctx.Err()
+			blockID, pktIdx := proto.UnpackDataSeq(hdr.Seq)
+			recovered, err := pipe.RecvData(blockID, pktIdx, frame)
+			if err != nil || recovered == nil {
+				continue
 			}
+			for _, rf := range recovered {
+				if len(rf) < 14 {
+					continue
+				}
+				select {
+				case out <- rf:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+
+		case proto.FrameRepair:
+			frame, err := cipher.Open(payload, &replay)
+			if err != nil {
+				continue
+			}
+			blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
+			recovered, err := pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
+			if err != nil || recovered == nil {
+				continue
+			}
+			for _, rf := range recovered {
+				if len(rf) < 14 {
+					continue
+				}
+				select {
+				case out <- rf:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+
 		case proto.FramePong:
 			// Keepalive acknowledged — nothing to do.
 		}
 	}
 }
 
-// sendData encrypts frame and sends it as a FrameData packet to the server.
-func sendData(tr *transport.UDPTransport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, frame []byte) error {
+// sendFECData encrypts one data frame and sends it as a FrameData packet to the server.
+// Called by the FEC pipe's sendData callback.
+func sendFECData(tr *transport.UDPTransport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, pktIdx uint16, frame []byte) error {
 	encrypted, err := cipher.Seal(frame)
 	if err != nil {
-		return fmt.Errorf("encrypt: %w", err)
+		return err
 	}
 	hdr := make([]byte, proto.HeaderSize)
-	proto.Header{Type: proto.FrameData, HubID: hubID, SessionID: sessionID}.Marshal(hdr)
+	proto.Header{
+		Type:      proto.FrameData,
+		HubID:     hubID,
+		SessionID: sessionID,
+		Seq:       proto.PackDataSeq(blockID, pktIdx),
+	}.Marshal(hdr)
+	return tr.Send(transport.Frame{Data: append(hdr, encrypted...)})
+}
+
+// sendFECRepair encrypts one repair symbol and sends it as a FrameRepair packet to the server.
+// Called by the FEC pipe's sendRepair callback.
+func sendFECRepair(tr *transport.UDPTransport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) error {
+	encrypted, err := cipher.Seal(data)
+	if err != nil {
+		return err
+	}
+	hdr := make([]byte, proto.HeaderSize)
+	proto.Header{
+		Type:      proto.FrameRepair,
+		HubID:     hubID,
+		SessionID: sessionID,
+		Seq:       proto.PackRepairSeq(blockID, repairIdx, blockK, blockR),
+	}.Marshal(hdr)
 	return tr.Send(transport.Frame{Data: append(hdr, encrypted...)})
 }
 
