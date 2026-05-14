@@ -39,9 +39,35 @@ type ClientConfig struct {
 	Password  string          `toml:"password"`
 	FEC       FECConfig       `toml:"fec"`
 	TLS       TLSClientConfig `toml:"tls"`
+	UDP       UDPConfig       `toml:"udp"`
 	// Timeout is expressed as a string (e.g. "30s") and parsed manually to
 	// avoid TOML's lack of native time.Duration support.
 	Timeout string `toml:"timeout"`
+}
+
+// UDPConfig controls the knock-and-dial strategy used before each UDP auth attempt.
+type UDPConfig struct {
+	// KnockCount is the number of random-payload UDP packets sent on the socket
+	// before the first auth frame. They prime NAT/firewall state while keeping
+	// the 5-tuple identical to the subsequent VPN traffic.
+	KnockCount int `toml:"knock_count"` // default 3
+	// KnockSize is the payload size of each knock packet in bytes.
+	KnockSize int `toml:"knock_size"` // default 16
+	// Attempts is how many (knock → auth) cycles to try before falling back to TLS.
+	Attempts int `toml:"attempts"` // default 3
+}
+
+func (u UDPConfig) WithDefaults() UDPConfig {
+	if u.KnockCount == 0 {
+		u.KnockCount = 3
+	}
+	if u.KnockSize == 0 {
+		u.KnockSize = 16
+	}
+	if u.Attempts == 0 {
+		u.Attempts = 3
+	}
+	return u
 }
 
 // FECConfig controls redundancy parameters.
@@ -100,6 +126,7 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 		return nil, fmt.Errorf("config: decode %s: %w", path, err)
 	}
 	cfg.FEC = cfg.FEC.WithDefaults()
+	cfg.UDP = cfg.UDP.WithDefaults()
 	return &cfg, cfg.Validate()
 }
 

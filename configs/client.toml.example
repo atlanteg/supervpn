@@ -11,3 +11,8 @@ r = 6
 [tls]
 sni         = "microsoft.com"   # SNI sent in TLS ClientHello — mimics HTTPS to bypass DPI
 skip_verify = true              # always true; server uses self-signed cert
+
+[udp]
+# knock_count = 3   # random UDP packets sent before each auth attempt to prime NAT/firewall
+# knock_size  = 16  # payload size of each knock packet in bytes
+# attempts    = 3   # how many knock→auth cycles before falling back to TLS
