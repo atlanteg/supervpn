@@ -98,10 +98,12 @@
 - ✅ Framing поверх TCP: length-prefixed frames (2 байта длина + данные) — TCPTransport готов
 - ✅ TLSTransport: DialTLS, ListenTLS, AcceptTLS, NewServerTLSConfig
 
-### 3.2 Автопереключение UDP → TCP
-- 📋 Клиент пробует UDP первым (3 попытки × 1s)
-- 📋 При неудаче — автоматически TCP
-- 📋 Периодическая проверка возврата на UDP (каждые 5 минут)
+### 3.2 Автопереключение UDP → TCP ✅
+- ✅ Клиент пробует UDP первым (3 s timeout на auth)
+- ✅ При неудаче — автоматически TLS/TCP (server_tcp)
+- ✅ Периодическая проверка возврата на UDP (каждые 5 минут)
+- ✅ Сервер принимает TLS/TCP соединения (ListenTLS, per-conn goroutine)
+- ✅ Тот же wire format внутри TLS (length-prefixed frames, FrameData/Repair/Ping/Auth)
 
 ### 3.3 Обфускация (опционально)
 - 💡 Рандомизация размеров пакетов (padding до ближайшего 128/256)

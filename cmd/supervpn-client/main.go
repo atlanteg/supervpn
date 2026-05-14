@@ -1,6 +1,12 @@
 // supervpn-client — L2 VPN client with transparent 169.254.0.0/16 bridge.
 // Detects local interfaces with link-local addresses and bridges them to
-// the supervpn server hub via UDP (with TCP fallback).
+// the supervpn server hub via UDP (primary) or TLS/TCP (fallback).
+//
+// Transport selection:
+//   - On each connect attempt, UDP is probed first (3 s timeout on auth).
+//   - If UDP auth times out or fails, the client falls back to TLS/TCP on server_tcp.
+//   - When connected via TLS, a background timer retries UDP every 5 minutes;
+//     if the probe succeeds the session is restarted on UDP.
 //
 // Usage:
 //
@@ -14,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -34,7 +41,6 @@ func main() {
 	var cfgPath string
 	flag.StringVar(&cfgPath, "config", "", "path to client config file (optional)")
 
-	// Inline flags for convenience — overridden by config file when both provided.
 	var (
 		serverFlag   = flag.String("server", "", "server UDP address host:port")
 		hubIDFlag    = flag.Uint("hub", 1, "hub ID")
@@ -55,7 +61,7 @@ func main() {
 		cfg.HubID = uint16(*hubIDFlag)
 		cfg.Login = *loginFlag
 		cfg.Password = *passwordFlag
-		cfg.FEC = config.FECConfig{K: 20, R: 1}
+		cfg.FEC = config.FECConfig{K: 20, R: 6}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -77,9 +83,8 @@ func main() {
 	for _, iface := range ifaces {
 		log.Printf("bridge: detected link-local interface %s (%s)", iface.Name, iface.HWAddr)
 	}
-	iface := ifaces[0] // use first detected interface
+	iface := ifaces[0]
 
-	// Open TUN/TAP adapter.
 	framer, err := tun.Open(iface.Name)
 	if err != nil {
 		log.Fatalf("tun: open %s: %v", iface.Name, err)
@@ -87,10 +92,9 @@ func main() {
 	defer framer.Close()
 	log.Printf("tun: opened adapter for %s", iface.Name)
 
-	log.Printf("supervpn-client %s: connecting to %s hub=%d login=%s",
+	log.Printf("supervpn-client %s: server=%s hub=%d login=%s",
 		version, cfg.Server, cfg.HubID, cfg.Login)
 
-	// Reconnect loop with exponential backoff.
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -113,25 +117,17 @@ func main() {
 	}
 }
 
-// runSession dials the server, authenticates, runs the bridge, and returns on error.
+// runSession dials the server (UDP first, TLS fallback), authenticates, runs the
+// bridge until the context is cancelled or an error occurs.
 func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Interface, framer bridge.Framer) error {
-	// Connect UDP.
-	tr, err := transport.DialUDP(cfg.Server)
+	tr, sessionID, sessionCipher, err := connectWithFallback(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return fmt.Errorf("connect: %w", err)
 	}
 	defer tr.Close()
 
-	// Authenticate and obtain session cipher.
-	sessionID, sessionCipher, err := authenticate(ctx, tr, cfg)
-	if err != nil {
-		return fmt.Errorf("auth: %w", err)
-	}
-	log.Printf("authenticated: session=%d", sessionID)
-
 	fecCfg := cfg.FEC.WithDefaults()
 
-	// FEC pipe: sendFECData/sendFECRepair callbacks use the same cipher+transport.
 	pipe, err := fec.NewPipe(
 		fecCfg.K,
 		fecCfg.R,
@@ -146,7 +142,6 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 		return fmt.Errorf("fec pipe: %w", err)
 	}
 
-	// Set up bridge.
 	downstream := make(chan []byte, 64)
 	b := bridge.New(iface, framer, func(frame []byte) error {
 		return pipe.Send(frame)
@@ -155,21 +150,32 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
 
-	// Upstream: local interface → server.
+	// When connected via TLS, retry UDP every 5 minutes. A successful probe will
+	// cause a session cancel so the reconnect loop attempts UDP first next time.
+	if tr.Mode() == "tls" && cfg.Server != "" {
+		go func() {
+			t := time.NewTimer(5 * time.Minute)
+			defer t.Stop()
+			select {
+			case <-t.C:
+				log.Println("transport: 5-min TLS session elapsed, probing UDP")
+				sessionCancel()
+			case <-sessionCtx.Done():
+			}
+		}()
+	}
+
 	upErr := make(chan error, 1)
 	go func() { upErr <- b.RunUpstream(sessionCtx) }()
 
-	// Downstream: server frames → local interface.
 	downErr := make(chan error, 1)
 	go func() { downErr <- b.RunDownstream(sessionCtx, downstream) }()
 
-	// Receive loop: UDP → downstream channel.
 	recvErr := make(chan error, 1)
 	go func() {
 		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, downstream)
 	}()
 
-	// Keepalive ping every 25 seconds.
 	pingTick := time.NewTicker(25 * time.Second)
 	defer pingTick.Stop()
 
@@ -189,10 +195,51 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	}
 }
 
+// connectWithFallback probes UDP auth with a 3-second timeout; falls back to TLS/TCP.
+// Returns an authenticated transport and session credentials.
+func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transport.Transport, uint32, *crypto.Cipher, error) {
+	// Try UDP first.
+	udpTr, err := transport.DialUDP(cfg.Server)
+	if err == nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		sid, cipher, probeErr := authenticate(probeCtx, udpTr, cfg)
+		cancel()
+		if probeErr == nil {
+			log.Printf("transport: UDP %s", cfg.Server)
+			return udpTr, sid, cipher, nil
+		}
+		udpTr.Close()
+		log.Printf("transport: UDP probe failed (%v), trying TLS", probeErr)
+	}
+
+	if cfg.ServerTCP == "" {
+		return nil, 0, nil, fmt.Errorf("UDP unreachable and server_tcp not configured")
+	}
+
+	sni := cfg.TLS.SNI
+	if sni == "" {
+		host, _, _ := net.SplitHostPort(cfg.ServerTCP)
+		sni = host
+	}
+
+	tlsTr, err := transport.DialTLS(cfg.ServerTCP, sni)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("TLS dial: %w", err)
+	}
+
+	sid, cipher, err := authenticate(ctx, tlsTr, cfg)
+	if err != nil {
+		tlsTr.Close()
+		return nil, 0, nil, fmt.Errorf("TLS auth: %w", err)
+	}
+
+	log.Printf("transport: TLS %s (sni=%s)", cfg.ServerTCP, sni)
+	return tlsTr, sid, cipher, nil
+}
+
 // authenticate sends AuthHello and waits for AuthOK or AuthError.
 // Returns the session ID and a Cipher keyed from the shared secret.
-func authenticate(ctx context.Context, tr *transport.UDPTransport, cfg config.ClientConfig) (uint32, *crypto.Cipher, error) {
-	// Compute raw SHA-256 of password for wire transmission (AuthHello.PWHash).
+func authenticate(ctx context.Context, tr transport.Transport, cfg config.ClientConfig) (uint32, *crypto.Cipher, error) {
 	pwHash := sha256.Sum256([]byte(cfg.Password))
 
 	hello := proto.AuthHello{
@@ -207,12 +254,8 @@ func authenticate(ctx context.Context, tr *transport.UDPTransport, cfg config.Cl
 		return 0, nil, fmt.Errorf("send AuthHello: %w", err)
 	}
 
-	// Wait for server response with a 10-second timeout.
-	authCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
 	for {
-		f, err := tr.Recv(authCtx)
+		f, err := tr.Recv(ctx)
 		if err != nil {
 			return 0, nil, fmt.Errorf("waiting for auth response: %w", err)
 		}
@@ -230,10 +273,6 @@ func authenticate(ctx context.Context, tr *transport.UDPTransport, cfg config.Cl
 			if err != nil {
 				return 0, nil, fmt.Errorf("parse AuthOK: %w", err)
 			}
-			// Derive session cipher using the wire-hex of the password as token.
-			// The hub name is formatted as "hub<ID>" to match the server-side hub.Name().
-			// Note: the server uses storedHash (bcrypt) as token; this client uses wireHex.
-			// Both sides must agree on the token — a coordinated server change may be needed.
 			wireHex := wireHashHex(cfg.Password)
 			hubName := fmt.Sprintf("hub%d", cfg.HubID)
 			key, err := crypto.DeriveKey(wireHex, hubName, cfg.Login, "server")
@@ -253,8 +292,8 @@ func authenticate(ctx context.Context, tr *transport.UDPTransport, cfg config.Cl
 	}
 }
 
-// wireHashHex returns the hex-encoded SHA-256 of the password — the same value
-// the server receives as wireHex when it does hex.EncodeToString(hello.PWHash[:]).
+// wireHashHex returns hex-encoded SHA-256 of the password — the same value the
+// server sees as wireHex when it does hex.EncodeToString(hello.PWHash[:]).
 func wireHashHex(password string) string {
 	sum := sha256.Sum256([]byte(password))
 	const hextable = "0123456789abcdef"
@@ -266,10 +305,10 @@ func wireHashHex(password string) string {
 	return string(buf)
 }
 
-// recvLoop reads UDP frames from the server, decrypts data and repair frames,
+// recvLoop reads frames from the server, decrypts data and repair frames,
 // feeds them to the FEC pipe decoder, and forwards recovered frames to the
 // downstream channel. Returns on context cancellation or transport error.
-func recvLoop(ctx context.Context, tr *transport.UDPTransport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, out chan<- []byte) error {
+func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, out chan<- []byte) error {
 	var replay crypto.ReplayWindow
 	for {
 		f, err := tr.Recv(ctx)
@@ -335,8 +374,7 @@ func recvLoop(ctx context.Context, tr *transport.UDPTransport, sessionID uint32,
 }
 
 // sendFECData encrypts one data frame and sends it as a FrameData packet to the server.
-// Called by the FEC pipe's sendData callback.
-func sendFECData(tr *transport.UDPTransport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, pktIdx uint16, frame []byte) error {
+func sendFECData(tr transport.Transport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, pktIdx uint16, frame []byte) error {
 	encrypted, err := cipher.Seal(frame)
 	if err != nil {
 		return err
@@ -352,8 +390,7 @@ func sendFECData(tr *transport.UDPTransport, sessionID uint32, hubID uint16, cip
 }
 
 // sendFECRepair encrypts one repair symbol and sends it as a FrameRepair packet to the server.
-// Called by the FEC pipe's sendRepair callback.
-func sendFECRepair(tr *transport.UDPTransport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) error {
+func sendFECRepair(tr transport.Transport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) error {
 	encrypted, err := cipher.Seal(data)
 	if err != nil {
 		return err
@@ -370,7 +407,7 @@ func sendFECRepair(tr *transport.UDPTransport, sessionID uint32, hubID uint16, c
 
 // sendPing sends a keepalive ping to the server. Errors are ignored because
 // pings are best-effort; the reconnect loop handles real connectivity loss.
-func sendPing(tr *transport.UDPTransport, sessionID uint32, hubID uint16) {
+func sendPing(tr transport.Transport, sessionID uint32, hubID uint16) {
 	hdr := make([]byte, proto.HeaderSize)
 	proto.Header{Type: proto.FramePing, HubID: hubID, SessionID: sessionID}.Marshal(hdr)
 	_ = tr.Send(transport.Frame{Data: hdr})
