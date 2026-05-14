@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -93,6 +95,7 @@ type Session struct {
 	Mode        string    // "udp" or "tls"
 	ConnectedAt time.Time // when auth completed
 	sendRaw     func([]byte) error
+	closeConn   func()             // closes the underlying transport (no-op for UDP)
 	cipher      *crypto.Cipher
 	replay      crypto.ReplayWindow
 	pipe        *fec.Pipe
@@ -159,7 +162,7 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.handlePacket(pkt, func(p []byte) error {
 			_, err := s.conn.WriteToUDP(p, ra)
 			return err
-		}, ra.String(), "udp")
+		}, ra.String(), "udp", func() {})
 	}
 }
 
@@ -204,6 +207,7 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 	sendReply := func(pkt []byte) error {
 		return tr.Send(transport.Frame{Data: pkt})
 	}
+	closeConn := func() { tr.Close() }
 
 	var sessionID uint32
 	for {
@@ -214,15 +218,16 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 			}
 			return
 		}
-		if sid := s.handlePacket(f.Data, sendReply, remoteAddr, "tls"); sid != 0 {
+		if sid := s.handlePacket(f.Data, sendReply, remoteAddr, "tls", closeConn); sid != 0 {
 			sessionID = sid
 		}
 	}
 }
 
-// handlePacket dispatches one wire packet. remoteAddr and mode are recorded in
-// the session when an auth packet creates it. Returns new session ID on auth, 0 otherwise.
-func (s *Server) handlePacket(pkt []byte, sendReply func([]byte) error, remoteAddr, mode string) uint32 {
+// handlePacket dispatches one wire packet. remoteAddr, mode, and closeConn are
+// recorded in the session when an auth packet creates it.
+// Returns new session ID on auth, 0 otherwise.
+func (s *Server) handlePacket(pkt []byte, sendReply func([]byte) error, remoteAddr, mode string, closeConn func()) uint32 {
 	hdr, ok := proto.ParseHeader(pkt)
 	if !ok {
 		return 0
@@ -230,7 +235,7 @@ func (s *Server) handlePacket(pkt []byte, sendReply func([]byte) error, remoteAd
 	payload := pkt[proto.HeaderSize:]
 	switch hdr.Type {
 	case proto.FrameAuth:
-		return s.handleAuth(payload, sendReply, remoteAddr, mode)
+		return s.handleAuth(payload, sendReply, remoteAddr, mode, closeConn)
 	case proto.FrameData:
 		s.handleData(hdr, payload)
 	case proto.FrameRepair:
@@ -241,7 +246,7 @@ func (s *Server) handlePacket(pkt []byte, sendReply func([]byte) error, remoteAd
 	return 0
 }
 
-func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error, remoteAddr, mode string) uint32 {
+func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error, remoteAddr, mode string, closeConn func()) uint32 {
 	replyError := func(msg string) {
 		ae := proto.AuthError{Message: msg}
 		p := append([]byte{proto.AuthMsgError}, ae.Marshal()...)
@@ -309,6 +314,7 @@ func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error, remote
 		Mode:        mode,
 		ConnectedAt: now,
 		sendRaw:     sendReply,
+		closeConn:   closeConn,
 		cipher:      cipher,
 		lastSeen:    now,
 	}
@@ -537,6 +543,7 @@ type clientStatus struct {
 func (s *Server) runStatusServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/api/hubs/", s.handleAPI) // POST /api/hubs/{id}/kick/{session}
 
 	srv := &http.Server{Addr: s.cfg.StatusListen, Handler: mux}
 	go func() {
@@ -547,6 +554,55 @@ func (s *Server) runStatusServer(ctx context.Context) {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Printf("status server error: %v", err)
 	}
+}
+
+// handleAPI dispatches management actions.
+// Currently supports: POST /api/hubs/{hub_id}/kick/{session_id}
+func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
+	// Path: /api/hubs/{hub_id}/kick/{session_id}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 4 && parts[0] == "api" && parts[1] == "hubs" && parts[3] == "kick" {
+		http.Error(w, "use POST /api/hubs/{id}/kick/{session_id}", http.StatusBadRequest)
+		return
+	}
+	if len(parts) != 5 || parts[0] != "api" || parts[1] != "hubs" || parts[3] != "kick" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sid64, err := strconv.ParseUint(parts[4], 10, 32)
+	if err != nil {
+		http.Error(w, "invalid session_id", http.StatusBadRequest)
+		return
+	}
+	sessionID := uint32(sid64)
+
+	s.mu.Lock()
+	sess, ok := s.sessions[sessionID]
+	if ok {
+		delete(s.sessions, sessionID)
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Close transport (no-op for UDP; closes TCP connection immediately).
+	sess.closeConn()
+
+	if h, ok2 := s.manager.Get(sess.HubID); ok2 {
+		h.Leave(sessionID)
+	}
+	log.Printf("kick: session %d (%s@hub%d) kicked via API", sessionID, sess.Login, sess.HubID)
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status":"ok","session_id":%d,"login":%q}`, sessionID, sess.Login)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

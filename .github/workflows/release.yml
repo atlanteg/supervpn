@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create GitHub Release and upload assets
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test -race ./...
+
+      - name: Build server (linux/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o supervpn-server-linux-amd64 ./cmd/supervpn-server
+
+      - name: Build client (windows/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o supervpn-client-windows-amd64.exe ./cmd/supervpn-client
+
+      - name: Build client (darwin/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o supervpn-client-darwin-amd64 ./cmd/supervpn-client
+
+      - name: Build client (darwin/arm64)
+        run: |
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+            go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o supervpn-client-darwin-arm64 ./cmd/supervpn-client
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: supervpn ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            supervpn-server-linux-amd64
+            supervpn-client-windows-amd64.exe
+            supervpn-client-darwin-amd64
+            supervpn-client-darwin-arm64
+            configs/server.toml.example
+            configs/client.toml.example
+            deploy/supervpn-server.service
