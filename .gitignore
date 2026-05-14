@@ -9,3 +9,4 @@ dist/
 *.pem
 *.key
 /example_encryption_to_check_myvpn/
+.DS_Store
