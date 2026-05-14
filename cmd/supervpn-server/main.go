@@ -202,8 +202,12 @@ func (s *Server) handleAuth(payload []byte, raddr *net.UDPAddr) {
 	}
 
 	// Create session.
+	// Key derivation uses wireHex as token and "hub<ID>" as network name — both sides
+	// must agree on these values. The hub's configured name is intentionally NOT used
+	// here so the client can derive the same key without knowing it.
 	sessionID := s.newSessionID()
-	key, err := crypto.DeriveKey(storedHash, h.Name(), "server", hello.Login)
+	hubNetName := fmt.Sprintf("hub%d", hello.HubID)
+	key, err := crypto.DeriveKey(wireHex, hubNetName, "server", hello.Login)
 	if err != nil {
 		s.sendAuthError(raddr, 0, "internal error")
 		return

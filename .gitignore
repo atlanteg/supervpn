@@ -1,8 +1,8 @@
 dist/
 *.exe
 *.dll
-supervpn-server
-supervpn-client
+/supervpn-server
+/supervpn-client
 *.test
 *.out
 .env
