@@ -53,7 +53,7 @@ func (f FECConfig) WithDefaults() FECConfig {
 		f.K = 20
 	}
 	if f.R == 0 {
-		f.R = 4
+		f.R = 6
 	}
 	return f
 }
