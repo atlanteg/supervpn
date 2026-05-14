@@ -26,6 +26,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/auth"
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/crypto"
+	"github.com/atlanteg/supervpn/internal/fec"
 	"github.com/atlanteg/supervpn/internal/hub"
 	"github.com/atlanteg/supervpn/internal/proto"
 )
@@ -81,14 +82,15 @@ func main() {
 
 // Session holds the per-client state for an authenticated VPN session.
 type Session struct {
-	ID           uint32
-	HubID        uint16
-	Login        string
-	Addr         *net.UDPAddr
-	cipher       *crypto.Cipher
-	replay       crypto.ReplayWindow // per-session replay window; must not be copied after first use
-	lastSeen     time.Time
-	mu           sync.Mutex
+	ID       uint32
+	HubID    uint16
+	Login    string
+	Addr     *net.UDPAddr
+	cipher   *crypto.Cipher
+	replay   crypto.ReplayWindow // per-session replay window; must not be copied after first use
+	pipe     *fec.Pipe           // per-session FEC encoder/decoder
+	lastSeen time.Time
+	mu       sync.Mutex
 }
 
 // Server is the UDP server that handles auth, data forwarding, and ping/pong.
@@ -154,6 +156,8 @@ func (s *Server) handlePacket(pkt []byte, raddr *net.UDPAddr) {
 		s.handleAuth(payload, raddr)
 	case proto.FrameData:
 		s.handleData(hdr, payload, raddr)
+	case proto.FrameRepair:
+		s.handleRepair(hdr, payload)
 	case proto.FramePing:
 		s.handlePing(hdr, raddr)
 	}
@@ -217,6 +221,9 @@ func (s *Server) handleAuth(payload []byte, raddr *net.UDPAddr) {
 		s.sendAuthError(raddr, 0, "internal error")
 		return
 	}
+
+	fecCfg := s.cfg.FEC.WithDefaults()
+
 	sess := &Session{
 		ID:       sessionID,
 		HubID:    hello.HubID,
@@ -225,6 +232,24 @@ func (s *Server) handleAuth(payload []byte, raddr *net.UDPAddr) {
 		cipher:   cipher,
 		lastSeen: time.Now(),
 	}
+
+	// Create FEC pipe — sendData and sendRepair callbacks encrypt and send back to client.
+	pipe, err := fec.NewPipe(
+		fecCfg.K,
+		fecCfg.R,
+		func(blockID uint32, pktIdx uint16, data []byte) error {
+			return s.sendFECData(sess, blockID, pktIdx, data)
+		},
+		func(blockID uint32, repairIdx uint8, data []byte) error {
+			return s.sendFECRepair(sess, blockID, repairIdx, uint8(fecCfg.K), uint8(fecCfg.R), data)
+		},
+	)
+	if err != nil {
+		s.sendAuthError(raddr, 0, "internal error")
+		return
+	}
+	sess.pipe = pipe
+
 	s.mu.Lock()
 	s.sessions[sessionID] = sess
 	s.mu.Unlock()
@@ -232,7 +257,10 @@ func (s *Server) handleAuth(payload []byte, raddr *net.UDPAddr) {
 	client := &hub.Client{
 		SessionID: sessionID,
 		Login:     hello.Login,
-		Send:      func(frame []byte) error { return s.sendFrame(sess, frame) },
+		Send: func(frame []byte) error {
+			// pipe.Send is mutex-protected internally; no need to hold sess.mu here.
+			return sess.pipe.Send(frame)
+		},
 	}
 	h.Join(client)
 	log.Printf("auth ok: %s@hub%d session=%d from=%s", hello.Login, hello.HubID, sessionID, raddr)
@@ -246,6 +274,7 @@ func (s *Server) handleData(hdr proto.Header, payload []byte, raddr *net.UDPAddr
 	if !ok {
 		return
 	}
+
 	sess.mu.Lock()
 	sess.lastSeen = time.Now()
 	sess.mu.Unlock()
@@ -255,11 +284,60 @@ func (s *Server) handleData(hdr proto.Header, payload []byte, raddr *net.UDPAddr
 	if err != nil {
 		return
 	}
+
+	// Extract FEC metadata from Seq field.
+	blockID, pktIdx := proto.UnpackDataSeq(hdr.Seq)
+
+	// Feed to FEC decoder; Decoder has its own internal mutex.
+	// Do NOT hold sess.mu here to avoid deadlock when hub.Forward calls
+	// pipe.Send on another session while that session also holds sess.mu.
+	recovered, err := sess.pipe.RecvData(blockID, pktIdx, frame)
+	if err != nil || recovered == nil {
+		return
+	}
+
 	h, ok := s.manager.Get(sess.HubID)
 	if !ok {
 		return
 	}
-	h.Forward(hdr.SessionID, frame)
+	for _, f := range recovered {
+		if len(f) >= 14 { // minimum Ethernet frame
+			h.Forward(hdr.SessionID, f)
+		}
+	}
+}
+
+func (s *Server) handleRepair(hdr proto.Header, payload []byte) {
+	s.mu.RLock()
+	sess, ok := s.sessions[hdr.SessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	// Decrypt repair symbol (repair symbols are also encrypted).
+	frame, err := sess.cipher.Open(payload, &sess.replay)
+	if err != nil {
+		return
+	}
+
+	blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
+
+	// Feed to FEC decoder; Decoder is internally mutex-protected.
+	recovered, err := sess.pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
+	if err != nil || recovered == nil {
+		return
+	}
+
+	h, ok := s.manager.Get(sess.HubID)
+	if !ok {
+		return
+	}
+	for _, f := range recovered {
+		if len(f) >= 14 {
+			h.Forward(hdr.SessionID, f)
+		}
+	}
 }
 
 func (s *Server) handlePing(hdr proto.Header, raddr *net.UDPAddr) {
@@ -276,7 +354,9 @@ func (s *Server) handlePing(hdr proto.Header, raddr *net.UDPAddr) {
 	s.conn.WriteToUDP(pong, raddr)
 }
 
-func (s *Server) sendFrame(sess *Session, frame []byte) error {
+// sendFECData encrypts one data frame and sends it to the client.
+// Called by the FEC pipe's sendData callback.
+func (s *Server) sendFECData(sess *Session, blockID uint32, pktIdx uint16, frame []byte) error {
 	encrypted, err := sess.cipher.Seal(frame)
 	if err != nil {
 		return err
@@ -286,6 +366,25 @@ func (s *Server) sendFrame(sess *Session, frame []byte) error {
 		Type:      proto.FrameData,
 		HubID:     sess.HubID,
 		SessionID: sess.ID,
+		Seq:       proto.PackDataSeq(blockID, pktIdx),
+	}.Marshal(hdr)
+	pkt := append(hdr, encrypted...)
+	_, err = s.conn.WriteToUDP(pkt, sess.Addr)
+	return err
+}
+
+// sendFECRepair encrypts one repair symbol and sends it to the client.
+func (s *Server) sendFECRepair(sess *Session, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) error {
+	encrypted, err := sess.cipher.Seal(data)
+	if err != nil {
+		return err
+	}
+	hdr := make([]byte, proto.HeaderSize)
+	proto.Header{
+		Type:      proto.FrameRepair,
+		HubID:     sess.HubID,
+		SessionID: sess.ID,
+		Seq:       proto.PackRepairSeq(blockID, repairIdx, blockK, blockR),
 	}.Marshal(hdr)
 	pkt := append(hdr, encrypted...)
 	_, err = s.conn.WriteToUDP(pkt, sess.Addr)
