@@ -1,0 +1,11 @@
+dist/
+*.exe
+*.dll
+supervpn-server
+supervpn-client
+*.test
+*.out
+.env
+*.pem
+*.key
+/example_encryption_to_check_myvpn/
