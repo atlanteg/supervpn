@@ -7,3 +7,7 @@ password   = "your-password-here"
 [fec]
 k = 20
 r = 6
+
+[tls]
+sni         = "microsoft.com"   # SNI sent in TLS ClientHello — mimics HTTPS to bypass DPI
+skip_verify = true              # always true; server uses self-signed cert
