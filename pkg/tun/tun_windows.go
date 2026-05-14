@@ -43,13 +43,10 @@ func (t *windowsTUN) ReadFrame(ctx context.Context) ([]byte, error) {
 		}
 		pkt, err := t.session.ReceivePacket()
 		if err != nil {
-			// no packet yet — wait for driver signal via Win32 event handle
+			// No packet available — wait up to 50ms for the driver event.
 			evt := t.session.ReadWaitEvent()
-			_, _ = windows.WaitForSingleObject(evt, 100)
+			windows.WaitForSingleObject(windows.Handle(evt), 50)
 			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("tun/windows: recv: %w", err)
 		}
 		cp := make([]byte, len(pkt))
 		copy(cp, pkt)
