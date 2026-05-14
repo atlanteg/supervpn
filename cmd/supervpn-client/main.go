@@ -195,25 +195,43 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	}
 }
 
-// connectWithFallback probes UDP auth with a 3-second timeout; falls back to TLS/TCP.
-// Returns an authenticated transport and session credentials.
+// connectWithFallback attempts UDP connectivity using knock-and-dial, then falls back
+// to TLS/TCP. Each UDP attempt:
+//  1. Opens a UDP socket and sends cfg.UDP.KnockCount random-payload packets on it
+//     to prime NAT/firewall state (same 5-tuple as the subsequent auth frame).
+//  2. Tries to authenticate within 5 seconds on that same socket.
+//
+// If all cfg.UDP.Attempts cycles fail the function dials TLS on cfg.ServerTCP.
 func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transport.Transport, uint32, *crypto.Cipher, error) {
-	// Try UDP first.
-	udpTr, err := transport.DialUDP(cfg.Server)
-	if err == nil {
-		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	udpCfg := cfg.UDP.WithDefaults()
+
+	for attempt := 1; attempt <= udpCfg.Attempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, 0, nil, ctx.Err()
+		}
+		log.Printf("transport: UDP attempt %d/%d (knock×%d → %s)",
+			attempt, udpCfg.Attempts, udpCfg.KnockCount, cfg.Server)
+
+		udpTr, err := transport.KnockAndDial(cfg.Server, udpCfg.KnockCount, udpCfg.KnockSize)
+		if err != nil {
+			log.Printf("transport: UDP dial: %v", err)
+			continue
+		}
+
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		sid, cipher, probeErr := authenticate(probeCtx, udpTr, cfg)
 		cancel()
+
 		if probeErr == nil {
-			log.Printf("transport: UDP %s", cfg.Server)
+			log.Printf("transport: UDP connected (attempt %d/%d)", attempt, udpCfg.Attempts)
 			return udpTr, sid, cipher, nil
 		}
 		udpTr.Close()
-		log.Printf("transport: UDP probe failed (%v), trying TLS", probeErr)
+		log.Printf("transport: UDP attempt %d/%d failed: %v", attempt, udpCfg.Attempts, probeErr)
 	}
 
 	if cfg.ServerTCP == "" {
-		return nil, 0, nil, fmt.Errorf("UDP unreachable and server_tcp not configured")
+		return nil, 0, nil, fmt.Errorf("UDP unreachable after %d attempts and server_tcp not configured", udpCfg.Attempts)
 	}
 
 	sni := cfg.TLS.SNI
@@ -221,6 +239,7 @@ func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transpor
 		host, _, _ := net.SplitHostPort(cfg.ServerTCP)
 		sni = host
 	}
+	log.Printf("transport: falling back to TLS %s (sni=%s)", cfg.ServerTCP, sni)
 
 	tlsTr, err := transport.DialTLS(cfg.ServerTCP, sni)
 	if err != nil {
@@ -233,7 +252,7 @@ func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transpor
 		return nil, 0, nil, fmt.Errorf("TLS auth: %w", err)
 	}
 
-	log.Printf("transport: TLS %s (sni=%s)", cfg.ServerTCP, sni)
+	log.Printf("transport: TLS connected")
 	return tlsTr, sid, cipher, nil
 }
 
