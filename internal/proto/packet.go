@@ -53,6 +53,36 @@ func ParseHeader(src []byte) (Header, bool) {
 	}, true
 }
 
+// FEC metadata is packed into the Header.Seq field.
+//
+// For FrameData:
+//
+//	[block_id: 4 bytes][pkt_idx: 2 bytes][padding: 2 bytes]
+//
+// For FrameRepair:
+//
+//	[block_id: 4 bytes][repair_idx: 1 byte][block_k: 1 byte][block_r: 1 byte][padding: 1 byte]
+
+// PackDataSeq packs FEC block metadata for a FrameData frame.
+func PackDataSeq(blockID uint32, pktIdx uint16) uint64 {
+	return uint64(blockID)<<32 | uint64(pktIdx)<<16
+}
+
+// UnpackDataSeq extracts FEC metadata from a FrameData Seq field.
+func UnpackDataSeq(seq uint64) (blockID uint32, pktIdx uint16) {
+	return uint32(seq >> 32), uint16(seq >> 16)
+}
+
+// PackRepairSeq packs FEC metadata for a FrameRepair frame.
+func PackRepairSeq(blockID uint32, repairIdx, blockK, blockR uint8) uint64 {
+	return uint64(blockID)<<32 | uint64(repairIdx)<<24 | uint64(blockK)<<16 | uint64(blockR)<<8
+}
+
+// UnpackRepairSeq extracts FEC metadata from a FrameRepair Seq field.
+func UnpackRepairSeq(seq uint64) (blockID uint32, repairIdx, blockK, blockR uint8) {
+	return uint32(seq >> 32), uint8(seq >> 24), uint8(seq >> 16), uint8(seq >> 8)
+}
+
 // Auth sub-message types (first byte of FrameAuth payload)
 const (
 	AuthMsgHello uint8 = 0x01
