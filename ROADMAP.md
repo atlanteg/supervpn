@@ -130,7 +130,12 @@
 ## Фаза 5 — Качество и production-ready
 
 ### 5.1 Тестирование
-- 📋 Unit тесты: FEC (все комбинации потерь), Hub forwarding, crypto round-trip
+- ✅ Unit тесты: hub forwarding, crypto round-trip
+- ✅ FEC (все комбинации потерь)
+- ✅ proto marshal/parse tests
+- ✅ auth tests
+- ✅ transport TCP tests
+- ✅ bridge routing tests
 - 📋 Integration тесты: виртуальная сеть (veth pairs), клиент↔сервер без реального железа
 - 📋 Loss simulation: `tc netem loss 5%` в CI для проверки FEC
 - 📋 Нагрузочные тесты: N клиентов, X Mbit/s, проверка CPU/RAM
