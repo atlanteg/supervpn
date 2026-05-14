@@ -3,10 +3,9 @@
 // the supervpn server hub via UDP (primary) or TLS/TCP (fallback).
 //
 // Transport selection:
-//   - On each connect attempt, UDP is probed first (3 s timeout on auth).
-//   - If UDP auth times out or fails, the client falls back to TLS/TCP on server_tcp.
-//   - When connected via TLS, a background timer retries UDP every 5 minutes;
-//     if the probe succeeds the session is restarted on UDP.
+//   - On each connect attempt, UDP is probed first (knock×N → auth, 5s timeout).
+//   - If all UDP attempts fail, falls back to TLS/TCP on server_tcp.
+//   - When connected via TLS, a background timer retries UDP every 5 minutes.
 //
 // Usage:
 //
@@ -17,12 +16,15 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -36,6 +38,56 @@ import (
 )
 
 var version = "dev"
+
+// sessionState holds the current connection state for the status API.
+var sessionState = &clientSessionState{
+	startTime: time.Now(),
+	state:     "starting",
+}
+
+type clientSessionState struct {
+	mu          sync.RWMutex
+	startTime   time.Time
+	state       string    // "starting" | "connecting" | "connected" | "reconnecting"
+	mode        string    // "udp" | "tls" | ""
+	server      string    // address actually connected to
+	hubID       uint16
+	login       string
+	sessionID   uint32
+	connectedAt time.Time
+}
+
+func (cs *clientSessionState) setConnecting() {
+	cs.mu.Lock()
+	cs.state = "connecting"
+	cs.mode = ""
+	cs.server = ""
+	cs.sessionID = 0
+	cs.connectedAt = time.Time{}
+	cs.mu.Unlock()
+}
+
+func (cs *clientSessionState) setConnected(mode, server string, hubID uint16, login string, sessionID uint32) {
+	cs.mu.Lock()
+	cs.state = "connected"
+	cs.mode = mode
+	cs.server = server
+	cs.hubID = hubID
+	cs.login = login
+	cs.sessionID = sessionID
+	cs.connectedAt = time.Now()
+	cs.mu.Unlock()
+}
+
+func (cs *clientSessionState) setReconnecting() {
+	cs.mu.Lock()
+	cs.state = "reconnecting"
+	cs.mode = ""
+	cs.server = ""
+	cs.sessionID = 0
+	cs.connectedAt = time.Time{}
+	cs.mu.Unlock()
+}
 
 func main() {
 	var cfgPath string
@@ -72,7 +124,10 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Detect 169.254.0.0/16 interfaces.
+	if cfg.StatusListen != "" {
+		go runClientStatusServer(ctx, cfg.StatusListen)
+	}
+
 	ifaces, err := bridge.DetectLinkLocal()
 	if err != nil {
 		log.Fatalf("bridge: detect interfaces: %v", err)
@@ -100,11 +155,13 @@ func main() {
 		if ctx.Err() != nil {
 			return
 		}
+		sessionState.setConnecting()
 		err := runSession(ctx, cfg, iface, framer)
 		if ctx.Err() != nil {
 			return
 		}
 		log.Printf("session ended: %v — reconnecting in %s", err, backoff)
+		sessionState.setReconnecting()
 		select {
 		case <-ctx.Done():
 			return
@@ -117,14 +174,17 @@ func main() {
 	}
 }
 
-// runSession dials the server (UDP first, TLS fallback), authenticates, runs the
-// bridge until the context is cancelled or an error occurs.
+// runSession dials the server, authenticates, runs the bridge, and returns on error.
 func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Interface, framer bridge.Framer) error {
 	tr, sessionID, sessionCipher, err := connectWithFallback(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer tr.Close()
+
+	// Record connected state for the status API.
+	sessionState.setConnected(tr.Mode(), cfg.Server, cfg.HubID, cfg.Login, sessionID)
+	log.Printf("session %d active via %s", sessionID, tr.Mode())
 
 	fecCfg := cfg.FEC.WithDefaults()
 
@@ -150,8 +210,8 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
 
-	// When connected via TLS, retry UDP every 5 minutes. A successful probe will
-	// cause a session cancel so the reconnect loop attempts UDP first next time.
+	// When connected via TLS, retry UDP every 5 minutes so we switch back as
+	// soon as the path clears.
 	if tr.Mode() == "tls" && cfg.Server != "" {
 		go func() {
 			t := time.NewTimer(5 * time.Minute)
@@ -196,12 +256,8 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 }
 
 // connectWithFallback attempts UDP connectivity using knock-and-dial, then falls back
-// to TLS/TCP. Each UDP attempt:
-//  1. Opens a UDP socket and sends cfg.UDP.KnockCount random-payload packets on it
-//     to prime NAT/firewall state (same 5-tuple as the subsequent auth frame).
-//  2. Tries to authenticate within 5 seconds on that same socket.
-//
-// If all cfg.UDP.Attempts cycles fail the function dials TLS on cfg.ServerTCP.
+// to TLS/TCP. Each UDP attempt sends knock packets on the same socket as the auth frame
+// so the NAT/firewall 5-tuple is identical for both. Returns an authenticated transport.
 func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transport.Transport, uint32, *crypto.Cipher, error) {
 	udpCfg := cfg.UDP.WithDefaults()
 
@@ -257,7 +313,6 @@ func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transpor
 }
 
 // authenticate sends AuthHello and waits for AuthOK or AuthError.
-// Returns the session ID and a Cipher keyed from the shared secret.
 func authenticate(ctx context.Context, tr transport.Transport, cfg config.ClientConfig) (uint32, *crypto.Cipher, error) {
 	pwHash := sha256.Sum256([]byte(cfg.Password))
 
@@ -311,8 +366,6 @@ func authenticate(ctx context.Context, tr transport.Transport, cfg config.Client
 	}
 }
 
-// wireHashHex returns hex-encoded SHA-256 of the password — the same value the
-// server sees as wireHex when it does hex.EncodeToString(hello.PWHash[:]).
 func wireHashHex(password string) string {
 	sum := sha256.Sum256([]byte(password))
 	const hextable = "0123456789abcdef"
@@ -324,9 +377,6 @@ func wireHashHex(password string) string {
 	return string(buf)
 }
 
-// recvLoop reads frames from the server, decrypts data and repair frames,
-// feeds them to the FEC pipe decoder, and forwards recovered frames to the
-// downstream channel. Returns on context cancellation or transport error.
 func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, out chan<- []byte) error {
 	var replay crypto.ReplayWindow
 	for {
@@ -387,12 +437,11 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 			}
 
 		case proto.FramePong:
-			// Keepalive acknowledged — nothing to do.
+			// keepalive ack
 		}
 	}
 }
 
-// sendFECData encrypts one data frame and sends it as a FrameData packet to the server.
 func sendFECData(tr transport.Transport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, pktIdx uint16, frame []byte) error {
 	encrypted, err := cipher.Seal(frame)
 	if err != nil {
@@ -408,7 +457,6 @@ func sendFECData(tr transport.Transport, sessionID uint32, hubID uint16, cipher 
 	return tr.Send(transport.Frame{Data: append(hdr, encrypted...)})
 }
 
-// sendFECRepair encrypts one repair symbol and sends it as a FrameRepair packet to the server.
 func sendFECRepair(tr transport.Transport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) error {
 	encrypted, err := cipher.Seal(data)
 	if err != nil {
@@ -424,10 +472,77 @@ func sendFECRepair(tr transport.Transport, sessionID uint32, hubID uint16, ciphe
 	return tr.Send(transport.Frame{Data: append(hdr, encrypted...)})
 }
 
-// sendPing sends a keepalive ping to the server. Errors are ignored because
-// pings are best-effort; the reconnect loop handles real connectivity loss.
 func sendPing(tr transport.Transport, sessionID uint32, hubID uint16) {
 	hdr := make([]byte, proto.HeaderSize)
 	proto.Header{Type: proto.FramePing, HubID: hubID, SessionID: sessionID}.Marshal(hdr)
 	_ = tr.Send(transport.Frame{Data: hdr})
+}
+
+// ── Status HTTP API ──────────────────────────────────────────────────────────
+
+type clientStatusResponse struct {
+	Version   string          `json:"version"`
+	Uptime    string          `json:"uptime"`
+	State     string          `json:"state"`
+	Session   *sessionDetails `json:"session,omitempty"`
+}
+
+type sessionDetails struct {
+	SessionID   uint32 `json:"session_id"`
+	Server      string `json:"server"`
+	HubID       uint16 `json:"hub_id"`
+	Login       string `json:"login"`
+	Mode        string `json:"mode"`
+	ConnectedAt string `json:"connected_at"`
+	Duration    string `json:"duration"`
+}
+
+func runClientStatusServer(ctx context.Context, addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/status", handleClientStatus)
+	srv := &http.Server{Addr: addr, Handler: mux}
+	go func() {
+		<-ctx.Done()
+		srv.Close()
+	}()
+	log.Printf("status API on http://%s/status", addr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("status server error: %v", err)
+	}
+}
+
+func handleClientStatus(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	sessionState.mu.RLock()
+	state := sessionState.state
+	mode := sessionState.mode
+	server := sessionState.server
+	hubID := sessionState.hubID
+	login := sessionState.login
+	sessionID := sessionState.sessionID
+	connectedAt := sessionState.connectedAt
+	startTime := sessionState.startTime
+	sessionState.mu.RUnlock()
+
+	resp := clientStatusResponse{
+		Version: version,
+		Uptime:  now.Sub(startTime).Truncate(time.Second).String(),
+		State:   state,
+	}
+	if state == "connected" {
+		resp.Session = &sessionDetails{
+			SessionID:   sessionID,
+			Server:      server,
+			HubID:       hubID,
+			Login:       login,
+			Mode:        mode,
+			ConnectedAt: connectedAt.UTC().Format(time.RFC3339),
+			Duration:    now.Sub(connectedAt).Truncate(time.Second).String(),
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.Encode(resp)
 }

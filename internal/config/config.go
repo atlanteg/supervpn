@@ -10,11 +10,12 @@ import (
 
 // ServerConfig is the server-side configuration.
 type ServerConfig struct {
-	Listen     string          `toml:"listen"`      // e.g. "0.0.0.0:5555"
-	ListenTCP  string          `toml:"listen_tcp"`  // TCP fallback, e.g. "0.0.0.0:443"
-	Hubs       []HubConfig     `toml:"hub"`
-	FEC        FECConfig       `toml:"fec"`
-	TLS        TLSServerConfig `toml:"tls"`
+	Listen       string          `toml:"listen"`        // e.g. "0.0.0.0:5555"
+	ListenTCP    string          `toml:"listen_tcp"`    // TCP fallback, e.g. "0.0.0.0:443"
+	StatusListen string          `toml:"status_listen"` // HTTP status API, e.g. "127.0.0.1:9090"
+	Hubs         []HubConfig     `toml:"hub"`
+	FEC          FECConfig       `toml:"fec"`
+	TLS          TLSServerConfig `toml:"tls"`
 }
 
 // HubConfig defines one hub instance.
@@ -32,14 +33,15 @@ type UserConfig struct {
 
 // ClientConfig is the client-side configuration.
 type ClientConfig struct {
-	Server    string          `toml:"server"`     // host:port UDP
-	ServerTCP string          `toml:"server_tcp"` // host:port TCP fallback
-	HubID     uint16          `toml:"hub_id"`
-	Login     string          `toml:"login"`
-	Password  string          `toml:"password"`
-	FEC       FECConfig       `toml:"fec"`
-	TLS       TLSClientConfig `toml:"tls"`
-	UDP       UDPConfig       `toml:"udp"`
+	Server       string          `toml:"server"`        // host:port UDP
+	ServerTCP    string          `toml:"server_tcp"`    // host:port TCP fallback
+	StatusListen string          `toml:"status_listen"` // HTTP status API, e.g. "127.0.0.1:9191"
+	HubID        uint16          `toml:"hub_id"`
+	Login        string          `toml:"login"`
+	Password     string          `toml:"password"`
+	FEC          FECConfig       `toml:"fec"`
+	TLS          TLSClientConfig `toml:"tls"`
+	UDP          UDPConfig       `toml:"udp"`
 	// Timeout is expressed as a string (e.g. "30s") and parsed manually to
 	// avoid TOML's lack of native time.Duration support.
 	Timeout string `toml:"timeout"`
