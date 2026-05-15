@@ -250,6 +250,7 @@ public static class NetCfgBridge {
 
         string holder;
         hr = lk.AcquireWriteLock(5000, "supervpn-client", out holder);
+        if ((uint)hr == 0x8004A020u) { cfg.Uninitialize(); return "NEED_REBOOT"; }
         if (hr != S_OK) { cfg.Uninitialize(); return "AcquireWriteLock failed (holder=" + (holder ?? "") + "): 0x" + hr.ToString("X8"); }
 
         try {
@@ -294,6 +295,9 @@ Write-Output $result
 	result := strings.TrimSpace(out)
 	if err != nil {
 		return fmt.Errorf("inetcfg: powershell error: %v: %s", err, result)
+	}
+	if result == "NEED_REBOOT" {
+		return fmt.Errorf("inetcfg: Windows requires a reboot before the network bridge can be created — please reboot and restart supervpn-client")
 	}
 	if result != "OK" {
 		return fmt.Errorf("inetcfg: %s", result)
