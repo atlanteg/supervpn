@@ -4,40 +4,50 @@
 
 Два бинарника: **сервер** (Linux) и **клиент** (Windows, macOS).
 
+## Скачать
+
+**[supervpn-dist.zip](https://github.com/atlanteg/supervpn-releases/releases/latest/download/supervpn-dist.zip)**
+— Linux сервер + Windows клиент + macOS клиент (arm64 / amd64), все конфиги и TAP-драйвер.
+
+Текущая версия: см. [releases](https://github.com/atlanteg/supervpn-releases/releases/latest).
+
 ---
 
 ## Как это работает
 
 ```
-[Клиент A — bridge mode]              [Сервер Linux]
-  169.254.x.x ──► WinTun/utun          UDP :5555
-       L2 frames  ──► FEC encode ──►   TLS :443 (fallback)
-                                            │
-                                         Hub 1 (L2 switch)
-                                            │
-                        ◄── FEC decode ◄─── │ ──► [Клиент B — direct mode]
-                                                    utun / WinTun (raw IP)
+[Клиент A]                          [Сервер Linux]
+  bridge mode:                        UDP :5555
+  169.254.x.x NIC ──► BPF/TAP        TLS :443 (fallback)
+  L2 frames ──► FEC encode ──►            │
+                                       Hub 1 (L2 switch)
+                          ◄── FEC decode ─┤
+                                          │
+                                    [Клиент B]
+                                      direct mode:
+                                      TUN «supervpn»
+                                      (назначить IP вручную)
 ```
 
 **Bridge mode** — клиент находит интерфейс с адресом `169.254.0.0/16` (APIPA) и прозрачно
-форвардит с него весь L2-трафик в хаб. Никаких ручных маршрутов.
+форвардит весь L2-трафик в хаб. Никаких ручных маршрутов. На macOS использует BPF (root),
+на Windows — tap-windows6, на Linux — kernel TAP.
 
-**Direct mode** — если `169.254`-интерфейса нет, клиент создаёт собственный TUN-адаптер
-(`supervpn` по умолчанию) и подключается к хабу напрямую, получая полный L2-доступ к нему.
+**Direct mode** — если 169.254-интерфейса нет, клиент открывает TUN-адаптер
+(`supervpn` по умолчанию). После запуска назначить IP вручную.
 
-**Hub** — изолированный L2-коммутатор на сервере: учит MAC-адреса, unicast/broadcast,
-трафик между хабами не смешивается.
+**Hub** — изолированный L2-коммутатор: учит MAC-адреса, делает unicast/broadcast/flood.
+Несколько хабов на одном сервере не смешиваются.
 
-**FEC** — Reed-Solomon над GF(2⁸): на каждые K пакетов добавляется R repair-символов,
-любые R потерь в блоке восстанавливаются без retransmit. По умолчанию K=20, R=6.
+**FEC** — Reed-Solomon над GF(2⁸): на K пакетов добавляется R repair-символов, любые ≤R
+потерь в блоке восстанавливаются без retransmit. По умолчанию K=20, R=6.
+Streaming delivery: пакеты до пробела возвращаются немедленно, не ждут весь блок.
 
-**Transport** — UDP primary; при недоступности UDP — автоматический fallback на TLS 1.3/TCP
-с configurable SNI (по умолчанию — имя хоста сервера). Каждые 5 минут TLS-клиент
-зондирует UDP и переключается обратно при появлении пути.
+**Transport** — UDP primary; при недоступности — автоматический fallback на TLS 1.3/TCP
+(configurable SNI). Каждые 5 минут TLS-клиент зондирует UDP и переключается обратно.
 
-**Knock-and-dial** — перед каждой UDP auth-попыткой клиент отправляет N случайных UDP-пакетов
-с того же сокета (тот же 5-tuple), прайминг NAT/firewall-состояние. Затем несколько
-knock→auth циклов, и только потом fallback на TLS.
+**Knock-and-dial** — перед каждой UDP auth-попыткой клиент отправляет N случайных пакетов
+с того же сокета (тот же 5-tuple), праймируя NAT/firewall. Затем несколько knock→auth циклов.
 
 ---
 
@@ -46,45 +56,48 @@ knock→auth циклов, и только потом fallback на TLS.
 | | |
 |---|---|
 | Прозрачный L2 мост | bridge mode не требует настройки IP или маршрутов |
-| FEC без retransmit | восстанавливает до R потерь в блоке без задержки retransmit |
+| FEC без retransmit | восстанавливает до R потерь в блоке, стриминг без ожидания |
 | UDP + TLS fallback | работает через ТСПУ, корпоративные firewall |
-| Knock-and-dial | прайминг NAT перед auth одним сокетом |
-| AES-128-GCM | per-session random salt, счётчик-based nonce, replay window 512 |
+| Knock-and-dial | праймирование NAT перед auth одним сокетом |
+| AES-128-GCM | per-session random salt, counter-based nonce, replay window 512 |
 | Multi-hub | независимые L2-домены на одном сервере |
 | Kick + blocklist | принудительный дисконнект через HTTP API с блокировкой на 5 минут |
 | HTTP status API | JSON /status на сервере и клиенте |
-| macOS utun | нативная поддержка без сторонних драйверов |
+| Версии b{N} | автоинкремент по числу коммитов, видно в логах и /status |
 
 ---
 
 ## Платформы
 
-| Компонент | Платформа | Статус |
-|---|---|---|
-| `supervpn-server` | Linux amd64 | готово |
-| `supervpn-client` | Windows amd64 | готово (WinTun) |
-| `supervpn-client` | macOS amd64/arm64 | готово (utun) |
+| Компонент | Платформа | Адаптер | Статус |
+|---|---|---|---|
+| `supervpn-server` | Linux amd64 | — | готово |
+| `supervpn-client` | Windows amd64 | WinTun (direct) / tap-windows6 (bridge) | готово |
+| `supervpn-client` | macOS arm64/amd64 | utun (direct) / BPF (bridge, root) | готово |
 
 ---
 
 ## Быстрый старт
 
-### 1. Сервер
+### 1. Сервер (Linux)
 
-Генерируем hash пароля:
+Генерируем bcrypt hash пароля:
 
 ```bash
-supervpn-server hashpw mypassword
+./supervpn-server hashpw mypassword
 # $2a$10$...
 ```
 
-Создаём конфиг:
+Конфиг `/etc/supervpn/server.toml`:
 
 ```toml
-# /etc/supervpn/server.toml
 listen        = "0.0.0.0:5555"
 listen_tcp    = "0.0.0.0:443"
 status_listen = "127.0.0.1:9090"
+
+[fec]
+k = 20
+r = 6
 
 [[hub]]
 id   = 1
@@ -102,7 +115,9 @@ name = "office"
 Запуск:
 
 ```bash
-supervpn-server -config /etc/supervpn/server.toml
+./supervpn-server -config /etc/supervpn/server.toml
+# supervpn-server b76 starting: UDP=0.0.0.0:5555 hubs=1
+# listening TLS/TCP 0.0.0.0:443
 ```
 
 ### 2. Клиент
@@ -115,32 +130,40 @@ status_listen = "127.0.0.1:9191"
 hub_id        = 1
 login         = "alice"
 password      = "mypassword"
-# tun_name    = "supervpn"   # имя TUN в direct mode (если нет 169.254-интерфейса)
+
+# transport = "auto"   # auto (default) | udp | tcp
 
 [tls]
-sni = "microsoft.com"   # SNI в TLS ClientHello — имитирует HTTPS
+sni = "microsoft.com"   # SNI в TLS ClientHello
 
 [udp]
-knock_count = 3    # knock-пакетов перед каждой auth-попыткой
-knock_size  = 16   # размер каждого knock-пакета
-attempts    = 3    # попыток UDP перед fallback на TLS
+knock_count = 3
+knock_size  = 16
+attempts    = 3
 ```
 
 ```bash
 # Windows
 supervpn-client.exe -config client.toml
 
-# macOS
+# macOS (bridge mode требует root)
 sudo supervpn-client -config client.toml
 
-# Без файла конфига
-supervpn-client -server vpn.example.com:5555 -hub 1 -login alice -password mypassword
+# Без конфига
+supervpn-client -server vpn.example.com:5555 -login alice -password mypassword
+
+# Форсировать TLS (пропустить UDP пробы)
+supervpn-client -config client.toml -transport tcp
+
+# UDP only (без fallback)
+supervpn-client -config client.toml -transport udp
 ```
 
-При старте клиент пишет в лог режим работы:
+При старте клиент пишет режим работы:
 
 ```
-bridge mode: link-local interface Ethernet 2 (00:11:22:33:44:55)
+supervpn-client b76: server=vpn.example.com:5555 hub=1 login=alice
+bridge mode: link-local interface en0 (00:11:22:33:44:55), adapter="en0" method=netbridge
 # или
 direct mode: no 169.254.x.x interface found, opening TUN "supervpn"
 direct mode: assign an IP inside the hub subnet to "supervpn" after startup
@@ -152,53 +175,66 @@ direct mode: assign an IP inside the hub subnet to "supervpn" after startup
 
 ### Сервер (`server.toml`)
 
-| Ключ | Тип | Описание |
-|---|---|---|
-| `listen` | string | UDP адрес, напр. `0.0.0.0:5555` |
-| `listen_tcp` | string | TLS/TCP адрес, напр. `0.0.0.0:443` |
-| `status_listen` | string | HTTP status API, напр. `127.0.0.1:9090` |
-| `[[hub]]` | — | Секция хаба (можно несколько) |
-| `hub.id` | uint16 | Уникальный ID хаба |
-| `hub.name` | string | Имя хаба (для логов/API) |
-| `[[hub.user]]` | — | Пользователь в хабе |
-| `hub.user.login` | string | Логин |
-| `hub.user.password_hash` | string | bcrypt hash (`supervpn-server hashpw`) |
-| `[fec]` | — | Forward Error Correction |
-| `fec.k` | int | Data-пакетов в блоке (default 20) |
-| `fec.r` | int | Repair-пакетов в блоке (default 6) |
-| `[tls]` | — | TLS сертификат |
-| `tls.cert_file` | string | PEM cert (если пусто — self-signed) |
-| `tls.key_file` | string | PEM key |
+| Ключ | Тип | Default | Описание |
+|---|---|---|---|
+| `listen` | string | — | UDP адрес, напр. `0.0.0.0:5555` |
+| `listen_tcp` | string | — | TLS/TCP адрес, напр. `0.0.0.0:443` |
+| `status_listen` | string | — | HTTP status API, напр. `127.0.0.1:9090` |
+| `fec.k` | int | 20 | Data-пакетов в FEC блоке |
+| `fec.r` | int | 6 | Repair-пакетов в FEC блоке |
+| `tls.cert_file` | string | — | PEM cert (если пусто — auto self-signed) |
+| `tls.key_file` | string | — | PEM key |
+| `[[hub]]` | — | — | Секция хаба (можно несколько) |
+| `hub.id` | uint16 | — | Уникальный ID хаба |
+| `hub.name` | string | — | Имя хаба |
+| `[[hub.user]]` | — | — | Пользователь хаба |
+| `hub.user.login` | string | — | Логин |
+| `hub.user.password_hash` | string | — | bcrypt hash (`hashpw`) |
 
 ### Клиент (`client.toml`)
 
-| Ключ | Тип | Описание |
-|---|---|---|
-| `server` | string | UDP адрес сервера |
-| `server_tcp` | string | TLS/TCP адрес сервера (fallback) |
-| `status_listen` | string | HTTP status API клиента |
-| `hub_id` | uint16 | ID хаба |
-| `login` | string | Логин |
-| `password` | string | Пароль |
-| `tun_name` | string | Имя TUN в direct mode (default `supervpn`) |
-| `[fec]` | — | FEC параметры (должны совпадать с сервером) |
-| `[tls].sni` | string | SNI в ClientHello (default = хост сервера) |
-| `[udp].knock_count` | int | Knock-пакетов перед auth (default 3) |
-| `[udp].knock_size` | int | Размер knock-пакета в байтах (default 16) |
-| `[udp].attempts` | int | Попыток UDP перед TLS fallback (default 3) |
+| Ключ | Тип | Default | Описание |
+|---|---|---|---|
+| `server` | string | — | UDP адрес сервера |
+| `server_tcp` | string | `host:443` | TLS/TCP адрес (если не задан — `host` из `server` + `:443`) |
+| `hub_id` | uint16 | 1 | ID хаба |
+| `login` | string | — | Логин |
+| `password` | string | — | Пароль |
+| `transport` | string | `auto` | `auto` / `udp` / `tcp` |
+| `tun_name` | string | `supervpn` | Имя TUN в direct mode |
+| `status_listen` | string | — | HTTP status API клиента |
+| `fec.k` | int | 20 | Data-пакетов (должно совпадать с сервером) |
+| `fec.r` | int | 6 | Repair-пакетов (должно совпадать с сервером) |
+| `tls.sni` | string | хост сервера | SNI в ClientHello |
+| `udp.knock_count` | int | 3 | Knock-пакетов перед auth |
+| `udp.knock_size` | int | 16 | Размер knock-пакета (байт) |
+| `udp.attempts` | int | 3 | Попыток UDP перед TLS fallback |
+
+**Флаги командной строки** перекрывают конфиг:
+
+```
+-config       путь к .toml
+-server       UDP адрес (host:port)
+-server-tcp   TCP адрес (host:port)
+-hub          ID хаба
+-login        логин
+-password     пароль
+-transport    auto | udp | tcp
+```
 
 ---
 
 ## HTTP Status API
 
-### Сервер: `GET http://127.0.0.1:9090/status`
+### `GET http://127.0.0.1:9090/status` (сервер)
 
 ```json
 {
-  "version": "v1.0.0",
+  "version": "b76",
   "uptime": "2h15m30s",
   "udp_listen": "0.0.0.0:5555",
   "tcp_listen": "0.0.0.0:443",
+  "tcp_listener_up": true,
   "hubs": [
     {
       "id": 1,
@@ -211,24 +247,27 @@ direct mode: assign an IP inside the hub subnet to "supervpn" after startup
           "mode": "udp",
           "connected_at": "2026-05-15T10:00:00Z",
           "last_seen": "2026-05-15T12:14:58Z",
-          "duration": "2h14m58s"
+          "duration": "2h14m58s",
+          "frames_rx": 1024,
+          "frames_tx": 980,
+          "hub_send_calls": 1024
         }
       ]
     }
-  ],
-  "blocked": {
-    "bob": "2026-05-15T12:20:00Z"
-  }
+  ]
 }
 ```
 
-Поле `blocked` появляется, если есть кикнутые логины (с таймстампом до которого заблокированы).
+`tcp_listener_up` — `true` если TLS/TCP listener реально поднялся (а не только задан в конфиге).
+`frames_rx` — Ethernet фреймов получено от клиента и отправлено в hub.
+`frames_tx` — Ethernet фреймов отправлено клиенту из hub.
+`hub_send_calls` — сколько раз hub вызвал Send для этого клиента (до FEC-кодирования).
 
-### Клиент: `GET http://127.0.0.1:9191/status`
+### `GET http://127.0.0.1:9191/status` (клиент)
 
 ```json
 {
-  "version": "v1.0.0",
+  "version": "b76",
   "uptime": "45m10s",
   "state": "connected",
   "session": {
@@ -243,36 +282,38 @@ direct mode: assign an IP inside the hub subnet to "supervpn" after startup
 }
 ```
 
-`state`: `starting` | `connecting` | `connected` | `reconnecting`  
+`state`: `starting` | `connecting` | `connected` | `reconnecting`
 `mode`: `udp` | `tls`
 
-### Kick: `POST http://127.0.0.1:9090/api/hubs/{hub_id}/kick/{session_id}`
+### `POST http://127.0.0.1:9090/api/hubs/{hub_id}/kick/{session_id}`
 
 ```bash
 curl -X POST http://127.0.0.1:9090/api/hubs/1/kick/3141592653
 # {"status":"ok","session_id":3141592653,"login":"alice"}
 ```
 
-После kick логин блокируется на 5 минут — клиент не сможет переподключиться.
+Логин блокируется на 5 минут после kick.
 
 ---
 
 ## Сборка
 
-```bash
-# Требуется Go 1.22+
-make build            # server (linux/amd64) + client (windows/amd64) → dist/
-make server           # только сервер
-make client-windows   # только Windows-клиент
-make client-darwin    # только macOS-клиент
-make test             # тесты (с -race)
-make clean            # удалить dist/
+Требуется Go 1.22+.
 
-# Версия
-make build VERSION=v1.2.3
+```bash
+make build          # все платформы → dist/
+make server         # только Linux сервер
+make client-windows # только Windows клиент
+make client-darwin-arm64   # macOS Apple Silicon
+make client-darwin-amd64   # macOS Intel
+make test           # go test -race ./...
+make zip            # собрать supervpn-dist.zip
+make release        # build + zip + публикация в GitHub Releases
 ```
 
-### Cross-compile вручную
+Версия (`b{N}`) задаётся автоматически по числу коммитов в git — не нужно проставлять вручную.
+
+### Вручную
 
 ```bash
 # Сервер
@@ -281,53 +322,25 @@ GOOS=linux GOARCH=amd64 go build -o supervpn-server ./cmd/supervpn-server
 # Клиент Windows
 GOOS=windows GOARCH=amd64 go build -o supervpn-client.exe ./cmd/supervpn-client
 
-# Клиент macOS (Intel)
-GOOS=darwin GOARCH=amd64 go build -o supervpn-client-darwin ./cmd/supervpn-client
-
-# Клиент macOS (Apple Silicon)
-GOOS=darwin GOARCH=arm64 go build -o supervpn-client-darwin-arm64 ./cmd/supervpn-client
+# Клиент macOS
+GOOS=darwin GOARCH=arm64 go build -o supervpn-client-arm64 ./cmd/supervpn-client
+GOOS=darwin GOARCH=amd64 go build -o supervpn-client-amd64 ./cmd/supervpn-client
 ```
 
 ---
 
-## Deploy
-
-### systemd (Linux сервер)
+## Deploy (systemd)
 
 ```bash
-# Создать пользователя
-useradd -r -s /sbin/nologin supervpn
-
-# Скопировать файлы
-install -o supervpn -g supervpn /path/to/supervpn-server /usr/local/bin/supervpn-server
-install -d -o supervpn /etc/supervpn
-install -o supervpn /path/to/server.toml /etc/supervpn/server.toml
-
-# Установить unit
-cp deploy/supervpn-server.service /etc/systemd/system/
+install -o root -g root -m 755 supervpn-server /usr/local/bin/
+install -d /etc/supervpn
+install -m 640 server.toml /etc/supervpn/server.toml
+cp supervpn-server.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now supervpn-server
 ```
 
-### Docker
-
-```bash
-docker build -t supervpn-server .
-docker run -d \
-  -v /etc/supervpn:/etc/supervpn:ro \
-  -p 5555:5555/udp \
-  -p 443:443/tcp \
-  --cap-drop=ALL \
-  supervpn-server
-```
-
-### GitHub Releases
-
-При пуше тега `v*` CI автоматически публикует 4 бинарника:
-- `supervpn-server-linux-amd64`
-- `supervpn-client-windows-amd64.exe`
-- `supervpn-client-darwin-amd64`
-- `supervpn-client-darwin-arm64`
+Файл unit: `dist/linux/supervpn-server.service`.
 
 ---
 
@@ -335,17 +348,15 @@ docker run -d \
 
 **Шифрование:** AES-128-GCM. Каждый пакет: `[peer_id:4][counter:8][nonce:12][ciphertext+tag]`.
 
-**Nonce:** `counter(8) || salt(4)`. `salt` — случайные 4 байта, генерируются при создании
-каждой сессии. Гарантирует уникальность nonce даже при коллизии session ID.
+**Nonce:** `counter(8) || salt(4)`. `salt` — случайные 4 байта на сессию. Гарантирует
+уникальность nonce при коллизии session ID.
 
-**Ключ сессии:** HKDF-SHA256 из `SHA256(password) || hub_name || login`. Уникален для каждой
-пары (пользователь, хаб).
+**Ключ:** HKDF-SHA256 из `SHA256(password) + hub_name + login`. Уникален для каждой пары
+(пользователь, хаб).
 
-**Replay protection:** sliding window 512 пакетов. Повторные пакеты с уже виденным counter
-отбрасываются.
+**Wire auth:** на сервер передаётся `hex(SHA256(password))`, хранится `bcrypt(wire_hash)`.
 
-**Аутентификация:** bcrypt hash хранится на сервере. По wire передаётся `SHA256(password)`
-в hex (не сам пароль).
+**Replay protection:** sliding window 512 пакетов.
 
 ---
 
@@ -365,16 +376,12 @@ internal/
   auth/                — bcrypt/SHA-256 аутентификация
   config/              — TOML конфигурация
 pkg/
-  tun/                 — TAP (Linux), WinTun (Windows), utun (macOS)
-configs/               — примеры конфигурации
-deploy/                — systemd unit
+  tun/                 — TAP (Linux), WinTun (Windows), BPF (macOS bridge), utun (macOS direct)
+dist/
+  linux/               — сервер + конфиги + systemd unit
+  windows/             — клиент + tap-driver + wintun.dll + конфиги
+  macos/               — клиент (arm64 + amd64) + конфиги
 ```
-
----
-
-## Роадмап
-
-См. [ROADMAP.md](ROADMAP.md).
 
 ---
 
