@@ -31,9 +31,21 @@ func ensureBridge(_ config.BridgeConfig, physicalNIC, tapName string) error {
 	}
 
 	log.Printf("bridge: creating Windows Network Bridge (%q ↔ %q) ...", physicalNIC, tapName)
-	if err := bindMsBridge(physicalNIC, tapName); err != nil {
-		return fmt.Errorf("%w — fallback: ncpa.cpl → select both adapters → Bridge Connections", err)
+
+	psErr := bindMsBridge(physicalNIC, tapName)
+	if psErr != nil {
+		log.Printf("bridge: PowerShell ms_bridge bind failed: %v", psErr)
 	}
+
+	inetcfgErr := bindMsBridgeINetCfg(physicalNIC, tapName)
+	if inetcfgErr != nil {
+		log.Printf("bridge: INetCfg ms_bridge bind failed: %v", inetcfgErr)
+	}
+
+	if psErr != nil && inetcfgErr != nil {
+		return fmt.Errorf("all bridge-creation methods failed (ps: %v; inetcfg: %v) — fallback: ncpa.cpl → select both adapters → Bridge Connections", psErr, inetcfgErr)
+	}
+
 	log.Printf("bridge: waiting for Network Bridge adapter to come up ...")
 	time.Sleep(3 * time.Second)
 	if name := findWinBridge(); name != "" {
@@ -137,6 +149,154 @@ if (Get-Command Add-NetAdapterBinding -ErrorAction SilentlyContinue) {
 	stateOut2, _ := powershell(stateScript)
 	log.Printf("bridge: after enable — %s", strings.TrimSpace(stateOut2))
 
+	return nil
+}
+
+// bindMsBridgeINetCfg binds ms_bridge to nic and tap using the INetCfg COM API
+// (the same API ncpa.cpl uses internally). It compiles a small C# helper at
+// runtime via PowerShell Add-Type so there is no cgo or extra DLL dependency.
+func bindMsBridgeINetCfg(nic, tap string) error {
+	script := fmt.Sprintf(`
+$ErrorActionPreference = "Stop"
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+[ComImport, Guid("C0E8AE93-306E-11D1-AACF-00805FC1270E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface INetCfg {
+    [PreserveSig] int Initialize(IntPtr hwndParent);
+    [PreserveSig] int Uninitialize();
+    [PreserveSig] int Apply();
+    [PreserveSig] int Cancel();
+    [PreserveSig] int EnumComponents([In] ref Guid pguidClass, out IEnumNetCfgComponent ppenum);
+    [PreserveSig] int FindComponent([MarshalAs(UnmanagedType.LPWStr)] string pszwInfId, out INetCfgComponent pComponent);
+    [PreserveSig] int QueryNetCfgClass([In] ref Guid pguidClass, [In] ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out object ppvObject);
+}
+
+[ComImport, Guid("C0E8AE9F-306E-11D1-AACF-00805FC1270E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface INetCfgLock {
+    [PreserveSig] int AcquireWriteLock(uint cmsTimeout, [MarshalAs(UnmanagedType.LPWStr)] string pszwClientDescription, [MarshalAs(UnmanagedType.LPWStr)] out string ppszwClientDescription);
+    [PreserveSig] int ReleaseWriteLock();
+    [PreserveSig] int IsWriteLocked([MarshalAs(UnmanagedType.LPWStr)] out string ppszwClientDescription);
+}
+
+[ComImport, Guid("C0E8AE99-306E-11D1-AACF-00805FC1270E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface INetCfgComponent {
+    [PreserveSig] int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string ppszwDisplayName);
+    [PreserveSig] int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string pszwDisplayName);
+    [PreserveSig] int GetHelpText([MarshalAs(UnmanagedType.LPWStr)] out string ppszwHelpText);
+    [PreserveSig] int GetId([MarshalAs(UnmanagedType.LPWStr)] out string ppszwId);
+    [PreserveSig] int GetCharacteristics(out uint pdwCharacteristics);
+    [PreserveSig] int GetInstanceGuid(out Guid pGuid);
+    [PreserveSig] int GetPnpDevNodeId([MarshalAs(UnmanagedType.LPWStr)] out string ppszwDevNodeId);
+    [PreserveSig] int GetClassGuid(out Guid pGuid);
+    [PreserveSig] int GetBindName([MarshalAs(UnmanagedType.LPWStr)] out string ppszwBindName);
+    [PreserveSig] int GetDeviceStatus(out uint puStatus);
+    [PreserveSig] int OpenParamKey(out IntPtr phkey);
+    [PreserveSig] int RaisePropertyUi(IntPtr hwndParent, uint dwFlags, [MarshalAs(UnmanagedType.Interface)] object pvReserved);
+}
+
+[ComImport, Guid("C0E8AE9B-306E-11D1-AACF-00805FC1270E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface INetCfgComponentBindings {
+    [PreserveSig] int BindTo([MarshalAs(UnmanagedType.Interface)] INetCfgComponent pnccItem);
+    [PreserveSig] int UnbindFrom([MarshalAs(UnmanagedType.Interface)] INetCfgComponent pnccItem);
+    [PreserveSig] int SupportsBindingInterface(uint dwFlags, [MarshalAs(UnmanagedType.LPWStr)] string pszwInterfaceName);
+    [PreserveSig] int IsBoundTo([MarshalAs(UnmanagedType.Interface)] INetCfgComponent pnccItem);
+    [PreserveSig] int IsBindableTo([MarshalAs(UnmanagedType.Interface)] INetCfgComponent pnccItem);
+    [PreserveSig] int EnumBindingPaths(uint dwFlags, out IntPtr ppIEnumNetCfgBindingPath);
+    [PreserveSig] int MoveBefore([MarshalAs(UnmanagedType.Interface)] INetCfgComponent pnccItem1, [MarshalAs(UnmanagedType.Interface)] INetCfgComponent pnccItem2);
+    [PreserveSig] int MoveAfter([MarshalAs(UnmanagedType.Interface)] INetCfgComponent pnccItem1, [MarshalAs(UnmanagedType.Interface)] INetCfgComponent pnccItem2);
+}
+
+[ComImport, Guid("C0E8AE90-306E-11D1-AACF-00805FC1270E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IEnumNetCfgComponent {
+    [PreserveSig] int Next(uint celt, out INetCfgComponent rgelt, out uint pceltFetched);
+    [PreserveSig] int Skip(uint celt);
+    [PreserveSig] int Reset();
+    [PreserveSig] int Clone(out IEnumNetCfgComponent ppenum);
+}
+
+[ComImport, Guid("5B035261-40F9-11D1-AAEC-00805FC1270E")]
+class CNetCfg {}
+
+public static class NetCfgBridge {
+    static readonly Guid GUID_DEVCLASS_NET = new Guid("4D36E972-E325-11CE-BFC1-08002BE10318");
+    const int S_OK = 0;
+    const uint ERROR_ALREADY_EXISTS = 0x800700B7;
+
+    static INetCfgComponent FindAdapter(INetCfg cfg, string friendlyName) {
+        IEnumNetCfgComponent en;
+        int hr = cfg.EnumComponents(ref GUID_DEVCLASS_NET, out en);
+        if (hr != S_OK) return null;
+        INetCfgComponent comp;
+        uint fetched;
+        while (en.Next(1, out comp, out fetched) == S_OK && fetched == 1) {
+            string name;
+            comp.GetDisplayName(out name);
+            if (string.Equals(name, friendlyName, StringComparison.OrdinalIgnoreCase))
+                return comp;
+        }
+        return null;
+    }
+
+    public static string Run(string nicName, string tapName) {
+        INetCfg cfg = (INetCfg)new CNetCfg();
+        int hr = cfg.Initialize(IntPtr.Zero);
+        if (hr != S_OK) return "Initialize failed: 0x" + hr.ToString("X8");
+
+        INetCfgLock lk = cfg as INetCfgLock;
+        if (lk == null) { cfg.Uninitialize(); return "INetCfgLock QI failed"; }
+
+        string holder;
+        hr = lk.AcquireWriteLock(5000, "supervpn-client", out holder);
+        if (hr != S_OK) { cfg.Uninitialize(); return "AcquireWriteLock failed (holder=" + (holder ?? "") + "): 0x" + hr.ToString("X8"); }
+
+        try {
+            INetCfgComponent bridge;
+            hr = cfg.FindComponent("ms_bridge", out bridge);
+            if (hr != S_OK) return "FindComponent ms_bridge failed: 0x" + hr.ToString("X8");
+
+            INetCfgComponentBindings bindings = bridge as INetCfgComponentBindings;
+            if (bindings == null) return "INetCfgComponentBindings QI failed";
+
+            INetCfgComponent nicComp = FindAdapter(cfg, nicName);
+            if (nicComp == null) return "adapter not found: " + nicName;
+
+            INetCfgComponent tapComp = FindAdapter(cfg, tapName);
+            if (tapComp == null) return "adapter not found: " + tapName;
+
+            hr = bindings.BindTo(nicComp);
+            if (hr != S_OK && (uint)hr != ERROR_ALREADY_EXISTS)
+                return "BindTo(" + nicName + ") failed: 0x" + hr.ToString("X8");
+
+            hr = bindings.BindTo(tapComp);
+            if (hr != S_OK && (uint)hr != ERROR_ALREADY_EXISTS)
+                return "BindTo(" + tapName + ") failed: 0x" + hr.ToString("X8");
+
+            hr = cfg.Apply();
+            if (hr != S_OK) return "Apply failed: 0x" + hr.ToString("X8");
+
+            return "OK";
+        } finally {
+            lk.ReleaseWriteLock();
+            cfg.Uninitialize();
+        }
+    }
+}
+'@ -Language CSharp
+
+$result = [NetCfgBridge]::Run(%s, %s)
+Write-Output $result
+`, psSingleQuote(nic), psSingleQuote(tap))
+
+	out, err := powershell(script)
+	result := strings.TrimSpace(out)
+	if err != nil {
+		return fmt.Errorf("inetcfg: powershell error: %v: %s", err, result)
+	}
+	if result != "OK" {
+		return fmt.Errorf("inetcfg: %s", result)
+	}
 	return nil
 }
 
