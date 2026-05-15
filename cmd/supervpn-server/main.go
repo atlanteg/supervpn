@@ -34,6 +34,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/hub"
 	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/transport"
+	"github.com/atlanteg/supervpn/internal/update"
 )
 
 var version = "dev"
@@ -60,6 +61,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+
+	update.CheckAndUpdate(version, update.AssetServer)
 
 	log.Printf("supervpn-server %s starting: UDP=%s hubs=%d", version, cfg.Listen, len(cfg.Hubs))
 

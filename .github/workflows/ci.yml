@@ -70,12 +70,25 @@ jobs:
       # Only publish a release on direct pushes to main (not on PRs).
       # Requires a repository secret GH_PAT — a Personal Access Token with
       # repo scope on atlanteg/supervpn-releases.
+      - name: Prepare release assets
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          cp dist/linux/supervpn-server supervpn-server
+          cp dist/windows/supervpn-client.exe supervpn-client-windows-amd64.exe
+          cp dist/macos/supervpn-client-amd64 supervpn-client-darwin-amd64
+          cp dist/macos/supervpn-client-arm64 supervpn-client-darwin-arm64
+
       - name: Publish release to supervpn-releases
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          gh release create ${{ steps.ver.outputs.ver }} supervpn-dist.zip \
+          gh release create ${{ steps.ver.outputs.ver }} \
+            supervpn-dist.zip \
+            supervpn-server \
+            supervpn-client-windows-amd64.exe \
+            supervpn-client-darwin-amd64 \
+            supervpn-client-darwin-arm64 \
             --repo atlanteg/supervpn-releases \
             --title "supervpn ${{ steps.ver.outputs.ver }}" \
             --notes "Build ${{ steps.ver.outputs.ver }} — commit $(git rev-parse --short HEAD)" \

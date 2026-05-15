@@ -35,6 +35,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/fec"
 	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/transport"
+	"github.com/atlanteg/supervpn/internal/update"
 	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
@@ -227,6 +228,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+
+	update.CheckAndUpdate(version, update.AssetForClient())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
