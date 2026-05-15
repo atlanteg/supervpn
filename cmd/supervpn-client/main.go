@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -252,6 +253,11 @@ func main() {
 	}
 }
 
+const (
+	pingInterval    = 25 * time.Second
+	keepaliveTimeout = 75 * time.Second // 3 missed pongs → reconnect
+)
+
 // runSession dials the server, authenticates, runs the bridge, and returns on error.
 func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Interface, framer bridge.Framer) error {
 	tr, sessionID, sessionCipher, err := connectWithFallback(ctx, cfg)
@@ -265,6 +271,11 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	log.Printf("session %d active via %s", sessionID, tr.Mode())
 
 	fecCfg := cfg.FEC.WithDefaults()
+
+	// lastPong is updated by recvLoop each time a pong arrives.
+	// Initialised to now so the first ping cycle doesn't immediately time out.
+	var lastPong atomic.Int64
+	lastPong.Store(time.Now().UnixNano())
 
 	pipe, err := fec.NewPipe(
 		fecCfg.K,
@@ -311,10 +322,10 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 
 	recvErr := make(chan error, 1)
 	go func() {
-		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, downstream)
+		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, downstream, &lastPong)
 	}()
 
-	pingTick := time.NewTicker(25 * time.Second)
+	pingTick := time.NewTicker(pingInterval)
 	defer pingTick.Stop()
 
 	for {
@@ -329,6 +340,10 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 			return fmt.Errorf("recv: %w", err)
 		case <-pingTick.C:
 			sendPing(tr, sessionID, cfg.HubID)
+			since := time.Since(time.Unix(0, lastPong.Load()))
+			if since > keepaliveTimeout {
+				return fmt.Errorf("keepalive timeout: no pong for %s", since.Truncate(time.Second))
+			}
 		}
 	}
 }
@@ -393,7 +408,7 @@ func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transpor
 }
 
 // resolveTCPAddr returns the TCP address to use. Uses server_tcp from config if set,
-// otherwise derives host:4443 from the UDP server address.
+// otherwise derives host:443 from the UDP server address.
 func resolveTCPAddr(cfg config.ClientConfig) string {
 	if cfg.ServerTCP != "" {
 		return cfg.ServerTCP
@@ -405,7 +420,7 @@ func resolveTCPAddr(cfg config.ClientConfig) string {
 	if err != nil {
 		return ""
 	}
-	return net.JoinHostPort(host, "4443")
+	return net.JoinHostPort(host, "443")
 }
 
 func connectTLS(ctx context.Context, cfg config.ClientConfig, tcpAddr string) (transport.Transport, uint32, *crypto.Cipher, error) {
@@ -496,7 +511,7 @@ func wireHashHex(password string) string {
 	return string(buf)
 }
 
-func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, out chan<- []byte) error {
+func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, out chan<- []byte, lastPong *atomic.Int64) error {
 	var replay crypto.ReplayWindow
 	for {
 		f, err := tr.Recv(ctx)
@@ -556,7 +571,7 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 			}
 
 		case proto.FramePong:
-			// keepalive ack
+			lastPong.Store(time.Now().UnixNano())
 		}
 	}
 }

@@ -6,14 +6,18 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 )
 
 const tcpMaxFrame = 65535
 
 // TCPTransport wraps a single TCP connection with length-prefixed framing.
 // Frame on wire: [length: 2 big-endian][data: length bytes]
+// mu serialises Send: the hub goroutine and recv loop may call Send concurrently,
+// and two separate Write calls would interleave their bytes, corrupting the stream.
 type TCPTransport struct {
 	conn net.Conn
+	mu   sync.Mutex
 }
 
 // DialTCP connects to a TCP server at addr and returns a TCPTransport.
@@ -31,19 +35,18 @@ func WrapTCP(conn net.Conn) *TCPTransport {
 }
 
 // Send writes a length-prefixed frame to the TCP connection.
+// Single Write call keeps header and body in one TLS record and is safe for
+// concurrent callers (hub goroutine + recv loop both write to the same conn).
 func (t *TCPTransport) Send(f Frame) error {
 	if len(f.Data) > tcpMaxFrame {
 		return fmt.Errorf("transport/tcp: frame too large (%d)", len(f.Data))
 	}
-	var hdr [2]byte
-	binary.BigEndian.PutUint16(hdr[:], uint16(len(f.Data)))
-	if _, err := t.conn.Write(hdr[:]); err != nil {
-		return err
-	}
-	if len(f.Data) == 0 {
-		return nil
-	}
-	_, err := t.conn.Write(f.Data)
+	buf := make([]byte, 2+len(f.Data))
+	binary.BigEndian.PutUint16(buf[:2], uint16(len(f.Data)))
+	copy(buf[2:], f.Data)
+	t.mu.Lock()
+	_, err := t.conn.Write(buf)
+	t.mu.Unlock()
 	return err
 }
 
