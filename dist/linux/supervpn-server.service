@@ -1,0 +1,27 @@
+[Unit]
+Description=supervpn L2 VPN server
+Documentation=https://github.com/atlanteg/supervpn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/supervpn-server -config /etc/supervpn/server.toml
+Restart=on-failure
+RestartSec=5
+# Run as a dedicated user; create with: useradd -r -s /sbin/nologin supervpn
+User=supervpn
+Group=supervpn
+# Capability to bind privileged ports (443)
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# Allow writing to /var/log/supervpn if you redirect logs there
+ReadWritePaths=/var/log/supervpn
+
+[Install]
+WantedBy=multi-user.target

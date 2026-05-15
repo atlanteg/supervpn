@@ -1,0 +1,25 @@
+server        = "vpn.example.com:5555"
+server_tcp    = "vpn.example.com:443"
+status_listen = "127.0.0.1:9191"   # GET /status — current mode, session info
+hub_id        = 1
+login         = "alice"
+password      = "your-password-here"
+# tun_name    = "supervpn"   # TUN adapter name in direct mode (no 169.254 interface found)
+
+[fec]
+k = 20
+r = 6
+
+[tls]
+sni         = "microsoft.com"   # SNI sent in TLS ClientHello — mimics HTTPS to bypass DPI
+skip_verify = true              # always true; server uses self-signed cert
+
+[udp]
+# knock_count = 3   # random UDP packets sent before each auth attempt to prime NAT/firewall
+# knock_size  = 16  # payload size of each knock packet in bytes
+# attempts    = 3   # how many knock→auth cycles before falling back to TLS
+
+# Bridge mode settings (Windows only, used when a 169.254.0.0/16 interface is detected)
+[bridge]
+# tap_name     = "supervpn-tap"   # name of the tap-windows6 adapter (install tap-windows6-installer.exe first)
+# setup_method = "netbridge"      # "netbridge" (default) or "hyperv" — see deploy/setup-bridge-*.ps1
