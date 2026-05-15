@@ -226,7 +226,8 @@ public static class NetCfgBridge {
 
     static INetCfgComponent FindAdapter(INetCfg cfg, string friendlyName) {
         IEnumNetCfgComponent en;
-        int hr = cfg.EnumComponents(ref GUID_DEVCLASS_NET, out en);
+        Guid cls = GUID_DEVCLASS_NET;
+        int hr = cfg.EnumComponents(ref cls, out en);
         if (hr != S_OK) return null;
         INetCfgComponent comp;
         uint fetched;
