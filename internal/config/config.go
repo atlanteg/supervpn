@@ -140,10 +140,10 @@ type FECConfig struct {
 
 func (f FECConfig) WithDefaults() FECConfig {
 	if f.K == 0 {
-		f.K = 20
+		f.K = 1
 	}
 	if f.R == 0 {
-		f.R = 6
+		f.R = 2
 	}
 	return f
 }

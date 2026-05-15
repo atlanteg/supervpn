@@ -222,7 +222,7 @@ func main() {
 		cfg.HubID = uint16(*hubIDFlag)
 		cfg.Login = *loginFlag
 		cfg.Password = *passwordFlag
-		cfg.FEC = config.FECConfig{K: 20, R: 6}
+		cfg.FEC = config.FECConfig{K: 1, R: 2}
 	}
 	// CLI flags override config file values.
 	if *transportFlag != "" {
@@ -288,12 +288,14 @@ const (
 	keepaliveTimeout = 75 * time.Second // 3 missed pongs → reconnect
 )
 
-// fecStats tracks FEC recovery counters for one session.
+// fecStats tracks FEC and bandwidth counters for one session.
 type fecStats struct {
-	dataRecv      atomic.Uint64 // data frames received from network
-	repairRecv    atomic.Uint64 // repair frames received from network
-	recovered     atomic.Uint64 // frames recovered via FEC (were lost, then reconstructed)
+	dataRecv      atomic.Uint64 // data frames received
+	repairRecv    atomic.Uint64 // repair frames received
+	recovered     atomic.Uint64 // frames recovered via FEC repair
 	unrecoverable atomic.Uint64 // blocks with too many losses to recover
+	bytesTx       atomic.Uint64 // payload bytes sent (data + repair, pre-encryption)
+	bytesRx       atomic.Uint64 // payload bytes received (data + repair, post-decryption)
 }
 
 // runSession dials the server, authenticates, runs the bridge, and returns on error.
@@ -315,13 +317,17 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	var lastPong atomic.Int64
 	lastPong.Store(time.Now().UnixNano())
 
+	var stats fecStats
+
 	pipe, err := fec.NewPipe(
 		fecCfg.K,
 		fecCfg.R,
 		func(blockID uint32, pktIdx uint16, data []byte) error {
+			stats.bytesTx.Add(uint64(len(data)))
 			return sendFECData(tr, sessionID, cfg.HubID, sessionCipher, blockID, pktIdx, data)
 		},
 		func(blockID uint32, repairIdx uint8, data []byte) error {
+			stats.bytesTx.Add(uint64(len(data)))
 			return sendFECRepair(tr, sessionID, cfg.HubID, sessionCipher, blockID, repairIdx, uint8(fecCfg.K), uint8(fecCfg.R), data)
 		},
 	)
@@ -371,7 +377,6 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	downErr := make(chan error, 1)
 	go func() { downErr <- b.RunDownstream(sessionCtx, downstream) }()
 
-	var stats fecStats
 	recvErr := make(chan error, 1)
 	go func() {
 		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, downstream, &lastPong, &stats)
@@ -380,6 +385,7 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	pingTick := time.NewTicker(pingInterval)
 	defer pingTick.Stop()
 	var pingSeq uint64
+	var prevTx, prevRx uint64
 
 	for {
 		select {
@@ -395,10 +401,18 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 			pingSeq++
 			sendPing(tr, sessionID, cfg.HubID)
 			since := time.Since(time.Unix(0, lastPong.Load()))
-			log.Printf("keepalive: ping #%d sent, last pong %s ago | FEC data=%d repair=%d recovered=%d lost=%d",
+
+			curTx := stats.bytesTx.Load()
+			curRx := stats.bytesRx.Load()
+			txKBps := float64(curTx-prevTx) / pingInterval.Seconds() / 1024
+			rxKBps := float64(curRx-prevRx) / pingInterval.Seconds() / 1024
+			prevTx, prevRx = curTx, curRx
+
+			log.Printf("keepalive: ping #%d sent, last pong %s ago | FEC data=%d repair=%d recovered=%d lost=%d | ↑%.1f KB/s ↓%.1f KB/s",
 				pingSeq, since.Truncate(time.Second),
 				stats.dataRecv.Load(), stats.repairRecv.Load(),
-				stats.recovered.Load(), stats.unrecoverable.Load())
+				stats.recovered.Load(), stats.unrecoverable.Load(),
+				txKBps, rxKBps)
 			if since > keepaliveTimeout {
 				return fmt.Errorf("keepalive timeout: no pong for %s", since.Truncate(time.Second))
 			}
@@ -610,6 +624,7 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 				continue
 			}
 			stats.dataRecv.Add(1)
+			stats.bytesRx.Add(uint64(len(frame)))
 			blockID, pktIdx := proto.UnpackDataSeq(hdr.Seq)
 			delivered, err := pipe.RecvData(blockID, pktIdx, frame)
 			if err != nil {
@@ -633,6 +648,7 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 				continue
 			}
 			stats.repairRecv.Add(1)
+			stats.bytesRx.Add(uint64(len(frame)))
 			blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
 			delivered, err := pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
 			if err != nil {
