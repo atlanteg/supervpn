@@ -1,6 +1,6 @@
 listen        = "0.0.0.0:5555"
 listen_tcp    = "0.0.0.0:443"
-status_listen = "127.0.0.1:9090"   # GET /status — JSON list of hubs and connected clients
+status_listen = "127.0.0.1:9090"   # GET /status — current hubs and connected clients
 
 [fec]
 k = 20
@@ -9,7 +9,7 @@ r = 6
 [tls]
 # cert_file = "/etc/supervpn/server.crt"
 # key_file  = "/etc/supervpn/server.key"
-# If cert_file/key_file are omitted, a self-signed cert is generated automatically.
+# If omitted, a self-signed cert is generated automatically on startup.
 
 [[hub]]
 id   = 1
@@ -17,4 +17,6 @@ name = "main"
 
   [[hub.user]]
   login         = "alice"
+  # Generate password_hash with: supervpn-server hash <password>
+  # (bcrypt of SHA-256(password), NOT bcrypt of the plain password)
   password_hash = "$2a$10$replacethis"

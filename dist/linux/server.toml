@@ -15,8 +15,8 @@ name = "main"
 
   [[hub.user]]
   login         = "alice"
-  password_hash = "$2a$10$G5EoBW2Kmd.BvVuM3N2.Ae0JtV5Sx4J3hWPWcENoYOup5ty/RWr2a"
+  password_hash = "$2a$10$snT.yjVBJ4KEKiUg0Rf3rOEvxNmic38TIdlj4Nr5nC4vY5.CjiKGe"
 
   [[hub.user]]
   login         = "bob"
-  password_hash = "$2a$10$PAoBXOWtnKcS6mLVLYJc2.D7gCfjTtcCUKUxGge6JqDe/3J6C1O9e"
+  password_hash = "$2a$10$qu9hYhCrB9Z4zmDkn2S8quq535rXv30UkAcof1UVSBBVG0kugf2hC"
