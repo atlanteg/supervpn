@@ -125,4 +125,19 @@ func (t *darwinTUN) WriteFrame(frame []byte) error {
 
 func (t *darwinTUN) Close() error { return unix.Close(t.fd) }
 
+// IfName returns the kernel-assigned interface name (e.g. "utun3").
+// Implements tun.Namer so callers can discover the actual device name.
+func (t *darwinTUN) IfName() string {
+	var name [unix.IFNAMSIZ + 1]byte
+	nameLen := uintptr(len(name))
+	unix.Syscall6(unix.SYS_GETSOCKOPT,
+		uintptr(t.fd), sysprotoControl, utunOptIfname,
+		uintptr(unsafe.Pointer(&name[0])), uintptr(unsafe.Pointer(&nameLen)), 0)
+	// nameLen includes the NUL terminator
+	if nameLen > 1 {
+		return string(name[:nameLen-1])
+	}
+	return "utun"
+}
+
 var _ bridge.Framer = (*darwinTUN)(nil)

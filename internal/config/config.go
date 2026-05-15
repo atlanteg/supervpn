@@ -39,9 +39,13 @@ type ClientConfig struct {
 	HubID        uint16          `toml:"hub_id"`
 	Login        string          `toml:"login"`
 	Password     string          `toml:"password"`
-	FEC          FECConfig       `toml:"fec"`
-	TLS          TLSClientConfig `toml:"tls"`
-	UDP          UDPConfig       `toml:"udp"`
+	// TunName is the virtual adapter name used in direct mode (no 169.254.x.x interface
+	// detected).  In bridge mode the detected interface name is used instead.
+	// Defaults to "supervpn".
+	TunName string          `toml:"tun_name"`
+	FEC     FECConfig       `toml:"fec"`
+	TLS     TLSClientConfig `toml:"tls"`
+	UDP     UDPConfig       `toml:"udp"`
 	// Timeout is expressed as a string (e.g. "30s") and parsed manually to
 	// avoid TOML's lack of native time.Duration support.
 	Timeout string `toml:"timeout"`
