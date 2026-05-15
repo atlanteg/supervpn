@@ -51,6 +51,10 @@ type ClientConfig struct {
 	TLS     TLSClientConfig `toml:"tls"`
 	UDP     UDPConfig       `toml:"udp"`
 	Bridge  BridgeConfig    `toml:"bridge"`
+	// UpdateMirrors is a list of fallback base URLs tried in order when GitHub
+	// is unreachable. Each must serve GET {base}/version → plain-text "bN"
+	// and GET {base}/{asset} → binary. Example: supervpn-server status port.
+	UpdateMirrors []string `toml:"update_mirrors"`
 	// Timeout is expressed as a string (e.g. "30s") and parsed manually to
 	// avoid TOML's lack of native time.Duration support.
 	Timeout string `toml:"timeout"`

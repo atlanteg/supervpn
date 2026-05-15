@@ -15,15 +15,16 @@ import (
 )
 
 const (
-	releasesRepo = "atlanteg/supervpn-releases"
-	apiURL       = "https://api.github.com/repos/" + releasesRepo + "/releases/latest"
-	downloadBase = "https://github.com/" + releasesRepo + "/releases/latest/download/"
+	releasesRepo    = "atlanteg/supervpn-releases"
+	githubAPIURL    = "https://api.github.com/repos/" + releasesRepo + "/releases/latest"
+	githubDLBase    = "https://github.com/" + releasesRepo + "/releases/latest/download/"
 )
 
-// CheckAndUpdate checks for a newer release. If found, downloads the asset,
-// replaces the running binary, and re-execs. Does not return on success.
-// Any error is logged and the caller continues with the current version.
-func CheckAndUpdate(currentVersion, asset string) {
+// CheckAndUpdate checks for a newer release using GitHub and optional mirror
+// base URLs (each mirror must serve GET {base}/version → plain-text "bN",
+// and GET {base}/{asset} → binary). Tries each source in order; first success
+// wins for both version check and download. Does not return on success.
+func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 	cur, err := parseVersion(currentVersion)
 	if err != nil {
 		return // dev build — skip
@@ -32,9 +33,10 @@ func CheckAndUpdate(currentVersion, asset string) {
 	log.Printf("update: checking for updates (current: %s) ...", currentVersion)
 
 	hc := &http.Client{Timeout: 10 * time.Second}
-	tag, err := latestTag(hc)
+
+	tag, tagSrc, err := resolveLatestTag(hc, mirrors)
 	if err != nil {
-		log.Printf("update: check failed: %v", err)
+		log.Printf("update: check failed (all sources): %v", err)
 		return
 	}
 
@@ -47,7 +49,7 @@ func CheckAndUpdate(currentVersion, asset string) {
 		return
 	}
 
-	log.Printf("update: new version %s available — downloading %s ...", tag, asset)
+	log.Printf("update: new version %s available (via %s) — downloading %s ...", tag, tagSrc, asset)
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -61,13 +63,94 @@ func CheckAndUpdate(currentVersion, asset string) {
 	}
 
 	dlc := &http.Client{Timeout: 3 * time.Minute}
-	if err := downloadAndReplace(dlc, downloadBase+asset, exe); err != nil {
-		log.Printf("update: failed: %v", err)
+	if err := downloadWithFallback(dlc, asset, exe, mirrors); err != nil {
+		log.Printf("update: download failed (all sources): %v", err)
 		return
 	}
 
 	log.Printf("update: updated to %s — restarting", tag)
 	reexec(exe)
+}
+
+// resolveLatestTag tries GitHub API first, then each mirror's /version endpoint.
+// Returns the tag, the source label, and any error if all sources failed.
+func resolveLatestTag(c *http.Client, mirrors []string) (tag, src string, err error) {
+	// GitHub API
+	if t, e := latestTagFromGitHub(c); e == nil {
+		return t, "github", nil
+	} else {
+		err = e
+	}
+
+	// Mirrors: GET {base}/version → plain text "bN"
+	for _, m := range mirrors {
+		url := strings.TrimRight(m, "/") + "/version"
+		if t, e := latestTagFromURL(c, url); e == nil {
+			return t, m, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("github: %w; mirrors tried: %d", err, len(mirrors))
+}
+
+func latestTagFromGitHub(c *http.Client) (string, error) {
+	req, _ := http.NewRequest("GET", githubAPIURL, nil)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := c.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var r struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return "", err
+	}
+	if r.TagName == "" {
+		return "", fmt.Errorf("empty tag_name in GitHub response")
+	}
+	return r.TagName, nil
+}
+
+// latestTagFromURL fetches a plain-text version string (e.g. "b101") from url.
+func latestTagFromURL(c *http.Client, url string) (string, error) {
+	resp, err := c.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32))
+	if err != nil {
+		return "", err
+	}
+	tag := strings.TrimSpace(string(body))
+	if tag == "" {
+		return "", fmt.Errorf("empty version response")
+	}
+	return tag, nil
+}
+
+// downloadWithFallback tries GitHub first, then each mirror's {base}/{asset}.
+func downloadWithFallback(c *http.Client, asset, exe string, mirrors []string) error {
+	urls := []string{githubDLBase + asset}
+	for _, m := range mirrors {
+		urls = append(urls, strings.TrimRight(m, "/")+"/"+asset)
+	}
+
+	var lastErr error
+	for _, url := range urls {
+		if err := downloadAndReplace(c, url, exe); err != nil {
+			log.Printf("update: download from %s failed: %v", url, err)
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 // AssetForClient returns the release asset filename for the current client platform.
@@ -83,26 +166,6 @@ func AssetForClient() string {
 }
 
 const AssetServer = "supervpn-server"
-
-func latestTag(c *http.Client) (string, error) {
-	req, _ := http.NewRequest("GET", apiURL, nil)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := c.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	var r struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", err
-	}
-	if r.TagName == "" {
-		return "", fmt.Errorf("empty tag_name")
-	}
-	return r.TagName, nil
-}
 
 func parseVersion(v string) (int, error) {
 	return strconv.Atoi(strings.TrimPrefix(v, "b"))
@@ -134,7 +197,6 @@ func downloadAndReplace(c *http.Client, url, exe string) error {
 	}
 
 	// On Windows: rename running exe to .old first.
-	// Windows allows renaming a running exe because the kernel holds it by handle, not name.
 	if runtime.GOOS == "windows" {
 		old := exe + ".old"
 		os.Remove(old)

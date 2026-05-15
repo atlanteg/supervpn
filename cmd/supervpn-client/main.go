@@ -237,7 +237,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	update.CheckAndUpdate(version, update.AssetForClient())
+	update.CheckAndUpdate(version, update.AssetForClient(), cfg.UpdateMirrors)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

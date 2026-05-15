@@ -62,7 +62,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	update.CheckAndUpdate(version, update.AssetServer)
+	update.CheckAndUpdate(version, update.AssetServer, nil)
 
 	log.Printf("supervpn-server %s starting: UDP=%s hubs=%d", version, cfg.Listen, len(cfg.Hubs))
 
@@ -627,7 +627,8 @@ type clientStatus struct {
 func (s *Server) runStatusServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
-	mux.HandleFunc("/api/hubs/", s.handleAPI) // POST /api/hubs/{id}/kick/{session}
+	mux.HandleFunc("/api/hubs/", s.handleAPI)    // POST /api/hubs/{id}/kick/{session}
+	mux.HandleFunc("/update/version", s.handleUpdateVersion) // mirror: plain-text current version
 
 	srv := &http.Server{Addr: s.cfg.StatusListen, Handler: mux}
 	go func() {
@@ -688,6 +689,11 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok","session_id":%d,"login":%q}`, sessionID, sess.Login)
+}
+
+func (s *Server) handleUpdateVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, version)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
