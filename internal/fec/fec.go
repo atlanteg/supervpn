@@ -183,9 +183,10 @@ func (d *Decoder) expire() {
 	}
 }
 
-// FlushStale delivers any buffered but undelivered packets from blocks that have
-// had no activity for longer than maxAge, skipping gaps caused by unrecoverable loss.
-// Call periodically (e.g. every maxAge/4) to bound delivery latency after loss bursts.
+// FlushStale delivers packets that are stuck behind an unrecoverable gap in a
+// block that has had no activity for longer than maxAge. It skips blocks that
+// are simply filling slowly (no packets beyond b.delivered yet) — those must
+// not be closed prematurely, or later arriving packets would be lost.
 func (d *Decoder) FlushStale(maxAge time.Duration) [][]byte {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -193,6 +194,20 @@ func (d *Decoder) FlushStale(maxAge time.Duration) [][]byte {
 	var out [][]byte
 	for id, b := range d.blocks {
 		if b.done || b.lastActivity.IsZero() || now.Sub(b.lastActivity) < maxAge {
+			continue
+		}
+		// Only flush if there are packets present beyond the current delivery
+		// position — meaning real frames are stuck behind an unrecoverable gap.
+		// If nothing is present past b.delivered the block is just filling slowly
+		// (low-rate traffic); closing it would drop all subsequent packets.
+		stuck := false
+		for i := b.delivered; i < d.k; i++ {
+			if b.present[i] {
+				stuck = true
+				break
+			}
+		}
+		if !stuck {
 			continue
 		}
 		for i := b.delivered; i < d.k; i++ {
