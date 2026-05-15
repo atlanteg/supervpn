@@ -101,6 +101,8 @@ type Session struct {
 	replay      crypto.ReplayWindow
 	pipe        *fec.Pipe
 	lastSeen    time.Time
+	framesRx    int64 // frames received from this client and forwarded to hub
+	framesTx    int64 // frames sent to this client from hub
 	mu          sync.Mutex
 }
 
@@ -394,6 +396,9 @@ func (s *Server) handleData(hdr proto.Header, payload []byte) {
 	}
 	for _, f := range recovered {
 		if len(f) >= 14 {
+			sess.mu.Lock()
+			sess.framesRx++
+			sess.mu.Unlock()
 			h.Forward(hdr.SessionID, f)
 		}
 	}
@@ -421,6 +426,9 @@ func (s *Server) handleRepair(hdr proto.Header, payload []byte) {
 	}
 	for _, f := range recovered {
 		if len(f) >= 14 {
+			sess.mu.Lock()
+			sess.framesRx++
+			sess.mu.Unlock()
 			h.Forward(hdr.SessionID, f)
 		}
 	}
@@ -452,6 +460,9 @@ func (s *Server) sendFECData(sess *Session, blockID uint32, pktIdx uint16, frame
 		SessionID: sess.ID,
 		Seq:       proto.PackDataSeq(blockID, pktIdx),
 	}.Marshal(hdr)
+	sess.mu.Lock()
+	sess.framesTx++
+	sess.mu.Unlock()
 	return sess.sendRaw(append(hdr, encrypted...))
 }
 
@@ -557,6 +568,8 @@ type clientStatus struct {
 	ConnectedAt string `json:"connected_at"`
 	LastSeen    string `json:"last_seen"`
 	Duration    string `json:"duration"`
+	FramesRx    int64  `json:"frames_rx"`
+	FramesTx    int64  `json:"frames_tx"`
 }
 
 func (s *Server) runStatusServer(ctx context.Context) {
@@ -636,6 +649,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Mode        string
 		ConnectedAt time.Time
 		LastSeen    time.Time
+		FramesRx    int64
+		FramesTx    int64
 	}
 	byHub := make(map[uint16][]sessSnapshot)
 
@@ -649,6 +664,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			Mode:        sess.Mode,
 			ConnectedAt: sess.ConnectedAt,
 			LastSeen:    sess.lastSeen,
+			FramesRx:    sess.framesRx,
+			FramesTx:    sess.framesTx,
 		}
 		sess.mu.Unlock()
 		byHub[sess.HubID] = append(byHub[sess.HubID], snap)
@@ -668,6 +685,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 				ConnectedAt: snap.ConnectedAt.UTC().Format(time.RFC3339),
 				LastSeen:    snap.LastSeen.UTC().Format(time.RFC3339),
 				Duration:    now.Sub(snap.ConnectedAt).Truncate(time.Second).String(),
+				FramesRx:    snap.FramesRx,
+				FramesTx:    snap.FramesTx,
 			})
 		}
 		hubs = append(hubs, hs)
