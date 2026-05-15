@@ -25,7 +25,12 @@ func startTLSServer(t *testing.T, cfg *tls.Config, fn func(*TLSTransport)) net.L
 		if err != nil {
 			return
 		}
-		fn(AcceptTLS(conn))
+		tr, err := AcceptTLS(conn)
+		if err != nil {
+			t.Errorf("AcceptTLS: %v", err)
+			return
+		}
+		fn(tr)
 	}()
 	return ln
 }
@@ -67,7 +72,7 @@ func TestTLSTransport_SendRecv(t *testing.T) {
 	})
 	defer ln.Close()
 
-	cli, err := DialTLS(ln.Addr().String(), "test.local")
+	cli, err := DialTLS(context.Background(), ln.Addr().String(), "test.local")
 	if err != nil {
 		t.Fatalf("DialTLS: %v", err)
 	}
@@ -113,7 +118,7 @@ func TestTLSTransport_Mode(t *testing.T) {
 	})
 	defer ln.Close()
 
-	cli, err := DialTLS(ln.Addr().String(), "test.local")
+	cli, err := DialTLS(context.Background(), ln.Addr().String(), "test.local")
 	if err != nil {
 		t.Fatalf("DialTLS: %v", err)
 	}
@@ -171,7 +176,7 @@ func TestTLSTransport_MultipleFrames(t *testing.T) {
 	})
 	defer ln.Close()
 
-	cli, err := DialTLS(ln.Addr().String(), "test.local")
+	cli, err := DialTLS(context.Background(), ln.Addr().String(), "test.local")
 	if err != nil {
 		t.Fatalf("DialTLS: %v", err)
 	}
@@ -223,7 +228,7 @@ func TestTLSTransport_SelfSignedCert(t *testing.T) {
 // TestTLSTransport_InvalidAddr verifies that DialTLS to an unreachable address returns an error.
 func TestTLSTransport_InvalidAddr(t *testing.T) {
 	// Port 1 is unlikely to be open; expect immediate connection refusal.
-	_, err := DialTLS("127.0.0.1:1", "test.local")
+	_, err := DialTLS(context.Background(), "127.0.0.1:1", "test.local")
 	if err == nil {
 		t.Fatal("expected error dialing invalid addr, got nil")
 	}
@@ -247,25 +252,27 @@ func TestNewServerTLSConfig_Generated(t *testing.T) {
 }
 
 // TestTLSTransport_AcceptTLS_PlainConn verifies AcceptTLS falls back gracefully
-// when given a plain (non-TLS) net.Conn.
+// when given a plain (non-TLS) net.Conn — wraps without TLS, no error.
 func TestTLSTransport_AcceptTLS_PlainConn(t *testing.T) {
-	// Use a pair of net.Pipe connections as plain net.Conn.
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
 
-	tr := AcceptTLS(c1)
+	// c1 is not a *tls.Conn, so AcceptTLS takes the plain fallback path (no handshake).
+	tr, err := AcceptTLS(c1)
+	if err != nil {
+		t.Fatalf("AcceptTLS plain conn: %v", err)
+	}
 	if tr == nil {
 		t.Fatal("AcceptTLS returned nil")
 	}
 	if tr.TCPTransport == nil {
 		t.Fatal("TCPTransport is nil in fallback path")
 	}
-	// conn field should be nil in the plain fallback path.
+	// conn field is nil in the plain fallback path.
 	if tr.conn != nil {
 		t.Error("expected conn to be nil for plain conn fallback")
 	}
-	// Mode should still return "tls" via the embedded type.
 	if got := tr.Mode(); got != "tls" {
 		t.Errorf("Mode() = %q, want %q", got, "tls")
 	}
@@ -287,8 +294,7 @@ func TestTLSTransport_SNI(t *testing.T) {
 	ln := startTLSServer(t, cfg, func(srv *TLSTransport) {
 		defer srv.Close()
 		if srv.conn != nil {
-			// Explicitly complete the TLS handshake so ServerName is populated.
-			_ = srv.conn.Handshake()
+			// Handshake already done in AcceptTLS; just read ServerName.
 			state := srv.conn.ConnectionState()
 			sniSeen <- state.ServerName
 		} else {
@@ -303,7 +309,7 @@ func TestTLSTransport_SNI(t *testing.T) {
 	defer ln.Close()
 
 	wantSNI := "microsoft.com"
-	cli, err := DialTLS(ln.Addr().String(), wantSNI)
+	cli, err := DialTLS(context.Background(), ln.Addr().String(), wantSNI)
 	if err != nil {
 		t.Fatalf("DialTLS: %v", err)
 	}

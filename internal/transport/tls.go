@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -23,21 +24,23 @@ type TLSTransport struct {
 
 // DialTLS connects to addr with TLS. sni is sent in the ClientHello (SNI field).
 // Certificate verification is skipped — the server uses a self-signed cert.
-// TLS 1.3 is enforced.
-func DialTLS(addr, sni string) (*TLSTransport, error) {
+// TLS 1.3 is enforced. The TCP dial and TLS handshake both respect ctx cancellation.
+func DialTLS(ctx context.Context, addr, sni string) (*TLSTransport, error) {
 	cfg := &tls.Config{
 		ServerName:         sni,
-		InsecureSkipVerify: true,          // server uses self-signed cert
+		InsecureSkipVerify: true, // server uses self-signed cert
 		MinVersion:         tls.VersionTLS13,
 		MaxVersion:         tls.VersionTLS13,
 	}
-	conn, err := tls.Dial("tcp", addr, cfg)
+	d := tls.Dialer{Config: cfg}
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("transport/tls: dial %s: %w", addr, err)
 	}
+	tlsConn := conn.(*tls.Conn)
 	return &TLSTransport{
-		TCPTransport: WrapTCP(conn),
-		conn:         conn,
+		TCPTransport: WrapTCP(tlsConn),
+		conn:         tlsConn,
 	}, nil
 }
 
@@ -51,14 +54,22 @@ func ListenTLS(addr string, cfg *tls.Config) (net.Listener, error) {
 	return l, nil
 }
 
-// AcceptTLS wraps an accepted net.Conn (from ListenTLS) into a TLSTransport.
-func AcceptTLS(conn net.Conn) *TLSTransport {
+// AcceptTLS wraps an accepted net.Conn (from ListenTLS) into a TLSTransport
+// and performs the TLS handshake immediately with a 10-second deadline.
+// Returning the error here (instead of letting it surface on first Recv) gives
+// a clear diagnostic log entry rather than a confusing read error.
+func AcceptTLS(conn net.Conn) (*TLSTransport, error) {
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {
-		// plain TCP fallback (shouldn't happen with ListenTLS)
-		return &TLSTransport{TCPTransport: WrapTCP(conn)}
+		return &TLSTransport{TCPTransport: WrapTCP(conn)}, nil
 	}
-	return &TLSTransport{TCPTransport: WrapTCP(tlsConn), conn: tlsConn}
+	tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := tlsConn.Handshake(); err != nil {
+		tlsConn.Close()
+		return nil, fmt.Errorf("transport/tls: handshake: %w", err)
+	}
+	tlsConn.SetDeadline(time.Time{}) // clear deadline for normal operation
+	return &TLSTransport{TCPTransport: WrapTCP(tlsConn), conn: tlsConn}, nil
 }
 
 // Mode returns "tls".

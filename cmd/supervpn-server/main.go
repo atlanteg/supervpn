@@ -212,10 +212,18 @@ func (s *Server) runTCPListener(ctx context.Context) {
 
 func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
-	log.Printf("TCP accept: %s", remoteAddr)
+	log.Printf("TCP accept from %s", remoteAddr)
 
-	tr := transport.AcceptTLS(conn)
-	defer tr.Close()
+	tr, err := transport.AcceptTLS(conn)
+	if err != nil {
+		log.Printf("TCP %s: TLS handshake failed: %v", remoteAddr, err)
+		return
+	}
+	log.Printf("TCP %s: TLS handshake ok", remoteAddr)
+	defer func() {
+		tr.Close()
+		log.Printf("TCP %s: connection closed", remoteAddr)
+	}()
 
 	sendReply := func(pkt []byte) error {
 		return tr.Send(transport.Frame{Data: pkt})
@@ -228,13 +236,18 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 		if err != nil {
 			if sessionID != 0 {
 				s.removeSession(sessionID)
+				log.Printf("TCP %s: session %d lost: %v", remoteAddr, sessionID, err)
 			} else {
-				log.Printf("TCP %s: closed before auth (TLS handshake or read error): %v", remoteAddr, err)
+				log.Printf("TCP %s: pre-auth error (TLS or read): %v", remoteAddr, err)
 			}
 			return
 		}
+		if sessionID == 0 {
+			log.Printf("TCP %s: received %d bytes (pre-auth)", remoteAddr, len(f.Data))
+		}
 		if sid := s.handlePacket(f.Data, sendReply, remoteAddr, "tls", closeConn); sid != 0 {
 			sessionID = sid
+			log.Printf("TCP %s: session %d established", remoteAddr, sessionID)
 		}
 	}
 }
@@ -541,7 +554,7 @@ func (s *Server) removeSession(id uint32) {
 }
 
 func (s *Server) cleanupLoop(ctx context.Context) {
-	t := time.NewTicker(30 * time.Second)
+	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
 	for {
 		select {
@@ -554,7 +567,7 @@ func (s *Server) cleanupLoop(ctx context.Context) {
 }
 
 func (s *Server) cleanupSessions() {
-	deadline := time.Now().Add(-90 * time.Second)
+	deadline := time.Now().Add(-60 * time.Second)
 	now := time.Now()
 	s.mu.Lock()
 	for id, sess := range s.sessions {

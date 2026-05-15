@@ -446,20 +446,27 @@ func connectTLS(ctx context.Context, cfg config.ClientConfig, tcpAddr string) (t
 		host, _, _ := net.SplitHostPort(tcpAddr)
 		sni = host
 	}
-	log.Printf("transport: connecting TLS %s (sni=%s)", tcpAddr, sni)
+	log.Printf("transport: dialing TLS %s (sni=%s)", tcpAddr, sni)
 
-	tlsTr, err := transport.DialTLS(tcpAddr, sni)
+	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
+	tlsTr, err := transport.DialTLS(dialCtx, tcpAddr, sni)
+	dialCancel()
 	if err != nil {
+		log.Printf("transport: TLS dial %s failed: %v", tcpAddr, err)
 		return nil, 0, nil, fmt.Errorf("TLS dial: %w", err)
 	}
+	log.Printf("transport: TLS handshake ok, authenticating")
 
-	sid, cipher, err := authenticate(ctx, tlsTr, cfg)
+	authCtx, authCancel := context.WithTimeout(ctx, 10*time.Second)
+	sid, cipher, err := authenticate(authCtx, tlsTr, cfg)
+	authCancel()
 	if err != nil {
 		tlsTr.Close()
+		log.Printf("transport: TLS auth failed: %v", err)
 		return nil, 0, nil, fmt.Errorf("TLS auth: %w", err)
 	}
 
-	log.Printf("transport: TLS connected via %s", tcpAddr)
+	log.Printf("transport: TLS connected via %s session=%d", tcpAddr, sid)
 	return tlsTr, sid, cipher, nil
 }
 
