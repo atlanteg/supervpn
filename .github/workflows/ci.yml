@@ -1,4 +1,4 @@
-name: CI
+name: CI / Release
 
 on:
   push:
@@ -7,10 +7,15 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  build-test-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history required for git rev-list --count
 
       - uses: actions/setup-go@v5
         with:
@@ -19,14 +24,59 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Build server (linux/amd64)
-        run: GOOS=linux GOARCH=amd64 go build ./cmd/supervpn-server
-
-      - name: Build client (windows/amd64)
-        run: GOOS=windows GOARCH=amd64 go build ./cmd/supervpn-client
-
       - name: Test
         run: go test -race ./...
 
       - name: Vet
         run: go vet ./...
+
+      - name: Compute version
+        id: ver
+        run: echo "ver=b$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build server (linux/amd64)
+        run: |
+          GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -o dist/linux/supervpn-server \
+            ./cmd/supervpn-server
+
+      - name: Build client (windows/amd64)
+        run: |
+          GOOS=windows GOARCH=amd64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -o dist/windows/supervpn-client.exe \
+            ./cmd/supervpn-client
+
+      - name: Build client (darwin/amd64)
+        run: |
+          GOOS=darwin GOARCH=amd64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -o dist/macos/supervpn-client-amd64 \
+            ./cmd/supervpn-client
+
+      - name: Build client (darwin/arm64)
+        run: |
+          GOOS=darwin GOARCH=arm64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -o dist/macos/supervpn-client-arm64 \
+            ./cmd/supervpn-client
+
+      - name: Package zip
+        run: |
+          cd dist
+          zip -r ../supervpn-dist.zip linux windows macos --exclude "**/.DS_Store"
+
+      # Only publish a release on direct pushes to main (not on PRs).
+      # Requires a repository secret GH_PAT — a Personal Access Token with
+      # repo scope on atlanteg/supervpn-releases.
+      - name: Publish release to supervpn-releases
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh release create ${{ steps.ver.outputs.ver }} supervpn-dist.zip \
+            --repo atlanteg/supervpn-releases \
+            --title "supervpn ${{ steps.ver.outputs.ver }}" \
+            --notes "Build ${{ steps.ver.outputs.ver }} — commit $(git rev-parse --short HEAD)" \
+            --latest
