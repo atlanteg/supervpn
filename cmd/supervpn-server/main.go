@@ -616,32 +616,57 @@ func (s *Server) updateDir() string {
 	return "dist"
 }
 
-// checkUpdateAssets verifies that client binaries are present in updateDir,
-// logs the result, and populates s.updateAssets. Called at startup.
+// checkUpdateAssets verifies that client binaries are present in updateDir.
+// Missing files are downloaded from the GitHub release matching the server's
+// own version tag. Dev builds skip auto-download. Populates s.updateAssets.
 func (s *Server) checkUpdateAssets() {
 	dir := s.updateDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("update mirror: cannot create dir %s: %v", dir, err)
+	}
+
+	canFetch := version != "dev"
+	if !canFetch {
+		log.Printf("update mirror: dev build — skipping auto-download of client binaries")
+	}
+
 	assets := make(map[string]int64, len(clientAssets))
-	anyMissing := false
 	for _, name := range clientAssets {
-		fi, err := os.Stat(filepath.Join(dir, name))
-		if err != nil {
-			log.Printf("update mirror: MISSING  %s  (place in %s)", name, dir)
-			assets[name] = 0
-			anyMissing = true
-		} else {
+		path := filepath.Join(dir, name)
+		if fi, err := os.Stat(path); err == nil {
 			log.Printf("update mirror: ok  %s  (%d bytes)", name, fi.Size())
 			assets[name] = fi.Size()
+			continue
 		}
+		if !canFetch {
+			log.Printf("update mirror: missing  %s", name)
+			continue
+		}
+		log.Printf("update mirror: downloading  %s  (release %s) ...", name, version)
+		if err := update.FetchAsset(version, name, path); err != nil {
+			log.Printf("update mirror: download %s failed: %v", name, err)
+			continue
+		}
+		fi, _ := os.Stat(path)
+		log.Printf("update mirror: ready  %s  (%d bytes)", name, fi.Size())
+		assets[name] = fi.Size()
 	}
+
 	s.mu.Lock()
 	s.updateAssets = assets
 	s.mu.Unlock()
 
 	if s.cfg.StatusListen != "" {
-		if !anyMissing {
-			log.Printf("update mirror ready — add to client config: update_mirrors = [\"http://%s/update\"]", s.cfg.StatusListen)
+		available := 0
+		for _, sz := range assets {
+			if sz > 0 {
+				available++
+			}
+		}
+		if available == len(clientAssets) {
+			log.Printf("update mirror ready — clients: update_mirrors = [\"http://%s/update\"]", s.cfg.StatusListen)
 		} else {
-			log.Printf("update mirror partial — copy missing binaries to %s", dir)
+			log.Printf("update mirror: %d/%d assets available at http://%s/update", available, len(clientAssets), s.cfg.StatusListen)
 		}
 	}
 }

@@ -170,6 +170,17 @@ func AssetForClient() string {
 
 const AssetServer = "supervpn-server"
 
+// FetchAsset downloads one release asset from the tag-specific GitHub URL to
+// destPath, creating parent directories as needed. Written atomically via a
+// .new temp file. Intended for servers pre-populating their mirror directory.
+func FetchAsset(tag, asset, destPath string) error {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	c := &http.Client{Timeout: 3 * time.Minute}
+	return downloadAndReplace(c, githubDLBase+tag+"/"+asset, destPath)
+}
+
 func parseVersion(v string) (int, error) {
 	return strconv.Atoi(strings.TrimPrefix(v, "b"))
 }
