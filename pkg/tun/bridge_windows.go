@@ -23,10 +23,15 @@ func OpenBridge(name string) (bridge.Framer, error) {
 func OpenBridgeMulti(physNIC, tapName string) (bridge.Framer, string, error) {
 	if f, err := openNpcapFramer(physNIC); err == nil {
 		return f, "npcap", nil
+	} else {
+		log.Printf("bridge: npcap unavailable: %v", err)
 	}
 	if f, err := openNDISUIOFramer(physNIC); err == nil {
 		return f, "ndisuio", nil
+	} else {
+		log.Printf("bridge: ndisuio unavailable: %v", err)
 	}
+	log.Printf("bridge: falling back to tap+wbridge")
 	f, err := OpenTAP(tapName)
 	if err != nil {
 		return nil, "", fmt.Errorf("all capture methods failed: tap: %w", err)

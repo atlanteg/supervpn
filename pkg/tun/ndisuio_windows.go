@@ -33,17 +33,21 @@ func openNDISUIOFramer(nicName string) (*ndisuioFramer, error) {
 		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OVERLAPPED,
 		0)
 	if err != nil {
+		log.Printf("bridge/ndisuio: open \\.\\ Ndisuio failed: %v", err)
 		return nil, fmt.Errorf("ndisuio: open driver: %w", err)
 	}
+	log.Printf("bridge/ndisuio: driver handle open")
 
 	guid, err := adapterGUIDByFriendlyName(nicName)
 	if err != nil {
 		windows.CloseHandle(h)
+		log.Printf("bridge/ndisuio: GUID lookup for %q failed: %v", nicName, err)
 		return nil, fmt.Errorf("ndisuio: %w", err)
 	}
+	log.Printf("bridge/ndisuio: adapter %q → GUID %s", nicName, guid)
 
 	// Adapter device name as UTF-16LE bytes (no null terminator in the IOCTL buffer).
-	adapterPath := `\DEVICE\` + guid
+	adapterPath := `\Device\` + guid
 	u16 := utf16.Encode([]rune(adapterPath))
 	buf := make([]byte, len(u16)*2)
 	for i, c := range u16 {
@@ -52,18 +56,20 @@ func openNDISUIOFramer(nicName string) (*ndisuioFramer, error) {
 	}
 
 	var ret uint32
-	// BIND_WAIT must be called first — it blocks until NDISUIO has finished
-	// binding to all adapters after boot/driver-load.
-	_ = windows.DeviceIoControl(h, ioctlNDISUIOBindWait, nil, 0, nil, 0, &ret, nil)
+	// BIND_WAIT waits for NDISUIO to finish binding to all adapters after boot.
+	// Ignore errors here — if it times out or fails we still attempt OPEN_DEVICE.
+	bindWaitErr := windows.DeviceIoControl(h, ioctlNDISUIOBindWait, nil, 0, nil, 0, &ret, nil)
+	log.Printf("bridge/ndisuio: BIND_WAIT result: %v", bindWaitErr)
 
 	if err := windows.DeviceIoControl(h, ioctlNDISUIOOpenDevice,
 		&buf[0], uint32(len(buf)),
 		nil, 0, &ret, nil); err != nil {
 		windows.CloseHandle(h)
+		log.Printf("bridge/ndisuio: OPEN_DEVICE for %q failed: %v", adapterPath, err)
 		return nil, fmt.Errorf("ndisuio: bind to %q: %w", adapterPath, err)
 	}
 
-	log.Printf("bridge/ndisuio: bound to %q", nicName)
+	log.Printf("bridge/ndisuio: bound to %q (%s)", nicName, adapterPath)
 	return &ndisuioFramer{handle: h, ifName: nicName}, nil
 }
 
