@@ -11,22 +11,22 @@ all: build zip
 
 # ── per-platform builds ───────────────────────────────────────────────────────
 server:
-	GOOS=linux GOARCH=amd64 go build \
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 		-ldflags="-s -w -X main.version=$(VERSION)" \
 		-o dist/linux/supervpn-server ./cmd/supervpn-server
 
 client-windows:
-	GOOS=windows GOARCH=amd64 go build \
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
 		-ldflags="-s -w -X main.version=$(VERSION)" \
 		-o dist/windows/supervpn-client.exe ./cmd/supervpn-client
 
 client-darwin-arm64:
-	GOOS=darwin GOARCH=arm64 go build \
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
 		-ldflags="-s -w -X main.version=$(VERSION)" \
 		-o dist/macos/supervpn-client-arm64 ./cmd/supervpn-client
 
 client-darwin-amd64:
-	GOOS=darwin GOARCH=amd64 go build \
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build \
 		-ldflags="-s -w -X main.version=$(VERSION)" \
 		-o dist/macos/supervpn-client-amd64 ./cmd/supervpn-client
 
