@@ -111,13 +111,14 @@ const kickBlockDuration = 5 * time.Minute
 
 // Server handles auth, data forwarding, and ping/pong over UDP and TLS/TCP.
 type Server struct {
-	cfg       *config.ServerConfig
-	manager   *hub.Manager
-	conn      *net.UDPConn
-	sessions  map[uint32]*Session
-	kicked    map[string]time.Time // login → blocked until; prevents immediate reconnect after kick
-	mu        sync.RWMutex
-	startTime time.Time
+	cfg             *config.ServerConfig
+	manager         *hub.Manager
+	conn            *net.UDPConn
+	sessions        map[uint32]*Session
+	kicked          map[string]time.Time // login → blocked until; prevents immediate reconnect after kick
+	mu              sync.RWMutex
+	startTime       time.Time
+	tcpListenerUp   bool // true once the TLS/TCP listener successfully binds
 }
 
 // Run starts the UDP listener (and TLS/TCP + status listeners if configured).
@@ -177,13 +178,18 @@ func (s *Server) runTCPListener(ctx context.Context) {
 	tlsCfg, err := transport.NewServerTLSConfig(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
 	if err != nil {
 		log.Printf("TLS config error, TCP listener disabled: %v", err)
+		log.Printf("HINT: if listen_tcp uses port <1024, run server as root or set CAP_NET_BIND_SERVICE")
 		return
 	}
 	ln, err := transport.ListenTLS(s.cfg.ListenTCP, tlsCfg)
 	if err != nil {
-		log.Printf("TLS listen %s failed: %v", s.cfg.ListenTCP, err)
+		log.Printf("TLS listen %s FAILED: %v", s.cfg.ListenTCP, err)
+		log.Printf("HINT: port 443 requires root or CAP_NET_BIND_SERVICE; try listen_tcp = \"0.0.0.0:4443\"")
 		return
 	}
+	s.mu.Lock()
+	s.tcpListenerUp = true
+	s.mu.Unlock()
 	log.Printf("listening TLS/TCP %s", s.cfg.ListenTCP)
 
 	go func() {
@@ -552,12 +558,13 @@ func (s *Server) cleanupSessions() {
 // ── Status HTTP API ──────────────────────────────────────────────────────────
 
 type statusResponse struct {
-	Version   string            `json:"version"`
-	Uptime    string            `json:"uptime"`
-	UDPListen string            `json:"udp_listen"`
-	TCPListen string            `json:"tcp_listen,omitempty"`
-	Hubs      []hubStatus       `json:"hubs"`
-	Blocked   map[string]string `json:"blocked,omitempty"` // login → blocked_until (RFC3339)
+	Version         string            `json:"version"`
+	Uptime          string            `json:"uptime"`
+	UDPListen       string            `json:"udp_listen"`
+	TCPListen       string            `json:"tcp_listen,omitempty"`
+	TCPListenerUp   bool              `json:"tcp_listener_up"`
+	Hubs            []hubStatus       `json:"hubs"`
+	Blocked         map[string]string `json:"blocked,omitempty"` // login → blocked_until (RFC3339)
 }
 
 type hubStatus struct {
@@ -711,12 +718,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RUnlock()
 
+	s.mu.RLock()
+	tcpUp := s.tcpListenerUp
+	s.mu.RUnlock()
+
 	resp := statusResponse{
-		Version:   version,
-		Uptime:    now.Sub(s.startTime).Truncate(time.Second).String(),
-		UDPListen: s.cfg.Listen,
-		TCPListen: s.cfg.ListenTCP,
-		Hubs:      hubs,
+		Version:       version,
+		Uptime:        now.Sub(s.startTime).Truncate(time.Second).String(),
+		UDPListen:     s.cfg.Listen,
+		TCPListen:     s.cfg.ListenTCP,
+		TCPListenerUp: tcpUp,
+		Hubs:          hubs,
 	}
 	if len(blocked) > 0 {
 		resp.Blocked = blocked

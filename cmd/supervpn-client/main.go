@@ -176,10 +176,12 @@ func main() {
 	flag.StringVar(&cfgPath, "config", "", "path to client config file (optional)")
 
 	var (
-		serverFlag   = flag.String("server", "", "server UDP address host:port")
-		hubIDFlag    = flag.Uint("hub", 1, "hub ID")
-		loginFlag    = flag.String("login", "", "login")
-		passwordFlag = flag.String("password", "", "password")
+		serverFlag    = flag.String("server", "", "server UDP address host:port")
+		serverTCPFlag = flag.String("server-tcp", "", "server TCP/TLS address host:port (empty = derive from -server)")
+		hubIDFlag     = flag.Uint("hub", 1, "hub ID")
+		loginFlag     = flag.String("login", "", "login")
+		passwordFlag  = flag.String("password", "", "password")
+		transportFlag = flag.String("transport", "", "transport mode: auto (default), udp, tcp")
 	)
 	flag.Parse()
 
@@ -196,6 +198,13 @@ func main() {
 		cfg.Login = *loginFlag
 		cfg.Password = *passwordFlag
 		cfg.FEC = config.FECConfig{K: 20, R: 6}
+	}
+	// CLI flags override config file values.
+	if *transportFlag != "" {
+		cfg.Transport = *transportFlag
+	}
+	if *serverTCPFlag != "" {
+		cfg.ServerTCP = *serverTCPFlag
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -279,9 +288,9 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
 
-	// When connected via TLS, retry UDP every 5 minutes so we switch back as
-	// soon as the path clears.
-	if tr.Mode() == "tls" && cfg.Server != "" {
+	// When connected via TLS in auto mode, retry UDP every 5 minutes so we
+	// switch back as soon as the path clears.
+	if tr.Mode() == "tls" && cfg.Transport != "tcp" && cfg.Server != "" {
 		go func() {
 			t := time.NewTimer(5 * time.Minute)
 			defer t.Stop()
@@ -324,12 +333,29 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	}
 }
 
-// connectWithFallback attempts UDP connectivity using knock-and-dial, then falls back
-// to TLS/TCP. Each UDP attempt sends knock packets on the same socket as the auth frame
-// so the NAT/firewall 5-tuple is identical for both. Returns an authenticated transport.
+// connectWithFallback selects a transport according to cfg.Transport:
+//
+//	"udp"  — UDP only; never falls back to TCP.
+//	"tcp"  — TCP/TLS only; skips UDP entirely.
+//	"auto" — tries UDP first (knock×N → auth, 5-second timeout per attempt),
+//	         then falls back to TCP/TLS when server_tcp is configured.
 func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transport.Transport, uint32, *crypto.Cipher, error) {
-	udpCfg := cfg.UDP.WithDefaults()
+	mode := cfg.Transport
+	if mode == "" {
+		mode = "auto"
+	}
 
+	tcpAddr := resolveTCPAddr(cfg)
+
+	if mode == "tcp" {
+		if tcpAddr == "" {
+			return nil, 0, nil, fmt.Errorf("transport=tcp but server_tcp is not configured (and cannot be derived from server)")
+		}
+		return connectTLS(ctx, cfg, tcpAddr)
+	}
+
+	// UDP path (for "auto" and "udp" modes).
+	udpCfg := cfg.UDP.WithDefaults()
 	for attempt := 1; attempt <= udpCfg.Attempts; attempt++ {
 		if ctx.Err() != nil {
 			return nil, 0, nil, ctx.Err()
@@ -355,18 +381,42 @@ func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transpor
 		log.Printf("transport: UDP attempt %d/%d failed: %v", attempt, udpCfg.Attempts, probeErr)
 	}
 
-	if cfg.ServerTCP == "" {
-		return nil, 0, nil, fmt.Errorf("UDP unreachable after %d attempts and server_tcp not configured", udpCfg.Attempts)
+	if mode == "udp" {
+		return nil, 0, nil, fmt.Errorf("UDP unreachable after %d attempts (transport=udp, no TCP fallback)", udpCfg.Attempts)
 	}
 
+	// "auto": TCP/TLS fallback.
+	if tcpAddr == "" {
+		return nil, 0, nil, fmt.Errorf("UDP unreachable after %d attempts and server_tcp is not configured", udpCfg.Attempts)
+	}
+	return connectTLS(ctx, cfg, tcpAddr)
+}
+
+// resolveTCPAddr returns the TCP address to use. Uses server_tcp from config if set,
+// otherwise derives host:4443 from the UDP server address.
+func resolveTCPAddr(cfg config.ClientConfig) string {
+	if cfg.ServerTCP != "" {
+		return cfg.ServerTCP
+	}
+	if cfg.Server == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(cfg.Server)
+	if err != nil {
+		return ""
+	}
+	return net.JoinHostPort(host, "4443")
+}
+
+func connectTLS(ctx context.Context, cfg config.ClientConfig, tcpAddr string) (transport.Transport, uint32, *crypto.Cipher, error) {
 	sni := cfg.TLS.SNI
 	if sni == "" {
-		host, _, _ := net.SplitHostPort(cfg.ServerTCP)
+		host, _, _ := net.SplitHostPort(tcpAddr)
 		sni = host
 	}
-	log.Printf("transport: falling back to TLS %s (sni=%s)", cfg.ServerTCP, sni)
+	log.Printf("transport: connecting TLS %s (sni=%s)", tcpAddr, sni)
 
-	tlsTr, err := transport.DialTLS(cfg.ServerTCP, sni)
+	tlsTr, err := transport.DialTLS(tcpAddr, sni)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("TLS dial: %w", err)
 	}
@@ -377,7 +427,7 @@ func connectWithFallback(ctx context.Context, cfg config.ClientConfig) (transpor
 		return nil, 0, nil, fmt.Errorf("TLS auth: %w", err)
 	}
 
-	log.Printf("transport: TLS connected")
+	log.Printf("transport: TLS connected via %s", tcpAddr)
 	return tlsTr, sid, cipher, nil
 }
 

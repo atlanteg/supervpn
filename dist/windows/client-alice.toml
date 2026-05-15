@@ -1,5 +1,5 @@
 server        = "YOUR_SERVER_IP:5555"
-server_tcp    = "YOUR_SERVER_IP:443"
+server_tcp    = "YOUR_SERVER_IP:4443"
 status_listen = "127.0.0.1:9191"
 hub_id        = 1
 login         = "alice"

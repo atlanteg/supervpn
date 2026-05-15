@@ -34,11 +34,16 @@ type UserConfig struct {
 // ClientConfig is the client-side configuration.
 type ClientConfig struct {
 	Server       string          `toml:"server"`        // host:port UDP
-	ServerTCP    string          `toml:"server_tcp"`    // host:port TCP fallback
+	ServerTCP    string          `toml:"server_tcp"`    // host:port TCP (fallback or forced)
 	StatusListen string          `toml:"status_listen"` // HTTP status API, e.g. "127.0.0.1:9191"
 	HubID        uint16          `toml:"hub_id"`
 	Login        string          `toml:"login"`
 	Password     string          `toml:"password"`
+	// Transport selects which protocol to use:
+	//   "auto" (default) — try UDP first, fall back to TCP/TLS if server_tcp is set
+	//   "udp"            — UDP only, never fall back to TCP
+	//   "tcp"            — TCP/TLS only, skip UDP entirely
+	Transport string `toml:"transport"`
 	// TunName is the WinTun/utun adapter name used in direct mode (no 169.254.x.x interface
 	// detected). Defaults to "supervpn".
 	TunName string          `toml:"tun_name"`
