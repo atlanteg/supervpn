@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -28,6 +29,15 @@ type npcapFramer struct {
 	procSend   *windows.Proc
 	procClose  *windows.Proc
 	ifName     string
+
+	// injMu protects injectedSrc. When WriteFrame injects a frame, the frame's
+	// source MAC is added here BEFORE pcap_sendpacket so that ReadFrame can skip
+	// any looped-back copy. Windows NDIS may reflect injected frames (especially
+	// broadcast ARP) back to the receive path; without this filter the hub's MAC
+	// table would map remote VPN client MACs to the bridge session, causing
+	// replies destined for those clients to be sent to the wrong endpoint.
+	injMu       sync.Mutex
+	injectedSrc map[[6]byte]struct{}
 }
 
 func loadPcapDLL() (*windows.DLL, error) {
@@ -96,7 +106,8 @@ func openNpcapFramer(nicName string) (*npcapFramer, error) {
 	return &npcapFramer{
 		handle: h, dll: dll,
 		procNextEx: procNext, procSend: procSend, procClose: procClose,
-		ifName: nicName,
+		ifName:      nicName,
+		injectedSrc: make(map[[6]byte]struct{}),
 	}, nil
 }
 
@@ -123,8 +134,19 @@ func (f *npcapFramer) ReadFrame(ctx context.Context) ([]byte, error) {
 			if capLen < 14 {
 				continue
 			}
+			// Skip frames whose source MAC we injected — NDIS may loop back
+			// injected broadcasts to the receive path (see injectedSrc comment).
+			var srcMAC [6]byte
+			pkt := unsafe.Slice((*byte)(unsafe.Pointer(pktData)), capLen)
+			copy(srcMAC[:], pkt[6:12])
+			f.injMu.Lock()
+			_, looped := f.injectedSrc[srcMAC]
+			f.injMu.Unlock()
+			if looped {
+				continue
+			}
 			frame := make([]byte, capLen)
-			copy(frame, unsafe.Slice((*byte)(unsafe.Pointer(pktData)), capLen))
+			copy(frame, pkt)
 			return frame, nil
 		case 0: // timeout, no packet — loop to check context
 			runtime.Gosched()
@@ -138,6 +160,15 @@ func (f *npcapFramer) ReadFrame(ctx context.Context) ([]byte, error) {
 func (f *npcapFramer) WriteFrame(frame []byte) error {
 	if len(frame) == 0 {
 		return nil
+	}
+	// Record the injected source MAC BEFORE sending so ReadFrame can suppress
+	// any NDIS loopback copy of this frame.
+	if len(frame) >= 14 {
+		var src [6]byte
+		copy(src[:], frame[6:12])
+		f.injMu.Lock()
+		f.injectedSrc[src] = struct{}{}
+		f.injMu.Unlock()
 	}
 	r, _, _ := f.procSend.Call(
 		f.handle,
