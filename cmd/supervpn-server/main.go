@@ -78,6 +78,7 @@ func main() {
 		cfg:       cfg,
 		manager:   mgr,
 		sessions:  make(map[uint32]*Session),
+		kicked:    make(map[string]time.Time),
 		startTime: time.Now(),
 	}
 	if err := srv.Run(ctx); err != nil && err != context.Canceled {
@@ -103,12 +104,15 @@ type Session struct {
 	mu          sync.Mutex
 }
 
+const kickBlockDuration = 5 * time.Minute
+
 // Server handles auth, data forwarding, and ping/pong over UDP and TLS/TCP.
 type Server struct {
 	cfg       *config.ServerConfig
 	manager   *hub.Manager
 	conn      *net.UDPConn
 	sessions  map[uint32]*Session
+	kicked    map[string]time.Time // login → blocked until; prevents immediate reconnect after kick
 	mu        sync.RWMutex
 	startTime time.Time
 }
@@ -287,6 +291,14 @@ func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error, remote
 	wireHex := hex.EncodeToString(hello.PWHash[:])
 	if err := auth.CheckPassword(wireHex, storedHash); err != nil {
 		replyError("invalid credentials")
+		return 0
+	}
+
+	s.mu.RLock()
+	blockedUntil, isBlocked := s.kicked[hello.Login]
+	s.mu.RUnlock()
+	if isBlocked && time.Now().Before(blockedUntil) {
+		replyError(fmt.Sprintf("kicked: reconnect after %s", blockedUntil.UTC().Format(time.RFC3339)))
 		return 0
 	}
 
@@ -498,6 +510,7 @@ func (s *Server) cleanupLoop(ctx context.Context) {
 
 func (s *Server) cleanupSessions() {
 	deadline := time.Now().Add(-90 * time.Second)
+	now := time.Now()
 	s.mu.Lock()
 	for id, sess := range s.sessions {
 		sess.mu.Lock()
@@ -511,17 +524,23 @@ func (s *Server) cleanupSessions() {
 			log.Printf("session %d timed out (%s)", id, sess.Login)
 		}
 	}
+	for login, until := range s.kicked {
+		if now.After(until) {
+			delete(s.kicked, login)
+		}
+	}
 	s.mu.Unlock()
 }
 
 // ── Status HTTP API ──────────────────────────────────────────────────────────
 
 type statusResponse struct {
-	Version   string      `json:"version"`
-	Uptime    string      `json:"uptime"`
-	UDPListen string      `json:"udp_listen"`
-	TCPListen string      `json:"tcp_listen,omitempty"`
-	Hubs      []hubStatus `json:"hubs"`
+	Version   string            `json:"version"`
+	Uptime    string            `json:"uptime"`
+	UDPListen string            `json:"udp_listen"`
+	TCPListen string            `json:"tcp_listen,omitempty"`
+	Hubs      []hubStatus       `json:"hubs"`
+	Blocked   map[string]string `json:"blocked,omitempty"` // login → blocked_until (RFC3339)
 }
 
 type hubStatus struct {
@@ -585,6 +604,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.sessions[sessionID]
 	if ok {
 		delete(s.sessions, sessionID)
+		s.kicked[sess.Login] = time.Now().Add(kickBlockDuration)
 	}
 	s.mu.Unlock()
 
@@ -599,7 +619,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if h, ok2 := s.manager.Get(sess.HubID); ok2 {
 		h.Leave(sessionID)
 	}
-	log.Printf("kick: session %d (%s@hub%d) kicked via API", sessionID, sess.Login, sess.HubID)
+	log.Printf("kick: session %d (%s@hub%d) blocked for %s", sessionID, sess.Login, sess.HubID, kickBlockDuration)
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok","session_id":%d,"login":%q}`, sessionID, sess.Login)
@@ -653,12 +673,24 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		hubs = append(hubs, hs)
 	}
 
+	s.mu.RLock()
+	blocked := make(map[string]string, len(s.kicked))
+	for login, until := range s.kicked {
+		if now.Before(until) {
+			blocked[login] = until.UTC().Format(time.RFC3339)
+		}
+	}
+	s.mu.RUnlock()
+
 	resp := statusResponse{
 		Version:   version,
 		Uptime:    now.Sub(s.startTime).Truncate(time.Second).String(),
 		UDPListen: s.cfg.Listen,
 		TCPListen: s.cfg.ListenTCP,
 		Hubs:      hubs,
+	}
+	if len(blocked) > 0 {
+		resp.Blocked = blocked
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -155,9 +155,9 @@
 - 📋 Нагрузочные тесты: N клиентов, X Mbit/s, проверка CPU/RAM
 
 ### 5.2 Безопасность
-- 📋 Security review: nonce uniqueness при session restart
+- ✅ Security review: nonce uniqueness при session restart — random 4-byte salt per session в `crypto.NewCipher`, гарантирует уникальность nonce даже при коллизии session ID
+- ✅ Blocklist после kick — kicked login блокируется на 5 минут, `handleAuth` отклоняет reconnect
 - 📋 Rate limiting: max подключений с одного IP
-- 📋 Blocklist сессий (kick + запрет переподключения на некоторое время)
 
 ### 5.3 Деплой ✅ (частично)
 - ✅ systemd unit файл для сервера (`deploy/supervpn-server.service`)
