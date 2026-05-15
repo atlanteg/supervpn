@@ -1,0 +1,24 @@
+server        = "YOUR_SERVER_IP:5555"
+server_tcp    = "YOUR_SERVER_IP:443"
+status_listen = "127.0.0.1:9191"
+hub_id        = 1
+login         = "alice"
+password      = "Alice2025!"
+
+[fec]
+k = 20
+r = 6
+
+[tls]
+sni         = "microsoft.com"
+skip_verify = true
+
+[udp]
+knock_count = 3
+knock_size  = 16
+attempts    = 3
+
+# Bridge mode (если у сетевухи адрес 169.254.x.x):
+# [bridge]
+# tap_name     = "supervpn-tap"
+# setup_method = "netbridge"

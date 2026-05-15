@@ -1,0 +1,22 @@
+listen        = "0.0.0.0:5555"
+listen_tcp    = "0.0.0.0:443"
+status_listen = "127.0.0.1:9090"
+
+[fec]
+k = 20
+r = 6
+
+[tls]
+# cert и key генерируются автоматически при первом запуске
+
+[[hub]]
+id   = 1
+name = "main"
+
+  [[hub.user]]
+  login         = "alice"
+  password_hash = "$2a$10$G5EoBW2Kmd.BvVuM3N2.Ae0JtV5Sx4J3hWPWcENoYOup5ty/RWr2a"
+
+  [[hub.user]]
+  login         = "bob"
+  password_hash = "$2a$10$PAoBXOWtnKcS6mLVLYJc2.D7gCfjTtcCUKUxGge6JqDe/3J6C1O9e"
