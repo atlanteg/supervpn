@@ -34,7 +34,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/fec"
 	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/transport"
-	"github.com/atlanteg/supervpn/pkg/tun"
+	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
 var version = "dev"
@@ -89,6 +89,50 @@ func (cs *clientSessionState) setReconnecting() {
 	cs.mu.Unlock()
 }
 
+// openAdapter opens the virtual adapter for this session.
+// Bridge mode: a 169.254.0.0/16 interface is found — open TUN named after it
+//   and forward all L2 traffic between the local interface and the hub.
+// Direct mode: no link-local interface found — open a standalone TUN so the
+//   host gets transparent L2 access to the hub without local bridging.
+func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, error) {
+	ifaces, err := bridge.DetectLinkLocal()
+	if err != nil {
+		return bridge.Interface{}, nil, fmt.Errorf("detect interfaces: %w", err)
+	}
+
+	var iface bridge.Interface
+	var tunName string
+
+	if len(ifaces) > 0 {
+		iface = ifaces[0]
+		tunName = iface.Name
+		log.Printf("bridge mode: link-local interface %s (%s)", iface.Name, iface.HWAddr)
+	} else {
+		tunName = cfg.TunName
+		if tunName == "" {
+			tunName = "supervpn"
+		}
+		log.Printf("direct mode: no 169.254.x.x interface found, opening TUN %q", tunName)
+		log.Printf("direct mode: assign an IP inside the hub subnet to %q after startup", tunName)
+	}
+
+	framer, err := pkgtun.Open(tunName)
+	if err != nil {
+		return bridge.Interface{}, nil, fmt.Errorf("open TUN %q: %w", tunName, err)
+	}
+
+	actual := pkgtun.ActualName(framer, tunName)
+	if actual != tunName {
+		log.Printf("TUN assigned name: %s", actual)
+	}
+
+	if len(ifaces) == 0 {
+		iface = bridge.Interface{Name: actual}
+	}
+
+	return iface, framer, nil
+}
+
 func main() {
 	var cfgPath string
 	flag.StringVar(&cfgPath, "config", "", "path to client config file (optional)")
@@ -128,24 +172,11 @@ func main() {
 		go runClientStatusServer(ctx, cfg.StatusListen)
 	}
 
-	ifaces, err := bridge.DetectLinkLocal()
+	iface, framer, err := openAdapter(cfg)
 	if err != nil {
-		log.Fatalf("bridge: detect interfaces: %v", err)
-	}
-	if len(ifaces) == 0 {
-		log.Fatalf("bridge: no 169.254.0.0/16 interfaces found — nothing to bridge")
-	}
-	for _, iface := range ifaces {
-		log.Printf("bridge: detected link-local interface %s (%s)", iface.Name, iface.HWAddr)
-	}
-	iface := ifaces[0]
-
-	framer, err := tun.Open(iface.Name)
-	if err != nil {
-		log.Fatalf("tun: open %s: %v", iface.Name, err)
+		log.Fatalf("tun: %v", err)
 	}
 	defer framer.Close()
-	log.Printf("tun: opened adapter for %s", iface.Name)
 
 	log.Printf("supervpn-client %s: server=%s hub=%d login=%s",
 		version, cfg.Server, cfg.HubID, cfg.Login)

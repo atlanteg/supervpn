@@ -4,6 +4,7 @@ status_listen = "127.0.0.1:9191"   # GET /status — current mode, session info
 hub_id        = 1
 login         = "alice"
 password      = "your-password-here"
+# tun_name    = "supervpn"   # TUN adapter name in direct mode (no 169.254 interface found)
 
 [fec]
 k = 20
