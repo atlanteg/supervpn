@@ -1,5 +1,7 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-ZIP     := dist/supervpn-dist.zip
+BUILD        := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
+VERSION      := b$(BUILD)
+ZIP          := dist/supervpn-dist.zip
+RELEASES_REPO := atlanteg/supervpn-releases
 
 .PHONY: all build server client-windows client-darwin-arm64 client-darwin-amd64 \
         zip release test lint clean
@@ -35,16 +37,17 @@ zip: build
 	cd dist && zip -r ../$(ZIP) linux windows macos --exclude "**/.DS_Store"
 	@echo "Created $(ZIP)"
 
-# ── publish to GitHub Releases (tag: latest) ─────────────────────────────────
+# ── publish to public releases repo ──────────────────────────────────────────
 release: zip
-	gh release delete latest --yes 2>/dev/null || true
-	git push origin :refs/tags/latest 2>/dev/null || true
+	gh release delete latest --repo $(RELEASES_REPO) --yes 2>/dev/null || true
 	gh release create latest $(ZIP) \
-		--title "supervpn latest ($(VERSION))" \
-		--notes "Автосборка: $(VERSION)" \
+		--repo $(RELEASES_REPO) \
+		--title "supervpn $(VERSION)" \
+		--notes "Build $(VERSION) (commit $$(git rev-parse --short HEAD))" \
 		--latest
 	@echo ""
-	@echo "Download: https://github.com/atlanteg/supervpn/releases/latest/download/supervpn-dist.zip"
+	@echo "Build:    $(VERSION)"
+	@echo "Download: https://github.com/$(RELEASES_REPO)/releases/latest/download/supervpn-dist.zip"
 
 # ── dev ───────────────────────────────────────────────────────────────────────
 test:
