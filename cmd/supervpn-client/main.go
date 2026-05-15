@@ -186,17 +186,13 @@ func openDirectAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer
 	if tunName == "" {
 		tunName = "supervpn"
 	}
-	log.Printf("direct mode: no 169.254.x.x interface found, opening TUN %q (L3 mode — no L2 bridging)", tunName)
+	bc := cfg.Bridge.WithDefaults()
 
-	framer, err := pkgtun.Open(tunName)
+	framer, actual, err := openDirectFramer(bc, tunName)
 	if err != nil {
-		return bridge.Interface{}, nil, fmt.Errorf("open TUN %q: %w", tunName, err)
+		return bridge.Interface{}, nil, fmt.Errorf("open direct adapter %q: %w", tunName, err)
 	}
-
-	actual := pkgtun.ActualName(framer, tunName)
-	if actual != tunName {
-		log.Printf("TUN assigned name: %s", actual)
-	}
+	log.Printf("direct mode: opened %q (L2 TAP — participates in hub L2 domain)", actual)
 	return bridge.Interface{Name: actual}, framer, nil
 }
 

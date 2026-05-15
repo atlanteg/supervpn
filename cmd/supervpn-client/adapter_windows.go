@@ -13,6 +13,18 @@ import (
 // bridgeName returns the virtual TAP adapter name on Windows.
 func bridgeName(tapName, _ string) string { return tapName }
 
+// openDirectFramer opens the tap-windows6 TAP adapter (L2) in direct mode so
+// that the client participates in the hub's L2 broadcast domain with full
+// Ethernet framing and ARP — exactly like a bridge-mode client but without a
+// physical NIC being bridged.
+func openDirectFramer(bc config.BridgeConfig, _ string) (bridge.Framer, string, error) {
+	f, err := pkgtun.OpenTAP(bc.TapName)
+	if err != nil {
+		return nil, "", err
+	}
+	return f, bc.TapName, nil
+}
+
 func openPlatformBridge(bc config.BridgeConfig, detected bridge.Interface, adapterName string) (bridge.Framer, error) {
 	framer, method, err := pkgtun.OpenBridgeMulti(detected.Name, bc.TapName)
 	if err != nil {
