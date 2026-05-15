@@ -277,11 +277,12 @@ func TestFECPipe_EndToEnd_BurstLoss(t *testing.T) {
 			}
 		}
 
-		// With R=1 and 3 losses, recovery is impossible.
-		t.Logf("R=1 burst=%d losses: recovered %d frames (expected 0)", burstLen, len(recovered))
-		if len(recovered) != 0 {
-			t.Errorf("R=1 should not recover a burst of %d losses; got %d recovered frames",
-				burstLen, len(recovered))
+		// With R=1 and 3 losses, only the burstStart frames before the gap are
+		// streamed immediately. The rest of the block (after the gap) is unrecoverable.
+		t.Logf("R=1 burst=%d losses: recovered %d frames (expected %d)", burstLen, len(recovered), burstStart)
+		if len(recovered) != burstStart {
+			t.Errorf("R=1 burst: expected %d streamed frames (before gap), got %d",
+				burstStart, len(recovered))
 		}
 	})
 

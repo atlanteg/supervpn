@@ -88,11 +88,12 @@ type Decoder struct {
 }
 
 type decBlock struct {
-	data    [][]byte // k slots; nil = not received
-	repair  [][]byte // r slots; nil = not received
-	present []bool   // k+r flags
-	count   int      // received count
-	done    bool
+	data      [][]byte // k slots; nil = not received
+	repair    [][]byte // r slots; nil = not received
+	present   []bool   // k+r flags
+	count     int      // received count
+	delivered int      // consecutive data packets already returned to caller
+	done      bool
 }
 
 func NewDecoder(k, r int) (*Decoder, error) {
@@ -180,42 +181,54 @@ func (d *Decoder) expire() {
 }
 
 func (d *Decoder) tryRecover(id uint32, b *decBlock) ([][]byte, error) {
-	// count missing data packets
+	// If there are gaps, try FEC recovery before delivering.
 	missing := 0
-	for i := 0; i < d.k; i++ {
+	for i := b.delivered; i < d.k; i++ {
 		if !b.present[i] {
 			missing++
 		}
 	}
-	if missing == 0 {
-		b.done = true
-		delete(d.blocks, id)
-		return b.data, nil
-	}
-	// count available repair symbols
-	repairs := 0
-	for i := 0; i < d.r; i++ {
-		if b.present[d.k+i] {
-			repairs++
+	if missing > 0 {
+		repairs := 0
+		for i := 0; i < d.r; i++ {
+			if b.present[d.k+i] {
+				repairs++
+			}
+		}
+		if missing <= repairs {
+			var result [][]byte
+			var err error
+			if d.r == 1 {
+				result, err = xorRecover(b.data, b.repair[0], d.k)
+			} else {
+				result, err = rsRecover(d.enc, b.data, b.repair, d.k, d.r)
+			}
+			if err != nil {
+				return nil, err
+			}
+			for i, pkt := range result {
+				if !b.present[i] {
+					b.data[i] = pkt
+					b.present[i] = true
+				}
+			}
 		}
 	}
-	if missing > repairs {
-		return nil, nil // wait for more packets
+
+	// Deliver all consecutive in-order packets starting from b.delivered.
+	var out [][]byte
+	for b.delivered < d.k && b.present[b.delivered] {
+		out = append(out, b.data[b.delivered])
+		b.delivered++
 	}
-	// attempt recovery
-	var result [][]byte
-	var err error
-	if d.r == 1 {
-		result, err = xorRecover(b.data, b.repair[0], d.k)
-	} else {
-		result, err = rsRecover(d.enc, b.data, b.repair, d.k, d.r)
+	if b.delivered == d.k {
+		b.done = true
+		delete(d.blocks, id)
 	}
-	if err != nil {
-		return nil, err
+	if len(out) == 0 {
+		return nil, nil
 	}
-	b.done = true
-	delete(d.blocks, id)
-	return result, nil
+	return out, nil
 }
 
 // xorAll computes XOR of all packets, padding shorter ones with zeros.

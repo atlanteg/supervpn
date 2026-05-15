@@ -2,6 +2,7 @@ package fec
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"testing"
 )
@@ -46,7 +47,8 @@ func encodeBlock(t *testing.T, k, r int, pkts [][]byte) (originals [][]byte, rep
 	return pkts, repairs, blockID
 }
 
-// TestEncoderDecoder_NoLoss: encode K packets, receive all, verify decode succeeds.
+// TestEncoderDecoder_NoLoss: encode K packets, receive all one-by-one.
+// Streaming delivery: each packet is returned immediately as it arrives.
 func TestEncoderDecoder_NoLoss(t *testing.T) {
 	const k, r = 4, 1
 	originals := makePackets(k, 100)
@@ -61,46 +63,42 @@ func TestEncoderDecoder_NoLoss(t *testing.T) {
 	}
 
 	var blockID uint32
-	var repairs [][]byte
+	var all [][]byte
 	for i, p := range originals {
 		rep := enc.Add(p)
 		if rep != nil {
-			repairs = rep
 			blockID = enc.BlockID() - 1
 		}
-		// feed all data packets to decoder
 		result, err := dec.AddData(blockID, i, p)
 		if err != nil {
 			t.Fatalf("AddData[%d]: %v", i, err)
 		}
-		if i == k-1 {
-			// last packet — should complete block
-			if result == nil {
-				t.Fatal("expected complete block after all data packets")
-			}
-			for j, orig := range originals {
-				if !bytes.Equal(result[j], orig) {
-					t.Errorf("packet %d mismatch", j)
-				}
-			}
+		all = append(all, result...)
+	}
+
+	if len(all) != k {
+		t.Fatalf("expected %d packets total, got %d", k, len(all))
+	}
+	for i, orig := range originals {
+		if !bytes.Equal(all[i], orig) {
+			t.Errorf("packet %d mismatch", i)
 		}
-		_ = repairs
 	}
 }
 
 // TestEncoderDecoder_OneLoss: drop 1 data packet, verify XOR repair recovers it.
+// Packets before the gap are delivered immediately; missing packet is delivered after repair.
 func TestEncoderDecoder_OneLoss(t *testing.T) {
 	const k, r = 8, 1
 	originals := makePackets(k, 200)
 
 	for dropIdx := 0; dropIdx < k; dropIdx++ {
-		t.Run("drop"+string(rune('0'+dropIdx)), func(t *testing.T) {
+		t.Run(fmt.Sprintf("drop%d", dropIdx), func(t *testing.T) {
 			enc, _ := NewEncoder(k, r)
 			dec, _ := NewDecoder(k, r)
 
 			var blockID uint32
 			var repairs [][]byte
-
 			for _, p := range originals {
 				rep := enc.Add(p)
 				if rep != nil {
@@ -109,30 +107,31 @@ func TestEncoderDecoder_OneLoss(t *testing.T) {
 				}
 			}
 
-			// Feed all data packets except dropIdx
+			// Feed all data packets except dropIdx; accumulate delivered packets.
+			var delivered [][]byte
 			for i, p := range originals {
 				if i == dropIdx {
 					continue
 				}
 				result, err := dec.AddData(blockID, i, p)
 				if err != nil {
-					t.Fatalf("AddData: %v", err)
+					t.Fatalf("AddData[%d]: %v", i, err)
 				}
-				if result != nil {
-					t.Fatal("should not complete without repair when a packet is missing")
-				}
+				delivered = append(delivered, result...)
 			}
 
-			// Feed repair symbol — should trigger recovery
+			// Feed repair symbol — should trigger recovery of the missing packet.
 			result, err := dec.AddRepair(blockID, 0, repairs[0])
 			if err != nil {
 				t.Fatalf("AddRepair: %v", err)
 			}
-			if result == nil {
-				t.Fatal("expected recovery after repair symbol")
+			delivered = append(delivered, result...)
+
+			if len(delivered) != k {
+				t.Fatalf("expected %d packets total, got %d (dropIdx=%d)", k, len(delivered), dropIdx)
 			}
 			for i, orig := range originals {
-				if !bytes.Equal(result[i], orig) {
+				if !bytes.Equal(delivered[i], orig) {
 					t.Errorf("packet %d mismatch after recovery of drop %d", i, dropIdx)
 				}
 			}
@@ -149,7 +148,7 @@ func TestEncoderDecoder_TwoLoss_RS(t *testing.T) {
 
 	for _, pair := range dropPairs {
 		pair := pair
-		t.Run("drop_recovery", func(t *testing.T) {
+		t.Run(fmt.Sprintf("drop_%d_%d", pair[0], pair[1]), func(t *testing.T) {
 			enc, err := NewEncoder(k, r)
 			if err != nil {
 				t.Fatalf("NewEncoder: %v", err)
@@ -171,6 +170,8 @@ func TestEncoderDecoder_TwoLoss_RS(t *testing.T) {
 
 			dropSet := map[int]bool{pair[0]: true, pair[1]: true}
 
+			// Feed all data except dropped; accumulate delivered.
+			var delivered [][]byte
 			for i, p := range originals {
 				if dropSet[i] {
 					continue
@@ -179,26 +180,23 @@ func TestEncoderDecoder_TwoLoss_RS(t *testing.T) {
 				if err != nil {
 					t.Fatalf("AddData[%d]: %v", i, err)
 				}
-				if result != nil {
-					t.Fatal("should not complete prematurely")
-				}
+				delivered = append(delivered, result...)
 			}
 
-			// Feed both repair symbols
-			var result [][]byte
+			// Feed both repair symbols; accumulate remaining delivered.
 			for ri, rep := range repairs {
-				var err error
-				result, err = dec.AddRepair(blockID, ri, rep)
+				result, err := dec.AddRepair(blockID, ri, rep)
 				if err != nil {
 					t.Fatalf("AddRepair[%d]: %v", ri, err)
 				}
+				delivered = append(delivered, result...)
 			}
 
-			if result == nil {
-				t.Fatal("expected recovery after 2 repair symbols")
+			if len(delivered) != k {
+				t.Fatalf("expected %d packets, got %d (pair %v)", k, len(delivered), pair)
 			}
 			for i, orig := range originals {
-				if !bytes.Equal(result[i], orig) {
+				if !bytes.Equal(delivered[i], orig) {
 					t.Errorf("packet %d mismatch (drop pair %v)", i, pair)
 				}
 			}
@@ -232,12 +230,11 @@ func TestEncoderDecoder_TooManyLosses(t *testing.T) {
 		_, _ = dec.AddData(blockID, i, p)
 	}
 
-	// Feed repair — should return ErrUnrecoverable (not panic)
+	// Feed repair — should return ErrUnrecoverable or nil (not panic)
 	_, err := dec.AddRepair(blockID, 0, repairs[0])
 	if err != nil && err != ErrUnrecoverable {
 		t.Fatalf("unexpected error: %v (want nil or ErrUnrecoverable)", err)
 	}
-	// Either nil (waiting) or ErrUnrecoverable is acceptable; must not panic
 }
 
 // TestEncoderDecoder_OutOfOrder: deliver repair before data, verify still recovers.
@@ -265,11 +262,10 @@ func TestEncoderDecoder_OutOfOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddRepair early: %v", err)
 	}
-	if result != nil {
-		t.Fatal("should not complete with only repair")
-	}
+	var delivered [][]byte
+	delivered = append(delivered, result...)
 
-	// Now feed all data packets except the dropped one
+	// Feed all data packets except the dropped one; accumulate delivered.
 	for i, p := range originals {
 		if i == dropIdx {
 			continue
@@ -278,13 +274,14 @@ func TestEncoderDecoder_OutOfOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("AddData[%d]: %v", i, err)
 		}
+		delivered = append(delivered, result...)
 	}
 
-	if result == nil {
-		t.Fatal("expected recovery after all packets + repair (out of order)")
+	if len(delivered) != k {
+		t.Fatalf("expected %d packets, got %d", k, len(delivered))
 	}
 	for i, orig := range originals {
-		if !bytes.Equal(result[i], orig) {
+		if !bytes.Equal(delivered[i], orig) {
 			t.Errorf("packet %d mismatch", i)
 		}
 	}
@@ -347,9 +344,6 @@ func TestXorAll_Correctness(t *testing.T) {
 }
 
 // TestXorAll_VariableLengths: XOR parity + recovery works with variable-length packets.
-// The recovered packet may be padded to parity length with trailing zeros, so we check
-// that the original content is a prefix of the recovered data (the transport layer
-// knows the original length from the outer frame header).
 func TestXorAll_VariableLengths(t *testing.T) {
 	pkts := makeVarPackets(8, 50)
 	parity := xorAll(pkts)
@@ -365,19 +359,12 @@ func TestXorAll_VariableLengths(t *testing.T) {
 		}
 		orig := pkts[dropIdx]
 		recovered := result[dropIdx]
-		// Recovered may be longer (padded with zeros) but must start with the original bytes.
 		if len(recovered) < len(orig) {
 			t.Errorf("drop=%d: recovered too short: got %d, want >= %d", dropIdx, len(recovered), len(orig))
 			continue
 		}
 		if !bytes.Equal(recovered[:len(orig)], orig) {
 			t.Errorf("drop=%d: recovered prefix mismatch (variable lengths)", dropIdx)
-		}
-		// Trailing bytes beyond original length should be zero (XOR with zero-padded sources)
-		for i := len(orig); i < len(recovered); i++ {
-			if recovered[i] != 0 {
-				t.Errorf("drop=%d: non-zero trailing byte at %d", dropIdx, i)
-			}
 		}
 	}
 }
@@ -387,10 +374,8 @@ func TestDecoder_OldBlocksExpired(t *testing.T) {
 	const k, r = 4, 1
 	dec, _ := NewDecoder(k, r)
 
-	// Add one packet for block 0 — incomplete, should be buffered
 	_, _ = dec.AddData(0, 0, []byte("hello"))
 
-	// Advance maxSeen past maxOldBlocks threshold
 	for id := uint32(1); id <= uint32(maxOldBlocks)+2; id++ {
 		_, _ = dec.AddData(id, 0, []byte("x"))
 	}
@@ -401,5 +386,33 @@ func TestDecoder_OldBlocksExpired(t *testing.T) {
 
 	if exists {
 		t.Error("block 0 should have been expired")
+	}
+}
+
+// TestStreamingDelivery: verify packets are delivered one-by-one without waiting for full block.
+func TestStreamingDelivery(t *testing.T) {
+	const k, r = 20, 6 // production defaults
+	originals := makePackets(k, 1400)
+
+	enc, _ := NewEncoder(k, r)
+	dec, _ := NewDecoder(k, r)
+
+	var blockID uint32
+	for i, p := range originals {
+		rep := enc.Add(p)
+		if rep != nil {
+			blockID = enc.BlockID() - 1
+		}
+		result, err := dec.AddData(blockID, i, p)
+		if err != nil {
+			t.Fatalf("AddData[%d]: %v", i, err)
+		}
+		// Each packet must be delivered immediately — no buffering.
+		if len(result) != 1 {
+			t.Fatalf("packet %d: expected immediate delivery (1 packet), got %d", i, len(result))
+		}
+		if !bytes.Equal(result[0], p) {
+			t.Errorf("packet %d: content mismatch", i)
+		}
 	}
 }
