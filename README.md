@@ -16,33 +16,43 @@
 ## Как это работает
 
 ```
-[Клиент A]                          [Сервер Linux]
-  bridge mode:                        UDP :5555
-  169.254.x.x NIC ──► BPF/TAP        TLS :443 (fallback)
-  L2 frames ──► FEC encode ──►            │
-                                       Hub 1 (L2 switch)
-                          ◄── FEC decode ─┤
-                                          │
-                                    [Клиент B]
-                                      direct mode:
-                                      TUN «supervpn»
-                                      (назначить IP вручную)
+[Клиент A — bridge mode]              [Сервер Linux]
+  169.254.x.x NIC                       UDP :5555
+  Npcap/BPF/TAP ──► FEC encode ──►     TLS :443 (fallback)
+                                             │
+                                         Hub 1 (L2 switch)
+                                         MAC-таблица
+                          ◄── FEC decode ──┤
+                                           │
+                               [Клиент B — direct mode]
+                                 TAP «supervpn-tap»
+                                 192.168.5.1/24
 ```
 
 **Bridge mode** — клиент находит интерфейс с адресом `169.254.0.0/16` (APIPA) и прозрачно
-форвардит весь L2-трафик в хаб. Никаких ручных маршрутов. На macOS использует BPF (root),
-на Windows — tap-windows6 + автоматическое создание Windows Network Bridge, на Linux — kernel TAP.
+форвардит весь L2-трафик в хаб. Никаких ручных маршрутов. Захват кадров:
+
+| Платформа | Метод | Примечание |
+|---|---|---|
+| Windows | Npcap (primary) | `promisc=1`; NDIS-loopback инжектированных кадров подавляется |
+| Windows | NDISUIO (fallback) | `OID_GEN_CURRENT_PACKET_FILTER = PROMISCUOUS` |
+| Windows | tap+Windows Bridge (fallback) | Bridge ставит promiscuous сам |
+| macOS | BPF | `BIOCPROMISC` + `BIOCSSEESENT=0` |
+| Linux | kernel TAP | bridge ставит promiscuous сам |
 
 **Direct mode** — если 169.254-интерфейса нет, клиент открывает TAP-адаптер `supervpn-tap`
 (L2, полные Ethernet-кадры). Участвует в L2-домене хаба наравне с bridge-клиентами —
 ARP, unicast и broadcast работают прозрачно. После запуска назначить IP вручную:
-`netsh interface ip set address "supervpn-tap" static 192.168.5.1 255.255.255.0`
+```
+netsh interface ip set address "supervpn-tap" static 192.168.5.1 255.255.255.0
+```
 
 TAP-драйвер (`tap-driver/`) устанавливается **автоматически** при первом запуске если не установлен.
 Требует запуска от Администратора.
 
-**Hub** — изолированный L2-коммутатор: учит MAC-адреса, делает unicast/broadcast/flood.
-Несколько хабов на одном сервере не смешиваются.
+**Hub** — изолированный L2-коммутатор: учит MAC-адреса из каждого входящего кадра,
+извлекает IP из ARP и IPv4-заголовков, делает unicast/broadcast/flood. Таблица MAC→IP
+видна в `/status` и полезна для диагностики форвардинга.
 
 **FEC** — Reed-Solomon над GF(2⁸): на K пакетов добавляется R repair-символов, любые ≤R
 потерь в блоке восстанавливаются без retransmit. По умолчанию K=20, R=6.
@@ -53,6 +63,10 @@ Streaming delivery: пакеты до пробела возвращаются н
 
 **Knock-and-dial** — перед каждой UDP auth-попыткой клиент отправляет N случайных пакетов
 с того же сокета (тот же 5-tuple), праймируя NAT/firewall. Затем несколько knock→auth циклов.
+
+**Авто-обновление** — при старте клиент проверяет последний релиз (GitHub API). Зеркало
+для скачивания берётся автоматически из адреса сервера (`http://server_host:9090/update`).
+Сервер сам скачивает клиентские бинарники в `dist/` при старте и раздаёт их клиентам.
 
 ---
 
@@ -70,7 +84,8 @@ Streaming delivery: пакеты до пробела возвращаются н
 | AES-128-GCM | per-session random salt, counter-based nonce, replay window 512 |
 | Multi-hub | независимые L2-домены на одном сервере |
 | Kick + blocklist | принудительный дисконнект через HTTP API с блокировкой на 5 минут |
-| HTTP status API | JSON /status на сервере и клиенте |
+| HTTP status API | JSON /status на сервере и клиенте; MAC/IP-таблица хаба |
+| Авто-обновление | GitHub Releases + fallback-зеркало на сервере; сервер авто-скачивает клиентов |
 | Авторелиз CI | каждый push в main = новый релиз в GitHub Releases |
 
 ---
@@ -80,7 +95,7 @@ Streaming delivery: пакеты до пробела возвращаются н
 | Компонент | Платформа | Адаптер | Статус |
 |---|---|---|---|
 | `supervpn-server` | Linux amd64 | — | готово |
-| `supervpn-client` | Windows amd64 | tap-windows6 TAP (direct + bridge), Npcap (bridge capture) | готово |
+| `supervpn-client` | Windows amd64 | tap-windows6 TAP (direct + bridge), Npcap / NDISUIO (bridge capture) | готово |
 | `supervpn-client` | macOS arm64/amd64 | utun (direct) / BPF (bridge, root) | готово |
 
 ---
@@ -101,7 +116,7 @@ Streaming delivery: пакеты до пробела возвращаются н
 ```toml
 listen        = "0.0.0.0:5555"
 listen_tcp    = "0.0.0.0:443"
-status_listen = "127.0.0.1:9090"
+status_listen = "0.0.0.0:9090"   # доступен клиентам — нужен для зеркала обновлений
 
 [fec]
 k = 20
@@ -124,9 +139,16 @@ name = "office"
 
 ```bash
 ./supervpn-server -config /etc/supervpn/server.toml
-# supervpn-server b86 starting: UDP=0.0.0.0:5555 hubs=1
+# supervpn-server b108 starting: UDP=0.0.0.0:5555 hubs=1
 # listening TLS/TCP 0.0.0.0:443
+# update mirror: downloading  supervpn-client-windows-amd64.exe  (release b108) ...
+# update mirror: ready  supervpn-client-windows-amd64.exe  (4521984 bytes)
+# ...
+# update mirror ready — clients: update_mirrors = ["http://0.0.0.0:9090/update"]
 ```
+
+При старте сервер автоматически скачивает клиентские бинарники в `dist/` (рядом с бинарником)
+и начинает раздавать их клиентам как зеркало обновлений.
 
 ### 2. Клиент
 
@@ -148,6 +170,9 @@ sni = "microsoft.com"   # SNI в TLS ClientHello
 knock_count = 3
 knock_size  = 16
 attempts    = 3
+
+# update_mirrors не нужен — автоматически выводится из адреса сервера:
+# http://vpn.example.com:9090/update
 ```
 
 ```bash
@@ -167,11 +192,18 @@ supervpn-client -config client.toml -transport tcp
 supervpn-client -config client.toml -transport udp
 ```
 
+При старте клиент автоматически проверяет обновления и перезапускается если найдена новая версия:
+
+```
+update: mirror auto-set to http://vpn.example.com:9090/update
+update: checking for updates (current: b108) ...
+update: already up to date (b108)
+supervpn-client b108: server=vpn.example.com:5555 hub=1 login=alice
+```
+
 При старте клиент пишет режим работы и keepalive-статистику каждые 25 секунд:
 
 ```
-supervpn-client b86: server=vpn.example.com:5555 hub=1 login=alice
-
 # Bridge mode (Windows) — Network Bridge создаётся автоматически:
 bridge: creating Windows Network Bridge ("Ethernet" ↔ "supervpn-tap") ...
 bridge: Network Bridge "Network Bridge" ready
@@ -203,7 +235,8 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
 |---|---|---|---|
 | `listen` | string | — | UDP адрес, напр. `0.0.0.0:5555` |
 | `listen_tcp` | string | — | TLS/TCP адрес, напр. `0.0.0.0:443` |
-| `status_listen` | string | — | HTTP status API, напр. `127.0.0.1:9090` |
+| `status_listen` | string | — | HTTP status API + зеркало обновлений, напр. `0.0.0.0:9090` |
+| `update_dir` | string | `dist/` рядом с бинарником | Директория с клиентскими бинарниками для зеркала |
 | `fec.k` | int | 20 | Data-пакетов в FEC блоке |
 | `fec.r` | int | 6 | Repair-пакетов в FEC блоке |
 | `tls.cert_file` | string | — | PEM cert (если пусто — auto self-signed) |
@@ -225,10 +258,11 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
 | `login` | string | — | Логин |
 | `password` | string | — | Пароль |
 | `transport` | string | `auto` | `auto` / `udp` / `tcp` |
-| `tun_name` | string | `supervpn` | Имя TUN в direct mode (не используется на Windows — там всегда `bridge.tap_name`) |
-| `bridge.tap_name` | string | `supervpn-tap` | Имя TAP-адаптера (используется и в bridge, и в direct режиме на Windows) |
-| `bridge.nic` | string | — | Имя физического NIC для bridge-режима (если пусто — автодетект по 169.254.x.x, виртуальные адаптеры с `*` в имени пропускаются) |
+| `tun_name` | string | `supervpn` | Имя TUN в direct mode (macOS/Linux; на Windows игнорируется) |
+| `bridge.tap_name` | string | `supervpn-tap` | Имя TAP-адаптера (bridge и direct mode на Windows) |
+| `bridge.nic` | string | — | Имя физического NIC для bridge-режима (если пусто — автодетект по 169.254.x.x, адаптеры с `*` в имени пропускаются) |
 | `status_listen` | string | — | HTTP status API клиента |
+| `update_mirrors` | []string | авто из `server` | Зеркала для скачивания обновлений; если не задано — `http://server_host:9090/update` |
 | `fec.k` | int | 20 | Data-пакетов (должно совпадать с сервером) |
 | `fec.r` | int | 6 | Repair-пакетов (должно совпадать с сервером) |
 | `tls.sni` | string | хост сервера | SNI в ClientHello |
@@ -256,7 +290,7 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
 
 ```json
 {
-  "version": "b76",
+  "version": "b108",
   "uptime": "2h15m30s",
   "udp_listen": "0.0.0.0:5555",
   "tcp_listen": "0.0.0.0:443",
@@ -278,22 +312,49 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
           "frames_tx": 980,
           "hub_send_calls": 1024
         }
+      ],
+      "mac_table": [
+        {
+          "mac": "00:ff:ee:71:d2:3c",
+          "ip": "192.168.5.1",
+          "login": "alice",
+          "session_id": 3141592653,
+          "expires_in": "4m32s"
+        },
+        {
+          "mac": "a4:c3:f0:11:22:33",
+          "ip": "192.168.5.3",
+          "login": "",
+          "session_id": 3141592653,
+          "expires_in": "2m11s"
+        }
       ]
     }
-  ]
+  ],
+  "update_mirror": {
+    "url": "http://0.0.0.0:9090/update",
+    "assets": {
+      "supervpn-client-windows-amd64.exe": "ok (4521984 bytes)",
+      "supervpn-client-darwin-arm64": "ok (5234688 bytes)",
+      "supervpn-client-darwin-amd64": "ok (5190144 bytes)"
+    }
+  }
 }
 ```
 
-`tcp_listener_up` — `true` если TLS/TCP listener реально поднялся (а не только задан в конфиге).
-`frames_rx` — Ethernet фреймов получено от клиента и отправлено в hub.
-`frames_tx` — Ethernet фреймов отправлено клиенту из hub.
-`hub_send_calls` — сколько раз hub вызвал Send для этого клиента (до FEC-кодирования).
+`tcp_listener_up` — `true` если TLS/TCP listener реально поднялся.  
+`frames_rx` — Ethernet фреймов получено от клиента и отправлено в hub.  
+`frames_tx` — Ethernet фреймов отправлено клиенту из hub.  
+`hub_send_calls` — сколько раз hub вызвал Send для этого клиента (до FEC-кодирования).  
+`mac_table` — текущая MAC-таблица хаба: для каждого MAC — последний виденный IP (из ARP/IPv4),
+логин владельца (пусто если это физическое устройство за bridge-клиентом), TTL записи.  
+`update_mirror.assets` — какие клиентские бинарники готовы к раздаче.
 
 ### `GET http://127.0.0.1:9191/status` (клиент)
 
 ```json
 {
-  "version": "b76",
+  "version": "b108",
   "uptime": "45m10s",
   "state": "connected",
   "session": {
@@ -308,7 +369,7 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
 }
 ```
 
-`state`: `starting` | `connecting` | `connected` | `reconnecting`
+`state`: `starting` | `connecting` | `connected` | `reconnecting`  
 `mode`: `udp` | `tls`
 
 ### `POST http://127.0.0.1:9090/api/hubs/{hub_id}/kick/{session_id}`
@@ -319,6 +380,27 @@ curl -X POST http://127.0.0.1:9090/api/hubs/1/kick/3141592653
 ```
 
 Логин блокируется на 5 минут после kick.
+
+---
+
+## Авто-обновление
+
+Клиент при старте проверяет последний релиз и перезапускается если доступна новая версия.
+
+**Порядок источников:**
+1. GitHub API (`api.github.com/repos/atlanteg/supervpn-releases/releases/latest`)
+2. Зеркала из `update_mirrors` (проверяются по очереди)
+
+**Зеркало по умолчанию** — сервер supervpn сам. Адрес зеркала выводится автоматически из
+`server` в конфиге клиента: `http://server_host:9090/update`. Явно задавать не нужно.
+
+Если порт status_listen на сервере не 9090:
+```toml
+update_mirrors = ["http://vpn.example.com:8080/update"]
+```
+
+**Сервер** при старте скачивает недостающие клиентские бинарники с GitHub в `dist/` и раздаёт
+их через `GET /update/{asset}`. Директория настраивается через `update_dir`.
 
 ---
 
@@ -401,12 +483,13 @@ internal/
   proto/               — wire format: типы фреймов, заголовки, seq-поля
   fec/                 — Forward Error Correction (Reed-Solomon / XOR)
   transport/           — UDP + TLS/TCP транспорт, knock-and-dial
-  hub/                 — L2 коммутатор: MAC-таблица, forwarding
+  hub/                 — L2 коммутатор: MAC-таблица + IP-трекинг, forwarding
   bridge/              — детект 169.254, bridge loop
   auth/                — bcrypt/SHA-256 аутентификация
   config/              — TOML конфигурация
+  update/              — авто-обновление: GitHub API + зеркала, FetchAsset
 pkg/
-  tun/                 — TAP (Linux), WinTun (Windows), BPF (macOS bridge), utun (macOS direct)
+  tun/                 — TAP (Linux/Windows tap0901), WinTun (Windows TUN), BPF (macOS bridge), utun (macOS direct)
 dist/
   linux/               — сервер + конфиги + systemd unit
   windows/             — клиент + tap-driver + wintun.dll + конфиги
