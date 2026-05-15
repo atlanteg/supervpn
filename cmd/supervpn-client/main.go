@@ -96,7 +96,8 @@ func (cs *clientSessionState) setReconnecting() {
 //             The TAP adapter must be bridged with the physical NIC via
 //             Windows Network Bridge or Hyper-V (see deploy/setup-bridge-*.ps1).
 //   Linux   — opens a kernel TAP device (L2, Ethernet frames).
-//   macOS   — opens a utun device (L3, raw IP; true L2 bridge not yet supported).
+//   macOS   — opens a BPF device bound directly to the physical NIC (L2, Ethernet frames).
+//             Requires root.
 //
 // Direct mode (no 169.254 interface):
 //   All platforms — opens a TUN adapter (WinTun on Windows, utun on macOS).
@@ -115,27 +116,32 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 
 func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (bridge.Interface, bridge.Framer, error) {
 	bc := cfg.Bridge // already has defaults applied by LoadClientConfig
-	log.Printf("bridge mode: link-local interface %s (%s), method=%s",
-		detected.Name, detected.HWAddr, bc.SetupMethod)
 
-	// On Windows use tap-windows6 (L2 Ethernet frames).
-	// On other platforms fall back to the native TUN device.
-	framer, err := pkgtun.OpenTAP(bc.TapName)
+	// On Windows, OpenBridge opens the named TAP adapter (tap-windows6).
+	// On macOS, OpenBridge opens a BPF device on the detected physical NIC directly.
+	// On Linux, OpenBridge opens a kernel TAP device.
+	adapterName := bridgeAdapterName(bc.TapName, detected.Name)
+
+	log.Printf("bridge mode: link-local interface %s (%s), adapter=%q method=%s",
+		detected.Name, detected.HWAddr, adapterName, bc.SetupMethod)
+
+	framer, err := pkgtun.OpenBridge(adapterName)
 	if err != nil {
-		// On non-Windows OpenTAP returns an error; fall back to native TUN.
-		log.Printf("bridge mode: TAP unavailable (%v), falling back to TUN", err)
-		fallback, err2 := pkgtun.Open(bc.TapName)
-		if err2 != nil {
-			return bridge.Interface{}, nil, fmt.Errorf("open adapter %q: %w", bc.TapName, err2)
-		}
-		framer = fallback
+		return bridge.Interface{}, nil, fmt.Errorf("open bridge adapter %q: %w", adapterName, err)
 	}
 
-	actual := pkgtun.ActualName(framer, bc.TapName)
-	log.Printf("bridge mode: TAP adapter %q open (method=%s)", actual, bc.SetupMethod)
+	actual := pkgtun.ActualName(framer, adapterName)
+	log.Printf("bridge mode: adapter %q open", actual)
 	logBridgeSetupHint(bc)
 
 	return detected, framer, nil
+}
+
+// bridgeAdapterName returns the adapter name to pass to OpenBridge.
+// On macOS (BPF), we bind directly to the physical NIC, so use detectedNIC.
+// On Windows/Linux, we open a virtual TAP adapter with the configured name.
+func bridgeAdapterName(tapName, detectedNIC string) string {
+	return bridgeName(tapName, detectedNIC)
 }
 
 // logBridgeSetupHint prints one-time guidance when the bridge has not been
