@@ -663,12 +663,40 @@ func (s *Server) checkUpdateAssets() {
 				available++
 			}
 		}
+		mirrorURL := s.mirrorURL()
 		if available == len(clientAssets) {
-			log.Printf("update mirror ready — clients: update_mirrors = [\"http://%s/update\"]", s.cfg.StatusListen)
+			log.Printf("update mirror ready — clients: update_mirrors = [\"%s\"]", mirrorURL)
 		} else {
-			log.Printf("update mirror: %d/%d assets available at http://%s/update", available, len(clientAssets), s.cfg.StatusListen)
+			log.Printf("update mirror: %d/%d assets available at %s", available, len(clientAssets), mirrorURL)
 		}
 	}
+}
+
+// mirrorURL returns the client-facing base URL for the update mirror.
+// Uses the host from status_listen, with two adjustments:
+//   - wildcard (0.0.0.0 / ::) → replaced with the host from cfg.Listen
+//   - loopback (127.0.0.1 / ::1) → replaced with <your_server_ip> and a warning
+func (s *Server) mirrorURL() string {
+	host, port, err := net.SplitHostPort(s.cfg.StatusListen)
+	if err != nil {
+		return "http://" + s.cfg.StatusListen + "/update"
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		// Wildcard — derive host from the UDP listen address.
+		if udpHost, _, e := net.SplitHostPort(s.cfg.Listen); e == nil &&
+			udpHost != "" && udpHost != "0.0.0.0" && udpHost != "::" {
+			host = udpHost
+		} else {
+			host = "<your_server_ip>"
+		}
+	case "127.0.0.1", "::1":
+		log.Printf("update mirror: WARNING: status_listen is bound to loopback (%s) — "+
+			"clients on other machines cannot reach the mirror; "+
+			"set status_listen = \"0.0.0.0:%s\" to expose it", s.cfg.StatusListen, port)
+		host = "<your_server_ip>"
+	}
+	return fmt.Sprintf("http://%s:%s/update", host, port)
 }
 
 // handleUpdateAsset serves a client binary from updateDir.
@@ -907,7 +935,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			mirror = &mirrorStatus{
-				URL:    "http://" + s.cfg.StatusListen + "/update",
+				URL:    s.mirrorURL(),
 				Assets: assetInfo,
 			}
 		}
