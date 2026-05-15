@@ -24,6 +24,7 @@ var LinkLocalNet = func() *net.IPNet {
 type Interface struct {
 	Name   string
 	HWAddr net.HardwareAddr
+	Addr   net.IP // first 169.254 address found on this interface
 }
 
 // DetectLinkLocal returns all network interfaces that have at least one
@@ -51,6 +52,7 @@ func DetectLinkLocal() ([]Interface, error) {
 				result = append(result, Interface{
 					Name:   iface.Name,
 					HWAddr: iface.HardwareAddr,
+					Addr:   ip,
 				})
 				break
 			}

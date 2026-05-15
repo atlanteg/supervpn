@@ -140,8 +140,8 @@ func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (brid
 	// On Linux, OpenBridge opens a kernel TAP device.
 	adapterName := bridgeAdapterName(bc.TapName, detected.Name)
 
-	log.Printf("bridge mode: link-local interface %s (%s), adapter=%q method=%s",
-		detected.Name, detected.HWAddr, adapterName, bc.SetupMethod)
+	log.Printf("bridge mode: bridging local NIC %q (addr=%s mac=%s) → %q",
+		detected.Name, detected.Addr, detected.HWAddr, adapterName)
 
 	// Ensure OS-level bridge is configured before opening the TAP adapter.
 	// On Windows this creates the Network Bridge if not already present.
@@ -245,7 +245,7 @@ func main() {
 	log.Printf("supervpn-client %s: server=%s hub=%d login=%s",
 		version, cfg.Server, cfg.HubID, cfg.Login)
 
-	backoff := time.Second
+	const reconnectDelay = 2 * time.Second
 	for {
 		if ctx.Err() != nil {
 			return
@@ -255,24 +255,28 @@ func main() {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("session ended: %v — reconnecting in %s", err, backoff)
+		log.Printf("session ended: %v — reconnecting in %s", err, reconnectDelay)
 		sessionState.setReconnecting()
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
-		}
-		backoff *= 2
-		if backoff > 30*time.Second {
-			backoff = 30 * time.Second
+		case <-time.After(reconnectDelay):
 		}
 	}
 }
 
 const (
-	pingInterval    = 25 * time.Second
+	pingInterval     = 25 * time.Second
 	keepaliveTimeout = 75 * time.Second // 3 missed pongs → reconnect
 )
+
+// fecStats tracks FEC recovery counters for one session.
+type fecStats struct {
+	dataRecv      atomic.Uint64 // data frames received from network
+	repairRecv    atomic.Uint64 // repair frames received from network
+	recovered     atomic.Uint64 // frames recovered via FEC (were lost, then reconstructed)
+	unrecoverable atomic.Uint64 // blocks with too many losses to recover
+}
 
 // runSession dials the server, authenticates, runs the bridge, and returns on error.
 func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Interface, framer bridge.Framer) error {
@@ -336,13 +340,15 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	downErr := make(chan error, 1)
 	go func() { downErr <- b.RunDownstream(sessionCtx, downstream) }()
 
+	var stats fecStats
 	recvErr := make(chan error, 1)
 	go func() {
-		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, downstream, &lastPong)
+		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, downstream, &lastPong, &stats)
 	}()
 
 	pingTick := time.NewTicker(pingInterval)
 	defer pingTick.Stop()
+	var pingSeq uint64
 
 	for {
 		select {
@@ -355,8 +361,13 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 		case err := <-recvErr:
 			return fmt.Errorf("recv: %w", err)
 		case <-pingTick.C:
+			pingSeq++
 			sendPing(tr, sessionID, cfg.HubID)
 			since := time.Since(time.Unix(0, lastPong.Load()))
+			log.Printf("keepalive: ping #%d sent, last pong %s ago | FEC data=%d repair=%d recovered=%d lost=%d",
+				pingSeq, since.Truncate(time.Second),
+				stats.dataRecv.Load(), stats.repairRecv.Load(),
+				stats.recovered.Load(), stats.unrecoverable.Load())
 			if since > keepaliveTimeout {
 				return fmt.Errorf("keepalive timeout: no pong for %s", since.Truncate(time.Second))
 			}
@@ -534,7 +545,7 @@ func wireHashHex(password string) string {
 	return string(buf)
 }
 
-func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, out chan<- []byte, lastPong *atomic.Int64) error {
+func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, out chan<- []byte, lastPong *atomic.Int64, stats *fecStats) error {
 	var replay crypto.ReplayWindow
 	for {
 		f, err := tr.Recv(ctx)
@@ -556,12 +567,14 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 			if err != nil {
 				continue
 			}
+			stats.dataRecv.Add(1)
 			blockID, pktIdx := proto.UnpackDataSeq(hdr.Seq)
-			recovered, err := pipe.RecvData(blockID, pktIdx, frame)
-			if err != nil || recovered == nil {
+			delivered, err := pipe.RecvData(blockID, pktIdx, frame)
+			if err != nil {
+				stats.unrecoverable.Add(1)
 				continue
 			}
-			for _, rf := range recovered {
+			for _, rf := range delivered {
 				if len(rf) < 14 {
 					continue
 				}
@@ -577,24 +590,31 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 			if err != nil {
 				continue
 			}
+			stats.repairRecv.Add(1)
 			blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
-			recovered, err := pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
-			if err != nil || recovered == nil {
+			delivered, err := pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
+			if err != nil {
+				stats.unrecoverable.Add(1)
 				continue
 			}
-			for _, rf := range recovered {
-				if len(rf) < 14 {
-					continue
-				}
-				select {
-				case out <- rf:
-				case <-ctx.Done():
-					return ctx.Err()
+			if len(delivered) > 0 {
+				// repair triggered recovery — count the reconstructed frames
+				stats.recovered.Add(uint64(len(delivered)))
+				for _, rf := range delivered {
+					if len(rf) < 14 {
+						continue
+					}
+					select {
+					case out <- rf:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
 				}
 			}
 
 		case proto.FramePong:
 			lastPong.Store(time.Now().UnixNano())
+			log.Printf("keepalive: pong received from server")
 		}
 	}
 }
