@@ -31,7 +31,7 @@
 
 **Bridge mode** — клиент находит интерфейс с адресом `169.254.0.0/16` (APIPA) и прозрачно
 форвардит весь L2-трафик в хаб. Никаких ручных маршрутов. На macOS использует BPF (root),
-на Windows — tap-windows6, на Linux — kernel TAP.
+на Windows — tap-windows6 + автоматическое создание Windows Network Bridge, на Linux — kernel TAP.
 
 **Direct mode** — если 169.254-интерфейса нет, клиент открывает TUN-адаптер
 (`supervpn` по умолчанию). После запуска назначить IP вручную.
@@ -56,14 +56,17 @@ Streaming delivery: пакеты до пробела возвращаются н
 | | |
 |---|---|
 | Прозрачный L2 мост | bridge mode не требует настройки IP или маршрутов |
+| Автонастройка Windows | TAP переименовывается и Network Bridge создаётся автоматически |
 | FEC без retransmit | восстанавливает до R потерь в блоке, стриминг без ожидания |
+| FEC-статистика в логах | keepalive каждые 25s показывает data/repair/recovered/lost |
 | UDP + TLS fallback | работает через ТСПУ, корпоративные firewall |
+| Быстрый реконнект | фиксированная пауза 2s при дисконнекте, без экспоненциального backoff |
 | Knock-and-dial | праймирование NAT перед auth одним сокетом |
 | AES-128-GCM | per-session random salt, counter-based nonce, replay window 512 |
 | Multi-hub | независимые L2-домены на одном сервере |
 | Kick + blocklist | принудительный дисконнект через HTTP API с блокировкой на 5 минут |
 | HTTP status API | JSON /status на сервере и клиенте |
-| Версии b{N} | автоинкремент по числу коммитов, видно в логах и /status |
+| Авторелиз CI | каждый push в main = новый релиз в GitHub Releases |
 
 ---
 
@@ -116,7 +119,7 @@ name = "office"
 
 ```bash
 ./supervpn-server -config /etc/supervpn/server.toml
-# supervpn-server b76 starting: UDP=0.0.0.0:5555 hubs=1
+# supervpn-server b86 starting: UDP=0.0.0.0:5555 hubs=1
 # listening TLS/TCP 0.0.0.0:443
 ```
 
@@ -159,15 +162,30 @@ supervpn-client -config client.toml -transport tcp
 supervpn-client -config client.toml -transport udp
 ```
 
-При старте клиент пишет режим работы:
+При старте клиент пишет режим работы и keepalive-статистику каждые 25 секунд:
 
 ```
-supervpn-client b76: server=vpn.example.com:5555 hub=1 login=alice
-bridge mode: link-local interface en0 (00:11:22:33:44:55), adapter="en0" method=netbridge
-# или
-direct mode: no 169.254.x.x interface found, opening TUN "supervpn"
-direct mode: assign an IP inside the hub subnet to "supervpn" after startup
+supervpn-client b86: server=vpn.example.com:5555 hub=1 login=alice
+
+# Bridge mode (Windows) — Network Bridge создаётся автоматически:
+bridge: creating Windows Network Bridge ("Ethernet" ↔ "supervpn-tap") ...
+bridge: Network Bridge "Network Bridge" ready
+bridge mode: bridging local NIC "Ethernet" (addr=169.254.3.7 mac=84:a6:c8:d1:06:bf) → "supervpn-tap"
+session 469949699 active via udp
+keepalive: ping #1 sent, last pong 0s ago | FEC data=0 repair=0 recovered=0 lost=0
+keepalive: pong received from server
+keepalive: ping #2 sent, last pong 24s ago | FEC data=1247 repair=62 recovered=3 lost=0
+
+# Bridge mode (macOS) — BPF напрямую на NIC, без виртуального адаптера:
+bridge mode: bridging local NIC "en0" (addr=169.254.3.7 mac=00:11:22:33:44:55) → "en0"
+session 469949699 active via udp
+
+# Direct mode (нет 169.254 интерфейса):
+direct mode: no 169.254.x.x interface found, opening TUN "supervpn" (L3 mode — no L2 bridging)
 ```
+
+`FEC recovered` — пакеты, потерянные при передаче и восстановленные из repair-символов без retransmit.
+`FEC lost` — блоки с потерями больше R (невосстановимые); при нормальных условиях = 0.
 
 ---
 
@@ -308,10 +326,14 @@ make client-darwin-arm64   # macOS Apple Silicon
 make client-darwin-amd64   # macOS Intel
 make test           # go test -race ./...
 make zip            # собрать supervpn-dist.zip
-make release        # build + zip + публикация в GitHub Releases
+make release        # build + zip + публикация вручную (обычно не нужно)
 ```
 
 Версия (`b{N}`) задаётся автоматически по числу коммитов в git — не нужно проставлять вручную.
+
+**Публикация релизов автоматическая:** каждый `git push origin main` запускает GitHub Actions,
+который прогоняет тесты, собирает все платформы и публикует новый релиз в supervpn-releases.
+`make release` нужен только для внепланового ручного деплоя.
 
 ### Вручную
 
