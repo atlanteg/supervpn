@@ -85,14 +85,26 @@ func msBridgeBound(nic string) bool {
 
 // bindMsBridge enables the ms_bridge NDIS binding on both adapters.
 //
-// On Windows 8+ the NetAdapter module exposes Add-NetAdapterBinding and
-// Enable-NetAdapterBinding. We guard with Get-Command so that on machines
-// where only Enable- is present (binding already listed but disabled) we
-// still succeed.
+// Tries three strategies in order:
+//  1. Add-NetAdapterBinding (Windows 8+, adds the component if absent then enables it)
+//  2. Enable-NetAdapterBinding (enables an already-present but disabled binding)
+//  3. Set-NetAdapterBinding -Enabled $True (older equivalent of Enable-)
+//
+// Logs the current binding state before and after for diagnostics.
 func bindMsBridge(nic, tap string) error {
-	// Diagnostic: show which binding-related cmdlets loaded successfully.
-	diagOut, _ := powershell(`Import-Module NetAdapter -Force -ErrorAction SilentlyContinue; if (Get-Module NetAdapter) { "LOADED:" + ((Get-Module NetAdapter).ExportedCommands.Keys | Where-Object {$_ -like '*Binding*'} | Sort-Object) -join "," } else { "MODULE_NOT_LOADED" }`)
+	// Diagnostic: which binding cmdlets are available on this machine.
+	diagOut, _ := powershell(`Import-Module NetAdapter -Force -ErrorAction SilentlyContinue; if (Get-Module NetAdapter) { "LOADED:" + ((Get-Module NetAdapter).ExportedCommands.Keys | Where-Object {$_ -like '*Binding*'} | Sort-Object) -join " " } else { "MODULE_NOT_LOADED" }`)
 	log.Printf("bridge: NetAdapter binding cmdlets available: %s", strings.TrimSpace(diagOut))
+
+	// Show current ms_bridge state before making changes.
+	stateScript := fmt.Sprintf(`
+Import-Module NetAdapter -Force -ErrorAction SilentlyContinue
+$n = (Get-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue).Enabled
+$t = (Get-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue).Enabled
+"ms_bridge state: NIC=%s → $n  TAP=%s → $t"
+`, psSingleQuote(nic), psSingleQuote(tap), nic, tap)
+	stateOut, _ := powershell(stateScript)
+	log.Printf("bridge: %s", strings.TrimSpace(stateOut))
 
 	script := fmt.Sprintf(`
 $ErrorActionPreference = "Stop"
@@ -100,10 +112,19 @@ Import-Module NetAdapter -Force
 if (Get-Command Add-NetAdapterBinding -ErrorAction SilentlyContinue) {
     Add-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue
     Add-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue
+    Enable-NetAdapterBinding -Name %s -ComponentID ms_bridge
+    Enable-NetAdapterBinding -Name %s -ComponentID ms_bridge
+} elseif (Get-Command Enable-NetAdapterBinding -ErrorAction SilentlyContinue) {
+    Enable-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue
+    Enable-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue
+    Set-NetAdapterBinding   -Name %s -ComponentID ms_bridge -Enabled $True -ErrorAction SilentlyContinue
+    Set-NetAdapterBinding   -Name %s -ComponentID ms_bridge -Enabled $True -ErrorAction SilentlyContinue
+} else {
+    Write-Error "no NetAdapter binding cmdlets available"
 }
-Enable-NetAdapterBinding -Name %s -ComponentID ms_bridge
-Enable-NetAdapterBinding -Name %s -ComponentID ms_bridge
 `,
+		psSingleQuote(nic), psSingleQuote(tap),
+		psSingleQuote(nic), psSingleQuote(tap),
 		psSingleQuote(nic), psSingleQuote(tap),
 		psSingleQuote(nic), psSingleQuote(tap),
 	)
@@ -111,6 +132,11 @@ Enable-NetAdapterBinding -Name %s -ComponentID ms_bridge
 	if err != nil {
 		return fmt.Errorf("powershell: %v: %s", err, strings.TrimSpace(out))
 	}
+
+	// Show state after the enable attempt.
+	stateOut2, _ := powershell(stateScript)
+	log.Printf("bridge: after enable — %s", strings.TrimSpace(stateOut2))
+
 	return nil
 }
 

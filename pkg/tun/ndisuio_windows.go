@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	// CTL_CODE(FILE_DEVICE_NETWORK=0x12, 0x202, METHOD_BUFFERED=0, FILE_READ_ACCESS|FILE_WRITE_ACCESS=3)
-	ioctlNDISUIOOpenDevice = 0x0012C808
+	// CTL_CODE(FILE_DEVICE_NETWORK=0x12, func, METHOD_BUFFERED=0, FILE_READ_ACCESS|FILE_WRITE_ACCESS=3)
+	// Values from Windows WDK ndisuio.h — func numbers are 0,1,2 (NOT 0x200+).
+	ioctlNDISUIOBindWait   = 0x0012C000 // func=0: wait for adapter bindings to settle
+	ioctlNDISUIOOpenDevice = 0x0012C008 // func=2: bind handle to a specific adapter
 )
 
 type ndisuioFramer struct {
@@ -50,6 +52,10 @@ func openNDISUIOFramer(nicName string) (*ndisuioFramer, error) {
 	}
 
 	var ret uint32
+	// BIND_WAIT must be called first — it blocks until NDISUIO has finished
+	// binding to all adapters after boot/driver-load.
+	_ = windows.DeviceIoControl(h, ioctlNDISUIOBindWait, nil, 0, nil, 0, &ret, nil)
+
 	if err := windows.DeviceIoControl(h, ioctlNDISUIOOpenDevice,
 		&buf[0], uint32(len(buf)),
 		nil, 0, &ret, nil); err != nil {
