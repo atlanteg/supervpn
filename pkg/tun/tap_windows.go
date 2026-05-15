@@ -20,8 +20,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -52,7 +55,16 @@ func OpenTAP(name string) (bridge.Framer, error) {
 		// No adapter with the expected name — find any tap0901 and rename it.
 		guid2, oldName, findErr := findAnyTAP0901()
 		if findErr != nil {
-			return nil, fmt.Errorf("tap/windows: adapter %q not found — install tap-windows6: %w", name, err)
+			// No tap0901 adapter at all — try auto-install via devcon.exe.
+			log.Printf("tap/windows: no tap0901 adapter found, attempting auto-install via devcon.exe ...")
+			if installErr := installTAPDriver(); installErr != nil {
+				return nil, fmt.Errorf("tap/windows: adapter %q not found and auto-install failed: %v (place tap-driver/ next to supervpn-client.exe)", name, installErr)
+			}
+			time.Sleep(3 * time.Second) // wait for Windows to register the new device
+			guid2, oldName, findErr = findAnyTAP0901()
+			if findErr != nil {
+				return nil, fmt.Errorf("tap/windows: adapter not found after install — reboot and retry: %w", findErr)
+			}
 		}
 		log.Printf("tap/windows: renaming TAP adapter %q → %q", oldName, name)
 		if renErr := renameTAPAdapter(oldName, name); renErr != nil {
@@ -174,6 +186,29 @@ func findAnyTAP0901() (guid, name string, err error) {
 		return g, friendly, nil
 	}
 	return "", "", fmt.Errorf("no tap0901 adapter installed")
+}
+
+// installTAPDriver installs the tap0901 driver using devcon.exe bundled in the
+// tap-driver/ directory next to the running executable.
+// Requires Administrator privileges.
+func installTAPDriver() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate executable: %w", err)
+	}
+	dir := filepath.Dir(exe)
+	devcon := filepath.Join(dir, "tap-driver", "devcon.exe")
+	inf := filepath.Join(dir, "tap-driver", "OemVista.inf")
+	if _, err := os.Stat(devcon); err != nil {
+		return fmt.Errorf("devcon.exe not found at %s", devcon)
+	}
+	out, err := exec.Command(devcon, "install", inf, "tap0901").CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if err != nil {
+		return fmt.Errorf("devcon install: %v: %s", err, msg)
+	}
+	log.Printf("tap/windows: driver installed: %s", msg)
+	return nil
 }
 
 // renameTAPAdapter renames a network adapter using PowerShell Rename-NetAdapter.
