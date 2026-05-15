@@ -4,6 +4,7 @@ package tun
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/atlanteg/supervpn/internal/bridge"
 )
