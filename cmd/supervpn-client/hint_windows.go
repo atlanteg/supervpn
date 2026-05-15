@@ -43,7 +43,8 @@ func ensureBridge(_ config.BridgeConfig, physicalNIC, tapName string) error {
 // adapter if one exists, or empty string otherwise.
 func findWinBridge() string {
 	out, err := powershell(
-		`(Get-NetAdapter | Where-Object {` +
+		`Import-Module NetAdapter -Force; ` +
+			`(Get-NetAdapter | Where-Object {` +
 			`$_.InterfaceDescription -like '*MAC Bridge*' -or ` +
 			`$_.InterfaceDescription -like '*Network Bridge*'` +
 			`} | Select-Object -First 1 -ExpandProperty Name)`,
@@ -57,7 +58,7 @@ func findWinBridge() string {
 // msBridgeBound returns true when the ms_bridge protocol is already enabled on nic.
 func msBridgeBound(nic string) bool {
 	cmd := fmt.Sprintf(
-		`(Get-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue).Enabled`,
+		`Import-Module NetAdapter -Force; (Get-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue).Enabled`,
 		psSingleQuote(nic),
 	)
 	out, err := powershell(cmd)
@@ -70,9 +71,13 @@ func msBridgeBound(nic string) bool {
 // bindMsBridge enables the ms_bridge NDIS binding on both adapters.
 // This creates (or joins) the Windows Network Bridge, allowing L2 frames to
 // flow between the physical NIC and the TAP adapter without user interaction.
+//
+// NetAdapter module must be imported explicitly — when PowerShell is invoked
+// non-interactively without a profile, system modules are not auto-loaded.
 func bindMsBridge(nic, tap string) error {
 	script := fmt.Sprintf(`
 $ErrorActionPreference = "Stop"
+Import-Module NetAdapter -Force
 Add-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue
 Add-NetAdapterBinding -Name %s -ComponentID ms_bridge -ErrorAction SilentlyContinue
 Enable-NetAdapterBinding -Name %s -ComponentID ms_bridge
