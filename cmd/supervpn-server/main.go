@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +85,7 @@ func main() {
 		kicked:    make(map[string]time.Time),
 		startTime: time.Now(),
 	}
+	srv.checkUpdateAssets()
 	if err := srv.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
 	}
@@ -122,6 +124,7 @@ type Server struct {
 	mu              sync.RWMutex
 	startTime       time.Time
 	tcpListenerUp   bool // true once the TLS/TCP listener successfully binds
+	updateAssets    map[string]int64 // asset name → size in bytes (0 = missing)
 }
 
 // Run starts the UDP listener (and TLS/TCP + status listeners if configured).
@@ -593,6 +596,74 @@ func (s *Server) cleanupSessions() {
 	s.mu.Unlock()
 }
 
+// ── Update mirror ────────────────────────────────────────────────────────────
+
+// clientAssets lists every binary the server may serve as a mirror.
+var clientAssets = []string{
+	"supervpn-client-windows-amd64.exe",
+	"supervpn-client-darwin-arm64",
+	"supervpn-client-darwin-amd64",
+}
+
+// updateDir returns the resolved directory for client assets.
+func (s *Server) updateDir() string {
+	if s.cfg.UpdateDir != "" {
+		return s.cfg.UpdateDir
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "dist")
+	}
+	return "dist"
+}
+
+// checkUpdateAssets verifies that client binaries are present in updateDir,
+// logs the result, and populates s.updateAssets. Called at startup.
+func (s *Server) checkUpdateAssets() {
+	dir := s.updateDir()
+	assets := make(map[string]int64, len(clientAssets))
+	anyMissing := false
+	for _, name := range clientAssets {
+		fi, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			log.Printf("update mirror: MISSING  %s  (place in %s)", name, dir)
+			assets[name] = 0
+			anyMissing = true
+		} else {
+			log.Printf("update mirror: ok  %s  (%d bytes)", name, fi.Size())
+			assets[name] = fi.Size()
+		}
+	}
+	s.mu.Lock()
+	s.updateAssets = assets
+	s.mu.Unlock()
+
+	if s.cfg.StatusListen != "" {
+		if !anyMissing {
+			log.Printf("update mirror ready — add to client config: update_mirrors = [\"http://%s/update\"]", s.cfg.StatusListen)
+		} else {
+			log.Printf("update mirror partial — copy missing binaries to %s", dir)
+		}
+	}
+}
+
+// handleUpdateAsset serves a client binary from updateDir.
+// Only names in clientAssets are allowed — path traversal is impossible.
+func (s *Server) handleUpdateAsset(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/update/")
+	allowed := false
+	for _, a := range clientAssets {
+		if name == a {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join(s.updateDir(), name))
+}
+
 // ── Status HTTP API ──────────────────────────────────────────────────────────
 
 type statusResponse struct {
@@ -603,6 +674,12 @@ type statusResponse struct {
 	TCPListenerUp   bool              `json:"tcp_listener_up"`
 	Hubs            []hubStatus       `json:"hubs"`
 	Blocked         map[string]string `json:"blocked,omitempty"` // login → blocked_until (RFC3339)
+	UpdateMirror    *mirrorStatus     `json:"update_mirror,omitempty"`
+}
+
+type mirrorStatus struct {
+	URL    string            `json:"url"`
+	Assets map[string]string `json:"assets"` // asset name → "ok (N bytes)" | "missing"
 }
 
 type hubStatus struct {
@@ -638,6 +715,7 @@ func (s *Server) runStatusServer(ctx context.Context) {
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/api/hubs/", s.handleAPI)    // POST /api/hubs/{id}/kick/{session}
 	mux.HandleFunc("/update/version", s.handleUpdateVersion) // mirror: plain-text current version
+	mux.HandleFunc("/update/", s.handleUpdateAsset)          // mirror: client binary download
 
 	srv := &http.Server{Addr: s.cfg.StatusListen, Handler: mux}
 	go func() {
@@ -789,6 +867,27 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	tcpUp := s.tcpListenerUp
 	s.mu.RUnlock()
 
+	var mirror *mirrorStatus
+	if s.cfg.StatusListen != "" {
+		s.mu.RLock()
+		assets := s.updateAssets
+		s.mu.RUnlock()
+		if assets != nil {
+			assetInfo := make(map[string]string, len(assets))
+			for _, name := range clientAssets {
+				if sz := assets[name]; sz > 0 {
+					assetInfo[name] = fmt.Sprintf("ok (%d bytes)", sz)
+				} else {
+					assetInfo[name] = "missing"
+				}
+			}
+			mirror = &mirrorStatus{
+				URL:    "http://" + s.cfg.StatusListen + "/update",
+				Assets: assetInfo,
+			}
+		}
+	}
+
 	resp := statusResponse{
 		Version:       version,
 		Uptime:        now.Sub(s.startTime).Truncate(time.Second).String(),
@@ -796,6 +895,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		TCPListen:     s.cfg.ListenTCP,
 		TCPListenerUp: tcpUp,
 		Hubs:          hubs,
+		UpdateMirror:  mirror,
 	}
 	if len(blocked) > 0 {
 		resp.Blocked = blocked
