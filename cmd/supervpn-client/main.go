@@ -105,8 +105,14 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 
 	if len(ifaces) > 0 {
 		iface = ifaces[0]
-		tunName = iface.Name
 		log.Printf("bridge mode: link-local interface %s (%s)", iface.Name, iface.HWAddr)
+		// Use tun_name from config (or "supervpn") as the WinTun/utun adapter name.
+		// Do NOT use the physical interface name: on Windows it would collide with the
+		// existing adapter and wintun.CreateAdapter would fail.
+		tunName = cfg.TunName
+		if tunName == "" {
+			tunName = "supervpn"
+		}
 	} else {
 		tunName = cfg.TunName
 		if tunName == "" {
