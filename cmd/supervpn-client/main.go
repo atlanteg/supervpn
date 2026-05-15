@@ -144,15 +144,11 @@ func bridgeAdapterName(tapName, detectedNIC string) string {
 	return bridgeName(tapName, detectedNIC)
 }
 
-// logBridgeSetupHint prints one-time guidance when the bridge has not been
-// configured yet (we can't detect this reliably, so we always print on first open).
+// logBridgeSetupHint prints one-time guidance for bridge setup.
+// On macOS (BPF) no extra setup is needed. On Windows a TAP bridge must be
+// configured first; the hint points at the appropriate script.
 func logBridgeSetupHint(bc config.BridgeConfig) {
-	switch bc.SetupMethod {
-	case "hyperv":
-		log.Printf("bridge setup (hyperv): run deploy\\setup-bridge-hyperv.ps1 -PhysicalNIC <nic-name> once, then restart supervpn-client")
-	default: // "netbridge"
-		log.Printf("bridge setup (netbridge): run deploy\\setup-bridge-netbridge.ps1 -PhysicalNIC <nic-name> once, or bridge manually in ncpa.cpl")
-	}
+	bridgeSetupHint(bc)
 }
 
 func openDirectAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, error) {
