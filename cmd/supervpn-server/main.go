@@ -606,9 +606,18 @@ type statusResponse struct {
 }
 
 type hubStatus struct {
-	ID      uint16         `json:"id"`
-	Name    string         `json:"name"`
-	Clients []clientStatus `json:"clients"`
+	ID       uint16          `json:"id"`
+	Name     string          `json:"name"`
+	Clients  []clientStatus  `json:"clients"`
+	MACTable []macTableEntry `json:"mac_table"`
+}
+
+type macTableEntry struct {
+	MAC       string `json:"mac"`
+	IP        string `json:"ip,omitempty"`
+	Login     string `json:"login,omitempty"`
+	SessionID uint32 `json:"session_id"`
+	ExpiresIn string `json:"expires_in"`
 }
 
 type clientStatus struct {
@@ -735,7 +744,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// Build hub list from config (preserves order, shows empty hubs too).
 	hubs := make([]hubStatus, 0, len(s.cfg.Hubs))
 	for _, hcfg := range s.cfg.Hubs {
-		hs := hubStatus{ID: hcfg.ID, Name: hcfg.Name, Clients: []clientStatus{}}
+		hs := hubStatus{ID: hcfg.ID, Name: hcfg.Name, Clients: []clientStatus{}, MACTable: []macTableEntry{}}
 		for _, snap := range byHub[hcfg.ID] {
 			hs.Clients = append(hs.Clients, clientStatus{
 				SessionID:    snap.SessionID,
@@ -749,6 +758,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 				FramesTx:     snap.FramesTx,
 				HubSendCalls: snap.HubSendCalls,
 			})
+		}
+		if h, ok := s.manager.Get(hcfg.ID); ok {
+			for _, rec := range h.MACTableSnapshot() {
+				e := macTableEntry{
+					MAC:       rec.MAC.String(),
+					Login:     rec.Login,
+					SessionID: rec.SessionID,
+					ExpiresIn: rec.ExpiresIn.String(),
+				}
+				if rec.IP != nil {
+					e.IP = rec.IP.String()
+				}
+				hs.MACTable = append(hs.MACTable, e)
+			}
 		}
 		hubs = append(hubs, hs)
 	}

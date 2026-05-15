@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,6 +43,16 @@ type Hub struct {
 type macEntry struct {
 	sessionID uint32
 	expires   time.Time
+	ip        net.IP // last seen IPv4 for this MAC; nil if not yet observed
+}
+
+// MACRecord is one entry in the MAC address table, enriched with session login.
+type MACRecord struct {
+	MAC       net.HardwareAddr
+	SessionID uint32
+	Login     string  // empty if session no longer connected
+	IP        net.IP  // nil if no IPv4 seen yet
+	ExpiresIn time.Duration
 }
 
 func New(id uint16, name string) *Hub {
@@ -81,8 +92,24 @@ func (h *Hub) Forward(srcSession uint32, frame []byte) {
 	copy(src[:], frame[6:12])
 
 	h.mu.Lock()
-	// learn source MAC
-	h.macTable[src] = macEntry{sessionID: srcSession, expires: time.Now().Add(macTableTTL)}
+	// Learn source MAC; preserve any IP we already know for this MAC.
+	existing := h.macTable[src]
+	entry := macEntry{sessionID: srcSession, expires: time.Now().Add(macTableTTL), ip: existing.ip}
+	// Extract src IPv4 from ARP (sender protocol address) or IPv4 header.
+	if len(frame) >= 14 {
+		etype := uint16(frame[12])<<8 | uint16(frame[13])
+		switch etype {
+		case 0x0806: // ARP — sender IP at offset 28
+			if len(frame) >= 32 {
+				entry.ip = cloneIP(frame[28:32])
+			}
+		case 0x0800: // IPv4 — src IP at offset 26
+			if len(frame) >= 30 {
+				entry.ip = cloneIP(frame[26:30])
+			}
+		}
+	}
+	h.macTable[src] = entry
 	// look up destination
 	dstEntry, known := h.macTable[dst]
 	h.mu.Unlock()
@@ -135,6 +162,41 @@ func (h *Hub) Forward(srcSession uint32, frame []byte) {
 	for _, c := range targets {
 		_ = c.Send(frame)
 	}
+}
+
+// MACTableSnapshot returns a point-in-time copy of the MAC address table,
+// joined with the current client list to resolve session IDs to logins.
+func (h *Hub) MACTableSnapshot() []MACRecord {
+	now := time.Now()
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]MACRecord, 0, len(h.macTable))
+	for mac, e := range h.macTable {
+		if now.After(e.expires) {
+			continue // skip entries that have logically expired (purge runs async)
+		}
+		login := ""
+		if c, ok := h.clients[e.sessionID]; ok {
+			login = c.Login
+		}
+		rec := MACRecord{
+			MAC:       net.HardwareAddr(mac[:]),
+			SessionID: e.sessionID,
+			Login:     login,
+			ExpiresIn: e.expires.Sub(now).Truncate(time.Second),
+		}
+		if e.ip != nil {
+			rec.IP = e.ip
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+func cloneIP(b []byte) net.IP {
+	cp := make(net.IP, len(b))
+	copy(cp, b)
+	return cp
 }
 
 func fmtMAC(m [6]byte) string {

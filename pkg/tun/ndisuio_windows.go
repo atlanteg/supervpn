@@ -16,6 +16,14 @@ const (
 	// Values from Windows WDK ndisuio.h — func numbers are 0,1,2 (NOT 0x200+).
 	ioctlNDISUIOBindWait   = 0x0012C000 // func=0: wait for adapter bindings to settle
 	ioctlNDISUIOOpenDevice = 0x0012C008 // func=2: bind handle to a specific adapter
+	ioctlNDISUIOSetOID     = 0x0012C010 // func=4: set OID value on the bound adapter
+
+	// OID_GEN_CURRENT_PACKET_FILTER (0x0001010E) bitmask values.
+	ndisPacketTypeDirected   = 0x0001
+	ndisPacketTypeMulticast  = 0x0004
+	ndisPacketTypeAllMulticast = 0x0008
+	ndisPacketTypeBroadcast  = 0x0010
+	ndisPacketTypePromiscuous = 0x0020
 )
 
 type ndisuioFramer struct {
@@ -70,7 +78,31 @@ func openNDISUIOFramer(nicName string) (*ndisuioFramer, error) {
 	}
 
 	log.Printf("bridge/ndisuio: bound to %q (%s)", nicName, adapterPath)
+
+	// Enable promiscuous mode so we capture unicast frames destined for remote
+	// VPN client MACs, not just frames addressed to this NIC's own MAC.
+	if err := ndisuioSetPromiscuous(h); err != nil {
+		log.Printf("bridge/ndisuio: WARNING: cannot set promiscuous mode: %v — unicast frames for remote VPN clients may be missed", err)
+	} else {
+		log.Printf("bridge/ndisuio: promiscuous mode enabled")
+	}
+
 	return &ndisuioFramer{handle: h, ifName: nicName}, nil
+}
+
+// ndisuioSetPromiscuous sends IOCTL_NDISUIO_SET_OID with OID_GEN_CURRENT_PACKET_FILTER
+// set to PROMISCUOUS | DIRECTED | MULTICAST | BROADCAST.
+func ndisuioSetPromiscuous(h windows.Handle) error {
+	// Payload layout (little-endian): OID uint32 + filter uint32
+	oid := uint32(0x0001010E) // OID_GEN_CURRENT_PACKET_FILTER
+	filter := uint32(ndisPacketTypePromiscuous | ndisPacketTypeDirected |
+		ndisPacketTypeMulticast | ndisPacketTypeAllMulticast | ndisPacketTypeBroadcast)
+	var buf [8]byte
+	buf[0], buf[1], buf[2], buf[3] = byte(oid), byte(oid>>8), byte(oid>>16), byte(oid>>24)
+	buf[4], buf[5], buf[6], buf[7] = byte(filter), byte(filter>>8), byte(filter>>16), byte(filter>>24)
+	var ret uint32
+	return windows.DeviceIoControl(h, ioctlNDISUIOSetOID,
+		&buf[0], uint32(len(buf)), nil, 0, &ret, nil)
 }
 
 func (f *ndisuioFramer) ReadFrame(ctx context.Context) ([]byte, error) {
