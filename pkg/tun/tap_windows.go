@@ -17,15 +17,16 @@
 package tun
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"os/exec"
 	"strings"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 
 	"github.com/atlanteg/supervpn/internal/bridge"
-
-	"context"
 )
 
 // TAP_WIN_IOCTL_SET_MEDIA_STATUS:
@@ -43,12 +44,21 @@ type windowsTAP struct {
 // OpenTAP opens a tap-windows6 adapter by its friendly name and returns a Framer
 // that reads and writes raw Ethernet frames (L2 — with MAC headers).
 //
-// The adapter must be installed via the tap-windows6 driver and named accordingly
-// in Windows Device Manager / Network Connections.
+// If no adapter with the requested name exists but another tap0901 adapter is
+// installed, OpenTAP renames it automatically (requires Administrator).
 func OpenTAP(name string) (bridge.Framer, error) {
 	guid, err := tapGUIDByName(name)
 	if err != nil {
-		return nil, fmt.Errorf("tap/windows: adapter %q not found — install tap-windows6 and name the adapter correctly: %w", name, err)
+		// No adapter with the expected name — find any tap0901 and rename it.
+		guid2, oldName, findErr := findAnyTAP0901()
+		if findErr != nil {
+			return nil, fmt.Errorf("tap/windows: adapter %q not found — install tap-windows6: %w", name, err)
+		}
+		log.Printf("tap/windows: renaming TAP adapter %q → %q", oldName, name)
+		if renErr := renameTAPAdapter(oldName, name); renErr != nil {
+			return nil, fmt.Errorf("tap/windows: found TAP adapter %q but rename failed: %w", oldName, renErr)
+		}
+		guid = guid2
 	}
 
 	devPath, _ := windows.UTF16PtrFromString(`\\.\Global\` + guid + `.tap`)
@@ -131,6 +141,57 @@ func tapAdapterName(guid string) (string, error) {
 	defer k.Close()
 	name, _, err := k.GetStringValue("Name")
 	return name, err
+}
+
+// findAnyTAP0901 returns the GUID and friendly name of the first tap0901
+// adapter found in the registry, regardless of its current name.
+func findAnyTAP0901() (guid, name string, err error) {
+	cls, err := registry.OpenKey(registry.LOCAL_MACHINE, netAdapterClass, registry.READ)
+	if err != nil {
+		return "", "", fmt.Errorf("open adapter class key: %w", err)
+	}
+	defer cls.Close()
+
+	subkeys, err := cls.ReadSubKeyNames(-1)
+	if err != nil {
+		return "", "", err
+	}
+	for _, sk := range subkeys {
+		sub, err := registry.OpenKey(cls, sk, registry.READ)
+		if err != nil {
+			continue
+		}
+		compID, _, _ := sub.GetStringValue("ComponentId")
+		g, _, _ := sub.GetStringValue("NetCfgInstanceId")
+		sub.Close()
+		if !strings.EqualFold(compID, "tap0901") || g == "" {
+			continue
+		}
+		friendly, err := tapAdapterName(g)
+		if err != nil {
+			continue
+		}
+		return g, friendly, nil
+	}
+	return "", "", fmt.Errorf("no tap0901 adapter installed")
+}
+
+// renameTAPAdapter renames a network adapter using PowerShell Rename-NetAdapter.
+func renameTAPAdapter(oldName, newName string) error {
+	out, err := exec.Command(
+		"powershell", "-NoProfile", "-NonInteractive", "-Command",
+		fmt.Sprintf("Rename-NetAdapter -Name %s -NewName %s",
+			tapPSQuote(oldName), tapPSQuote(newName)),
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("Rename-NetAdapter: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// tapPSQuote wraps s in PowerShell single quotes so wildcards are not expanded.
+func tapPSQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 func (t *windowsTAP) ReadFrame(ctx context.Context) ([]byte, error) {
