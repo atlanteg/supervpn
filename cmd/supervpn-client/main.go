@@ -173,8 +173,7 @@ func openDirectAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer
 	if tunName == "" {
 		tunName = "supervpn"
 	}
-	log.Printf("direct mode: no 169.254.x.x interface found, opening TUN %q", tunName)
-	log.Printf("direct mode: assign an IP inside the hub subnet to %q after startup", tunName)
+	log.Printf("direct mode: no 169.254.x.x interface found, opening TUN %q (L3 mode — no L2 bridging)", tunName)
 
 	framer, err := pkgtun.Open(tunName)
 	if err != nil {

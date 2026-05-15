@@ -20,17 +20,38 @@ import (
 // select two adapters and choose "Bridge Connections". The client must be
 // running as Administrator for Add-NetAdapterBinding to succeed.
 func ensureBridge(_ config.BridgeConfig, physicalNIC, tapName string) error {
-	if msBridgeBound(physicalNIC) {
-		log.Printf("bridge: Windows Network Bridge already active (%q ↔ %q)", physicalNIC, tapName)
+	if name := findWinBridge(); name != "" {
+		log.Printf("bridge: Windows Network Bridge %q already active (%q ↔ %q)", name, physicalNIC, tapName)
 		return nil
 	}
 	log.Printf("bridge: creating Windows Network Bridge (%q ↔ %q) ...", physicalNIC, tapName)
 	if err := bindMsBridge(physicalNIC, tapName); err != nil {
 		return fmt.Errorf("%w — fallback: ncpa.cpl → select both adapters → Bridge Connections", err)
 	}
-	log.Printf("bridge: Windows Network Bridge created; waiting for adapters to come up")
+	log.Printf("bridge: waiting for Network Bridge adapter to come up ...")
 	time.Sleep(3 * time.Second)
+	if name := findWinBridge(); name != "" {
+		log.Printf("bridge: Network Bridge %q ready", name)
+	} else {
+		log.Printf("bridge: WARNING — Network Bridge adapter not detected after creation; " +
+			"if no connectivity, create the bridge manually in ncpa.cpl")
+	}
 	return nil
+}
+
+// findWinBridge returns the name of the Windows "Network Bridge" (MAC Bridge Miniport)
+// adapter if one exists, or empty string otherwise.
+func findWinBridge() string {
+	out, err := powershell(
+		`(Get-NetAdapter | Where-Object {` +
+			`$_.InterfaceDescription -like '*MAC Bridge*' -or ` +
+			`$_.InterfaceDescription -like '*Network Bridge*'` +
+			`} | Select-Object -First 1 -ExpandProperty Name)`,
+	)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // msBridgeBound returns true when the ms_bridge protocol is already enabled on nic.
