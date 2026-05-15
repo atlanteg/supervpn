@@ -1,8 +1,11 @@
 // Package tun provides platform-specific frame capture/inject.
-// The Framer interface is implemented per OS in separate files:
-//   tun_linux.go   — Linux TAP via /dev/net/tun (Ethernet frames)
-//   tun_windows.go — Windows WinTun driver (raw IP packets)
-//   tun_darwin.go  — macOS utun via SYSPROTO_CONTROL (raw IP packets)
+//
+// Two adapter types are available on Windows:
+//   Open()    — WinTun (L3, raw IP packets) — used for direct mode
+//   OpenTAP() — tap-windows6 (L2, Ethernet frames) — used for bridge mode
+//
+// On Linux, Open() returns a kernel TAP device (L2, Ethernet frames).
+// On macOS, Open() returns a native utun device (L3, raw IP packets).
 package tun
 
 import "github.com/atlanteg/supervpn/internal/bridge"

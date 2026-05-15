@@ -90,37 +90,72 @@ func (cs *clientSessionState) setReconnecting() {
 }
 
 // openAdapter opens the virtual adapter for this session.
-// Bridge mode: a 169.254.0.0/16 interface is found — open TUN named after it
-//   and forward all L2 traffic between the local interface and the hub.
-// Direct mode: no link-local interface found — open a standalone TUN so the
-//   host gets transparent L2 access to the hub without local bridging.
+//
+// Bridge mode (169.254.0.0/16 interface detected):
+//   Windows — opens a tap-windows6 TAP adapter (L2, Ethernet frames).
+//             The TAP adapter must be bridged with the physical NIC via
+//             Windows Network Bridge or Hyper-V (see deploy/setup-bridge-*.ps1).
+//   Linux   — opens a kernel TAP device (L2, Ethernet frames).
+//   macOS   — opens a utun device (L3, raw IP; true L2 bridge not yet supported).
+//
+// Direct mode (no 169.254 interface):
+//   All platforms — opens a TUN adapter (WinTun on Windows, utun on macOS).
+//   Assign an IP to the adapter after startup to reach other hub peers.
 func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, error) {
 	ifaces, err := bridge.DetectLinkLocal()
 	if err != nil {
 		return bridge.Interface{}, nil, fmt.Errorf("detect interfaces: %w", err)
 	}
 
-	var iface bridge.Interface
-	var tunName string
-
 	if len(ifaces) > 0 {
-		iface = ifaces[0]
-		log.Printf("bridge mode: link-local interface %s (%s)", iface.Name, iface.HWAddr)
-		// Use tun_name from config (or "supervpn") as the WinTun/utun adapter name.
-		// Do NOT use the physical interface name: on Windows it would collide with the
-		// existing adapter and wintun.CreateAdapter would fail.
-		tunName = cfg.TunName
-		if tunName == "" {
-			tunName = "supervpn"
-		}
-	} else {
-		tunName = cfg.TunName
-		if tunName == "" {
-			tunName = "supervpn"
-		}
-		log.Printf("direct mode: no 169.254.x.x interface found, opening TUN %q", tunName)
-		log.Printf("direct mode: assign an IP inside the hub subnet to %q after startup", tunName)
+		return openBridgeAdapter(cfg, ifaces[0])
 	}
+	return openDirectAdapter(cfg)
+}
+
+func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (bridge.Interface, bridge.Framer, error) {
+	bc := cfg.Bridge // already has defaults applied by LoadClientConfig
+	log.Printf("bridge mode: link-local interface %s (%s), method=%s",
+		detected.Name, detected.HWAddr, bc.SetupMethod)
+
+	// On Windows use tap-windows6 (L2 Ethernet frames).
+	// On other platforms fall back to the native TUN device.
+	framer, err := pkgtun.OpenTAP(bc.TapName)
+	if err != nil {
+		// On non-Windows OpenTAP returns an error; fall back to native TUN.
+		log.Printf("bridge mode: TAP unavailable (%v), falling back to TUN", err)
+		fallback, err2 := pkgtun.Open(bc.TapName)
+		if err2 != nil {
+			return bridge.Interface{}, nil, fmt.Errorf("open adapter %q: %w", bc.TapName, err2)
+		}
+		framer = fallback
+	}
+
+	actual := pkgtun.ActualName(framer, bc.TapName)
+	log.Printf("bridge mode: TAP adapter %q open (method=%s)", actual, bc.SetupMethod)
+	logBridgeSetupHint(bc)
+
+	return detected, framer, nil
+}
+
+// logBridgeSetupHint prints one-time guidance when the bridge has not been
+// configured yet (we can't detect this reliably, so we always print on first open).
+func logBridgeSetupHint(bc config.BridgeConfig) {
+	switch bc.SetupMethod {
+	case "hyperv":
+		log.Printf("bridge setup (hyperv): run deploy\\setup-bridge-hyperv.ps1 -PhysicalNIC <nic-name> once, then restart supervpn-client")
+	default: // "netbridge"
+		log.Printf("bridge setup (netbridge): run deploy\\setup-bridge-netbridge.ps1 -PhysicalNIC <nic-name> once, or bridge manually in ncpa.cpl")
+	}
+}
+
+func openDirectAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, error) {
+	tunName := cfg.TunName
+	if tunName == "" {
+		tunName = "supervpn"
+	}
+	log.Printf("direct mode: no 169.254.x.x interface found, opening TUN %q", tunName)
+	log.Printf("direct mode: assign an IP inside the hub subnet to %q after startup", tunName)
 
 	framer, err := pkgtun.Open(tunName)
 	if err != nil {
@@ -131,12 +166,7 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 	if actual != tunName {
 		log.Printf("TUN assigned name: %s", actual)
 	}
-
-	if len(ifaces) == 0 {
-		iface = bridge.Interface{Name: actual}
-	}
-
-	return iface, framer, nil
+	return bridge.Interface{Name: actual}, framer, nil
 }
 
 func main() {

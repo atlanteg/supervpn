@@ -39,16 +39,52 @@ type ClientConfig struct {
 	HubID        uint16          `toml:"hub_id"`
 	Login        string          `toml:"login"`
 	Password     string          `toml:"password"`
-	// TunName is the virtual adapter name used in direct mode (no 169.254.x.x interface
-	// detected).  In bridge mode the detected interface name is used instead.
-	// Defaults to "supervpn".
+	// TunName is the WinTun/utun adapter name used in direct mode (no 169.254.x.x interface
+	// detected). Defaults to "supervpn".
 	TunName string          `toml:"tun_name"`
 	FEC     FECConfig       `toml:"fec"`
 	TLS     TLSClientConfig `toml:"tls"`
 	UDP     UDPConfig       `toml:"udp"`
+	Bridge  BridgeConfig    `toml:"bridge"`
 	// Timeout is expressed as a string (e.g. "30s") and parsed manually to
 	// avoid TOML's lack of native time.Duration support.
 	Timeout string `toml:"timeout"`
+}
+
+// BridgeConfig controls how the client bridges traffic in bridge mode (when a
+// 169.254.0.0/16 interface is detected on the local machine).
+type BridgeConfig struct {
+	// TapName is the name of the tap-windows6 adapter (Windows only).
+	// The adapter must be installed and named accordingly.
+	// Defaults to "supervpn-tap".
+	TapName string `toml:"tap_name"`
+
+	// SetupMethod describes how the TAP adapter is bridged to the physical NIC:
+	//
+	//   "netbridge" (default) — Windows Network Bridge:
+	//     The TAP adapter and the physical 169.254 NIC are joined in a Windows
+	//     Network Bridge (ncpa.cpl → select both → Bridge Connections, or run
+	//     deploy/setup-bridge-netbridge.ps1).  All local devices on the 169.254
+	//     subnet reach the hub transparently.
+	//
+	//   "hyperv" — Hyper-V External Switch:
+	//     An External Virtual Switch is created on the physical NIC via
+	//     New-VMSwitch (deploy/setup-bridge-hyperv.ps1).  The TAP adapter is
+	//     then bridged with the resulting vEthernet adapter.  Requires
+	//     Windows Pro/Enterprise with Hyper-V enabled.
+	//
+	// On Linux and macOS this field is ignored; the native TUN/TAP is used.
+	SetupMethod string `toml:"setup_method"`
+}
+
+func (b BridgeConfig) WithDefaults() BridgeConfig {
+	if b.TapName == "" {
+		b.TapName = "supervpn-tap"
+	}
+	if b.SetupMethod == "" {
+		b.SetupMethod = "netbridge"
+	}
+	return b
 }
 
 // UDPConfig controls the knock-and-dial strategy used before each UDP auth attempt.
@@ -133,6 +169,7 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 	}
 	cfg.FEC = cfg.FEC.WithDefaults()
 	cfg.UDP = cfg.UDP.WithDefaults()
+	cfg.Bridge = cfg.Bridge.WithDefaults()
 	return &cfg, cfg.Validate()
 }
 

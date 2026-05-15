@@ -49,16 +49,25 @@ jobs:
             go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
             -o supervpn-client-darwin-arm64 ./cmd/supervpn-client
 
-      - name: Package Windows client with wintun.dll
+      - name: Package Windows client
         run: |
-          # Download official wintun release from wintun.net
+          # wintun.dll — for direct mode (L3 WinTun)
           curl -fsSL https://www.wintun.net/builds/wintun-0.14.1.zip -o wintun.zip
           unzip -j wintun.zip "wintun-0.14.1/bin/amd64/wintun.dll" -d .
-          # Bundle exe + dll into a zip for easy distribution
+
+          # tap-windows6 installer — for bridge mode (L2 TAP)
+          # Using the latest signed release from OpenVPN's tap-windows6 project.
+          curl -fsSL https://github.com/OpenVPN/tap-windows6/releases/download/9.26.0.0/tap-windows-9.26.0.exe \
+            -o tap-windows6-installer.exe
+
+          # Bundle everything into a single zip
           zip supervpn-client-windows-amd64.zip \
             supervpn-client-windows-amd64.exe \
             wintun.dll \
-            configs/client.toml.example
+            tap-windows6-installer.exe \
+            configs/client.toml.example \
+            deploy/setup-bridge-netbridge.ps1 \
+            deploy/setup-bridge-hyperv.ps1
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
