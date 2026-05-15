@@ -15,9 +15,12 @@ import (
 )
 
 const (
-	releasesRepo    = "atlanteg/supervpn-releases"
-	githubAPIURL    = "https://api.github.com/repos/" + releasesRepo + "/releases/latest"
-	githubDLBase    = "https://github.com/" + releasesRepo + "/releases/latest/download/"
+	releasesRepo = "atlanteg/supervpn-releases"
+	githubAPIURL = "https://api.github.com/repos/" + releasesRepo + "/releases/latest"
+	// githubDLBase uses the tag-specific URL (not /latest/download/) to avoid
+	// CDN caching lag where the API returns a new tag but the CDN still serves
+	// the previous binary, causing an infinite update-restart loop.
+	githubDLBase = "https://github.com/" + releasesRepo + "/releases/download/"
 )
 
 // CheckAndUpdate checks for a newer release using GitHub and optional mirror
@@ -63,7 +66,7 @@ func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 	}
 
 	dlc := &http.Client{Timeout: 3 * time.Minute}
-	if err := downloadWithFallback(dlc, asset, exe, mirrors); err != nil {
+	if err := downloadWithFallback(dlc, tag, asset, exe, mirrors); err != nil {
 		log.Printf("update: download failed (all sources): %v", err)
 		return
 	}
@@ -134,9 +137,9 @@ func latestTagFromURL(c *http.Client, url string) (string, error) {
 	return tag, nil
 }
 
-// downloadWithFallback tries GitHub first, then each mirror's {base}/{asset}.
-func downloadWithFallback(c *http.Client, asset, exe string, mirrors []string) error {
-	urls := []string{githubDLBase + asset}
+// downloadWithFallback tries GitHub (tag-specific URL) first, then each mirror.
+func downloadWithFallback(c *http.Client, tag, asset, exe string, mirrors []string) error {
+	urls := []string{githubDLBase + tag + "/" + asset}
 	for _, m := range mirrors {
 		urls = append(urls, strings.TrimRight(m, "/")+"/"+asset)
 	}
