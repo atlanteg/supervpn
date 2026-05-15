@@ -178,13 +178,11 @@ func (s *Server) runTCPListener(ctx context.Context) {
 	tlsCfg, err := transport.NewServerTLSConfig(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
 	if err != nil {
 		log.Printf("TLS config error, TCP listener disabled: %v", err)
-		log.Printf("HINT: if listen_tcp uses port <1024, run server as root or set CAP_NET_BIND_SERVICE")
 		return
 	}
 	ln, err := transport.ListenTLS(s.cfg.ListenTCP, tlsCfg)
 	if err != nil {
 		log.Printf("TLS listen %s FAILED: %v", s.cfg.ListenTCP, err)
-		log.Printf("HINT: port 443 requires root or CAP_NET_BIND_SERVICE; try listen_tcp = \"0.0.0.0:4443\"")
 		return
 	}
 	s.mu.Lock()
@@ -213,10 +211,12 @@ func (s *Server) runTCPListener(ctx context.Context) {
 }
 
 func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
+	remoteAddr := conn.RemoteAddr().String()
+	log.Printf("TCP accept: %s", remoteAddr)
+
 	tr := transport.AcceptTLS(conn)
 	defer tr.Close()
 
-	remoteAddr := conn.RemoteAddr().String()
 	sendReply := func(pkt []byte) error {
 		return tr.Send(transport.Frame{Data: pkt})
 	}
@@ -228,6 +228,8 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 		if err != nil {
 			if sessionID != 0 {
 				s.removeSession(sessionID)
+			} else {
+				log.Printf("TCP %s: closed before auth (TLS handshake or read error): %v", remoteAddr, err)
 			}
 			return
 		}

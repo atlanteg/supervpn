@@ -1,5 +1,5 @@
 listen        = "0.0.0.0:5555"
-listen_tcp    = "0.0.0.0:4443"   # port 4443 doesn't need root; use 443 only if running as root
+listen_tcp    = "0.0.0.0:443"
 status_listen = "127.0.0.1:9090"
 
 [fec]
