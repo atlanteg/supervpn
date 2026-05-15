@@ -337,6 +337,19 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
 
+	// Flush stale FEC blocks every 50ms to bound delivery latency after
+	// unrecoverable mid-block loss bursts (packets stuck behind a gap are
+	// delivered immediately after the 200ms timeout rather than held forever).
+	pipe.StartFlush(sessionCtx, 200*time.Millisecond, func(frame []byte) {
+		if len(frame) < 14 {
+			return
+		}
+		select {
+		case downstream <- frame:
+		case <-sessionCtx.Done():
+		}
+	})
+
 	// When connected via TLS in auto mode, retry UDP every 5 minutes so we
 	// switch back as soon as the path clears.
 	if tr.Mode() == "tls" && cfg.Transport != "tcp" && cfg.Server != "" {

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/klauspost/reedsolomon"
 )
@@ -88,12 +89,13 @@ type Decoder struct {
 }
 
 type decBlock struct {
-	data      [][]byte // k slots; nil = not received
-	repair    [][]byte // r slots; nil = not received
-	present   []bool   // k+r flags
-	count     int      // received count
-	delivered int      // consecutive data packets already returned to caller
-	done      bool
+	data         [][]byte  // k slots; nil = not received
+	repair       [][]byte  // r slots; nil = not received
+	present      []bool    // k+r flags
+	count        int       // received count
+	delivered    int       // consecutive data packets already returned to caller
+	done         bool
+	lastActivity time.Time // updated on every packet arrival
 }
 
 func NewDecoder(k, r int) (*Decoder, error) {
@@ -151,6 +153,7 @@ func (d *Decoder) add(blockID uint32, idx int, pkt []byte, isRepair bool) ([][]b
 		b.present[idx] = true
 	}
 	b.count++
+	b.lastActivity = time.Now()
 
 	return d.tryRecover(blockID, b)
 }
@@ -178,6 +181,30 @@ func (d *Decoder) expire() {
 			delete(d.blocks, id)
 		}
 	}
+}
+
+// FlushStale delivers any buffered but undelivered packets from blocks that have
+// had no activity for longer than maxAge, skipping gaps caused by unrecoverable loss.
+// Call periodically (e.g. every maxAge/4) to bound delivery latency after loss bursts.
+func (d *Decoder) FlushStale(maxAge time.Duration) [][]byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := time.Now()
+	var out [][]byte
+	for id, b := range d.blocks {
+		if b.done || b.lastActivity.IsZero() || now.Sub(b.lastActivity) < maxAge {
+			continue
+		}
+		for i := b.delivered; i < d.k; i++ {
+			if b.present[i] {
+				out = append(out, b.data[i])
+			}
+		}
+		b.delivered = d.k
+		b.done = true
+		delete(d.blocks, id)
+	}
+	return out
 }
 
 func (d *Decoder) tryRecover(id uint32, b *decBlock) ([][]byte, error) {

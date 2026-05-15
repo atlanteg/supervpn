@@ -105,6 +105,7 @@ type Session struct {
 	cipher      *crypto.Cipher
 	replay      crypto.ReplayWindow
 	pipe        *fec.Pipe
+	cancel      context.CancelFunc // cancels per-session goroutines (e.g. FEC flush)
 	lastSeen    time.Time
 	framesRx     int64 // frames received from this client and forwarded to hub
 	framesTx     int64 // frames sent to this client from hub
@@ -173,7 +174,7 @@ func (s *Server) Run(ctx context.Context) error {
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
 		ra := raddr
-		go s.handlePacket(pkt, func(p []byte) error {
+		go s.handlePacket(ctx, pkt, func(p []byte) error {
 			_, err := s.conn.WriteToUDP(p, ra)
 			return err
 		}, ra.String(), "udp", func() {})
@@ -251,7 +252,7 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 		if sessionID == 0 {
 			log.Printf("TCP %s: received %d bytes (pre-auth)", remoteAddr, len(f.Data))
 		}
-		if sid := s.handlePacket(f.Data, sendReply, remoteAddr, "tls", closeConn); sid != 0 {
+		if sid := s.handlePacket(ctx, f.Data, sendReply, remoteAddr, "tls", closeConn); sid != 0 {
 			sessionID = sid
 			log.Printf("TCP %s: session %d established", remoteAddr, sessionID)
 		}
@@ -261,7 +262,7 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 // handlePacket dispatches one wire packet. remoteAddr, mode, and closeConn are
 // recorded in the session when an auth packet creates it.
 // Returns new session ID on auth, 0 otherwise.
-func (s *Server) handlePacket(pkt []byte, sendReply func([]byte) error, remoteAddr, mode string, closeConn func()) uint32 {
+func (s *Server) handlePacket(ctx context.Context, pkt []byte, sendReply func([]byte) error, remoteAddr, mode string, closeConn func()) uint32 {
 	hdr, ok := proto.ParseHeader(pkt)
 	if !ok {
 		return 0
@@ -269,7 +270,7 @@ func (s *Server) handlePacket(pkt []byte, sendReply func([]byte) error, remoteAd
 	payload := pkt[proto.HeaderSize:]
 	switch hdr.Type {
 	case proto.FrameAuth:
-		return s.handleAuth(payload, sendReply, remoteAddr, mode, closeConn)
+		return s.handleAuth(ctx, payload, sendReply, remoteAddr, mode, closeConn)
 	case proto.FrameData:
 		s.handleData(hdr, payload)
 	case proto.FrameRepair:
@@ -280,7 +281,7 @@ func (s *Server) handlePacket(pkt []byte, sendReply func([]byte) error, remoteAd
 	return 0
 }
 
-func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error, remoteAddr, mode string, closeConn func()) uint32 {
+func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func([]byte) error, remoteAddr, mode string, closeConn func()) uint32 {
 	replyError := func(msg string) {
 		ae := proto.AuthError{Message: msg}
 		p := append([]byte{proto.AuthMsgError}, ae.Marshal()...)
@@ -345,6 +346,9 @@ func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error, remote
 	}
 	s.mu.Unlock()
 	for _, ex := range stale {
+		if ex.cancel != nil {
+			ex.cancel()
+		}
 		if h2, ok2 := s.manager.Get(ex.HubID); ok2 {
 			h2.Leave(ex.ID)
 		}
@@ -397,6 +401,11 @@ func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error, remote
 	}
 	sess.pipe = pipe
 
+	// Per-session context used to stop the FEC stale-block flush goroutine.
+	// The server's root ctx is the parent so the goroutine also exits on shutdown.
+	sCtx, sCancel := context.WithCancel(ctx)
+	sess.cancel = sCancel
+
 	s.mu.Lock()
 	s.sessions[sessionID] = sess
 	s.mu.Unlock()
@@ -412,6 +421,19 @@ func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error, remote
 		},
 	}
 	h.Join(client)
+
+	// Flush stale FEC blocks every 50ms; delivers buffered frames that are stuck
+	// behind an unrecoverable gap (mid-block loss burst).
+	pipe.StartFlush(sCtx, 200*time.Millisecond, func(frame []byte) {
+		if len(frame) < 14 {
+			return
+		}
+		sess.mu.Lock()
+		sess.framesRx++
+		sess.mu.Unlock()
+		h.Forward(sessionID, frame)
+	})
+
 	log.Printf("auth ok: %s@hub%d session=%d addr=%s mode=%s",
 		hello.Login, hello.HubID, sessionID, remoteAddr, mode)
 
@@ -552,6 +574,9 @@ func (s *Server) removeSession(id uint32) {
 	}
 	s.mu.Unlock()
 	if ok {
+		if sess.cancel != nil {
+			sess.cancel()
+		}
 		if h, ok2 := s.manager.Get(sess.HubID); ok2 {
 			h.Leave(id)
 		}
@@ -582,6 +607,9 @@ func (s *Server) cleanupSessions() {
 		sess.mu.Unlock()
 		if stale {
 			delete(s.sessions, id)
+			if sess.cancel != nil {
+				sess.cancel()
+			}
 			if h, ok := s.manager.Get(sess.HubID); ok {
 				h.Leave(id)
 			}

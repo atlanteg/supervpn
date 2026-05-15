@@ -1,7 +1,11 @@
 // Package fec — pipe.go
 package fec
 
-import "sync"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
 // SendDataFn is called for each outgoing data packet.
 // blockID and pktIdx identify the packet's position in its FEC block.
@@ -81,4 +85,28 @@ func (p *Pipe) RecvData(blockID uint32, pktIdx uint16, data []byte) ([][]byte, e
 // Returns the complete block of K frames when recovery is possible, nil otherwise.
 func (p *Pipe) RecvRepair(blockID uint32, repairIdx, blockK, blockR uint8, data []byte) ([][]byte, error) {
 	return p.dec.AddRepair(blockID, int(repairIdx), data)
+}
+
+// StartFlush runs a background goroutine that calls FlushStale every maxAge/4.
+// For each flushed frame it calls deliver. Stops when ctx is cancelled.
+// Intended to bound delivery latency when a mid-block loss burst is unrecoverable.
+func (p *Pipe) StartFlush(ctx context.Context, maxAge time.Duration, deliver func([]byte)) {
+	tick := maxAge / 4
+	if tick < 10*time.Millisecond {
+		tick = 10 * time.Millisecond
+	}
+	go func() {
+		t := time.NewTicker(tick)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				for _, frame := range p.dec.FlushStale(maxAge) {
+					deliver(frame)
+				}
+			}
+		}
+	}()
 }
