@@ -105,7 +105,12 @@
 - ✅ Сервер принимает TLS/TCP соединения (ListenTLS, per-conn goroutine)
 - ✅ Тот же wire format внутри TLS (length-prefixed frames, FrameData/Repair/Ping/Auth)
 
-### 3.3 Обфускация (опционально)
+### 3.3 UDP Knock-and-dial ✅
+- ✅ Перед каждой UDP auth-попыткой: N случайных пакетов на том же сокете (одинаковый 5-tuple)
+- ✅ UDPConfig: knock_count, knock_size, attempts — настраивается через TOML
+- ✅ Несколько последовательных knock→auth циклов перед фолбеком на TLS
+
+### 3.4 Обфускация (опционально)
 - 💡 Рандомизация размеров пакетов (padding до ближайшего 128/256)
 - 💡 Имитация TLS Application Data record structure
 - 💡 Configurable SNI для TCP режима
@@ -114,19 +119,21 @@
 
 ## Фаза 4 — Управление и мониторинг
 
-### 4.1 Сервер API
-- 📋 HTTP JSON API на localhost:
-  - `GET /api/hubs` — список хабов
-  - `GET /api/hubs/{id}/clients` — клиенты в хабе
-  - `POST /api/hubs/{id}/kick/{session}` — дисконнект клиента
-  - `GET /api/metrics` — Prometheus metrics
+### 4.1 Сервер API ✅ (частично)
+- ✅ `GET /status` — все хабы и подключённые клиенты (login, IP, mode, duration) — JSON
+- ✅ `POST /api/hubs/{id}/kick/{session}` — дисконнект клиента
+- 📋 `GET /api/hubs` / `GET /api/hubs/{id}/clients` — отдельные REST endpoints (если нужны)
+- 📋 `GET /api/metrics` — Prometheus metrics
 - 📋 Prometheus метрики: bytes_in/out per hub, active_sessions, packet_loss_rate, fec_recovered
 
-### 4.2 CLI управление
+### 4.2 Клиент API ✅
+- ✅ `GET /status` — текущий режим (udp/tls), состояние, server, hub, session_id, duration
+
+### 4.3 CLI управление
 - 📋 `supervpn-ctl` — CLI клиент к серверному API
 - 📋 Горячая перезагрузка конфига (SIGHUP)
 
-### 4.3 Логирование
+### 4.4 Логирование
 - 📋 Структурированные логи (slog)
 - 📋 Ротация логов
 - 📋 Debug-режим: dump фреймов (без payload)
@@ -150,20 +157,22 @@
 ### 5.2 Безопасность
 - 📋 Security review: nonce uniqueness при session restart
 - 📋 Rate limiting: max подключений с одного IP
-- 📋 Blocklist сессий (kick + запрет переподключения)
+- 📋 Blocklist сессий (kick + запрет переподключения на некоторое время)
 
-### 5.3 Деплой
-- 📋 systemd unit файл для сервера
-- 📋 Docker образ сервера
+### 5.3 Деплой ✅ (частично)
+- ✅ systemd unit файл для сервера (`deploy/supervpn-server.service`)
+- ✅ Docker образ сервера (`Dockerfile`, multi-stage, scratch)
+- ✅ GitHub Releases с автоматической публикацией бинарников (`.github/workflows/release.yml`, тег `v*`)
 - 📋 Windows installer (.msi или NSIS) с wintun.dll + Windows Service
-- 📋 GitHub Releases с автоматической публикацией бинарников
 
 ---
 
-## Фаза 6 — macOS клиент
+## Фаза 6 — macOS клиент ✅ (базовый)
 
-- 💡 pkg/tun/tun_darwin.go — утилита через /dev/tap или utun
-- 💡 macOS app bundle (launchd service)
+- ✅ `pkg/tun/tun_darwin.go` — native utun через SYSPROTO_CONTROL / CTLIOCGINFO
+- ✅ Dual-mode client: bridge mode (169.254 найден) + direct mode (standalone TUN)
+- ✅ `tun.Namer` interface — auto-assigned kernel name (utun0, utun1…)
+- 💡 macOS app bundle / launchd service
 - 💡 Универсальный бинарник (amd64 + arm64)
 
 ---
