@@ -136,7 +136,7 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (bridge.Interface, bridge.Framer, error) {
 	bc := cfg.Bridge // already has defaults applied by LoadClientConfig
 
-	// On Windows, OpenBridge opens the named TAP adapter (tap-windows6).
+	// On Windows, try Npcap → NDISUIO → tap+wbridge in order.
 	// On macOS, OpenBridge opens a BPF device on the detected physical NIC directly.
 	// On Linux, OpenBridge opens a kernel TAP device.
 	adapterName := bridgeAdapterName(bc.TapName, detected.Name)
@@ -144,14 +144,7 @@ func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (brid
 	log.Printf("bridge mode: bridging local NIC %q (addr=%s mac=%s) → %q",
 		detected.Name, detected.Addr, detected.HWAddr, adapterName)
 
-	// Ensure OS-level bridge is configured before opening the TAP adapter.
-	// On Windows this creates the Network Bridge if not already present.
-	// On macOS/Linux this is a no-op.
-	if err := ensureBridge(bc, detected.Name, adapterName); err != nil {
-		log.Printf("bridge: setup warning: %v", err)
-	}
-
-	framer, err := pkgtun.OpenBridge(adapterName)
+	framer, err := openPlatformBridge(bc, detected, adapterName)
 	if err != nil {
 		return bridge.Interface{}, nil, fmt.Errorf("open bridge adapter %q: %w", adapterName, err)
 	}
