@@ -38,12 +38,16 @@ zip: build
 	@echo "Created $(ZIP)"
 
 # ── publish to public releases repo ──────────────────────────────────────────
+# Each build gets a unique versioned tag (b75, b76, …) and is marked --latest.
+# GitHub's /releases/latest/download/ is a dynamic server-side redirect —
+# it is NOT served by the CDN and always resolves to the newest --latest release.
+# Reusing a fixed tag (e.g. "latest") would cause CDN to cache the old asset URL;
+# versioned tags avoid this completely.
 release: zip
-	gh release delete latest --repo $(RELEASES_REPO) --yes 2>/dev/null || true
-	gh release create latest $(ZIP) \
+	gh release create $(VERSION) $(ZIP) \
 		--repo $(RELEASES_REPO) \
 		--title "supervpn $(VERSION)" \
-		--notes "Build $(VERSION) (commit $$(git rev-parse --short HEAD))" \
+		--notes "Build $(VERSION) — commit $$(git rev-parse --short HEAD)" \
 		--latest
 	@echo ""
 	@echo "Build:    $(VERSION)"
