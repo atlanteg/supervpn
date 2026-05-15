@@ -64,6 +64,12 @@ type BridgeConfig struct {
 	// Defaults to "supervpn-tap".
 	TapName string `toml:"tap_name"`
 
+	// NIC explicitly names the physical network adapter to bridge
+	// (e.g. "Ethernet" or "Local Area Connection").
+	// When empty, the client auto-detects a 169.254.0.0/16 interface,
+	// skipping virtual adapters (names containing "*").
+	NIC string `toml:"nic"`
+
 	// SetupMethod describes how the TAP adapter is bridged to the physical NIC:
 	//
 	//   "netbridge" (default) — Windows Network Bridge:

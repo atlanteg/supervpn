@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -124,7 +125,25 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 			log.Printf("bridge: ignoring own VPN adapter %q", iface.Name)
 			continue
 		}
+		// Skip Wi-Fi Direct / Bluetooth PAN virtual adapters — Windows names
+		// them "Local Area Connection* N". They do not support L2 bridging.
+		if strings.Contains(iface.Name, "*") {
+			log.Printf("bridge: skipping virtual adapter %q", iface.Name)
+			continue
+		}
 		physical = append(physical, iface)
+	}
+
+	// If nic is explicitly configured, find that adapter (even if it has no
+	// 169.254 address yet — in that case fall through to direct mode).
+	if bc.NIC != "" {
+		for _, iface := range physical {
+			if iface.Name == bc.NIC {
+				return openBridgeAdapter(cfg, iface)
+			}
+		}
+		log.Printf("bridge: configured nic %q not found among 169.254 interfaces — falling back to direct mode", bc.NIC)
+		return openDirectAdapter(cfg)
 	}
 
 	if len(physical) > 0 {
