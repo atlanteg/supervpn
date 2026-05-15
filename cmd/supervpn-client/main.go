@@ -237,6 +237,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// If no mirrors configured, auto-derive from the server address.
+	// The server's status listener (which also acts as update mirror) defaults to :9090.
+	if len(cfg.UpdateMirrors) == 0 && cfg.Server != "" {
+		if host := serverHost(cfg.Server); host != "" {
+			cfg.UpdateMirrors = []string{"http://" + host + ":9090/update"}
+			log.Printf("update: mirror auto-set to %s", cfg.UpdateMirrors[0])
+		}
+	}
 	update.CheckAndUpdate(version, update.AssetForClient(), cfg.UpdateMirrors)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -542,6 +550,17 @@ func authenticate(ctx context.Context, tr transport.Transport, cfg config.Client
 			return 0, nil, fmt.Errorf("server rejected auth: %s", ae.Message)
 		}
 	}
+}
+
+// serverHost extracts the host part from a host:port address.
+// Works for IPv4 (1.2.3.4:5555), hostnames (srv.example.com:5555),
+// and IPv6 ([::1]:5555 → [::1]).
+func serverHost(addr string) string {
+	i := strings.LastIndex(addr, ":")
+	if i <= 0 {
+		return addr
+	}
+	return addr[:i]
 }
 
 func wireHashHex(password string) string {
