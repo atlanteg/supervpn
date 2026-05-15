@@ -1,18 +1,7 @@
-//go:build !darwin
+//go:build !darwin && !windows
 
 package main
 
-import (
-	"log"
+import "github.com/atlanteg/supervpn/internal/config"
 
-	"github.com/atlanteg/supervpn/internal/config"
-)
-
-func bridgeSetupHint(bc config.BridgeConfig) {
-	switch bc.SetupMethod {
-	case "hyperv":
-		log.Printf("bridge setup (hyperv): run deploy\\setup-bridge-hyperv.ps1 -PhysicalNIC <nic-name> once, then restart supervpn-client")
-	default:
-		log.Printf("bridge setup (netbridge): run deploy\\setup-bridge-netbridge.ps1 -PhysicalNIC <nic-name> once, or bridge manually in ncpa.cpl")
-	}
-}
+func ensureBridge(_ config.BridgeConfig, _, _ string) error { return nil }

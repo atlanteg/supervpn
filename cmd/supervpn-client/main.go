@@ -143,6 +143,13 @@ func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (brid
 	log.Printf("bridge mode: link-local interface %s (%s), adapter=%q method=%s",
 		detected.Name, detected.HWAddr, adapterName, bc.SetupMethod)
 
+	// Ensure OS-level bridge is configured before opening the TAP adapter.
+	// On Windows this creates the Network Bridge if not already present.
+	// On macOS/Linux this is a no-op.
+	if err := ensureBridge(bc, detected.Name, adapterName); err != nil {
+		log.Printf("bridge: setup warning: %v", err)
+	}
+
 	framer, err := pkgtun.OpenBridge(adapterName)
 	if err != nil {
 		return bridge.Interface{}, nil, fmt.Errorf("open bridge adapter %q: %w", adapterName, err)
@@ -150,7 +157,6 @@ func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (brid
 
 	actual := pkgtun.ActualName(framer, adapterName)
 	log.Printf("bridge mode: adapter %q open", actual)
-	logBridgeSetupHint(bc)
 
 	return detected, framer, nil
 }
@@ -160,13 +166,6 @@ func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (brid
 // On Windows/Linux, we open a virtual TAP adapter with the configured name.
 func bridgeAdapterName(tapName, detectedNIC string) string {
 	return bridgeName(tapName, detectedNIC)
-}
-
-// logBridgeSetupHint prints one-time guidance for bridge setup.
-// On macOS (BPF) no extra setup is needed. On Windows a TAP bridge must be
-// configured first; the hint points at the appropriate script.
-func logBridgeSetupHint(bc config.BridgeConfig) {
-	bridgeSetupHint(bc)
 }
 
 func openDirectAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, error) {
