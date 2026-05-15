@@ -94,22 +94,29 @@ func (h *Hub) Forward(srcSession uint32, frame []byte) {
 	verbose := n%50 == 1 // log every 50th frame
 
 	if known && !isBroadcast && !isMulticast {
-		// unicast to known destination
+		// Unicast to known destination.
 		h.mu.RLock()
 		c, ok := h.clients[dstEntry.sessionID]
 		h.mu.RUnlock()
-		if ok && c.SessionID != srcSession {
+		if ok && c.SessionID == srcSession {
+			// Self-loop: dst MAC is our own entry. Drop silently.
+			return
+		}
+		if ok {
 			if verbose {
 				log.Printf("hub%d fwd unicast src=%d dst=%d mac=%s", h.id, srcSession, c.SessionID, fmtMAC(dst))
 			}
 			_ = c.Send(frame)
-		} else if verbose {
-			log.Printf("hub%d fwd unicast SELF-LOOP or missing: src=%d dstSession=%d ok=%v", h.id, srcSession, dstEntry.sessionID, ok)
+			return
 		}
-		return
+		// Stale MAC entry: the client that owned this MAC reconnected with a new
+		// session ID. Fall through to flood so the frame is not silently dropped.
+		if verbose {
+			log.Printf("hub%d fwd stale MAC dst=%s sess=%d gone, flooding", h.id, fmtMAC(dst), dstEntry.sessionID)
+		}
 	}
 
-	// broadcast / multicast / unknown unicast → flood to all except source
+	// Broadcast / multicast / unknown unicast / stale unicast → flood to all except source.
 	h.mu.RLock()
 	targets := make([]*Client, 0, len(h.clients))
 	for _, c := range h.clients {

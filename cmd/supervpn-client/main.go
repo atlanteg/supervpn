@@ -109,8 +109,25 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 		return bridge.Interface{}, nil, fmt.Errorf("detect interfaces: %w", err)
 	}
 
-	if len(ifaces) > 0 {
-		return openBridgeAdapter(cfg, ifaces[0])
+	// Never bridge the VPN adapter itself.
+	// On Windows, supervpn-tap gets a 169.254 APIPA address when no IP is assigned;
+	// without this filter the client would bridge its own VPN adapter and create a loop.
+	bc := cfg.Bridge.WithDefaults()
+	tunName := cfg.TunName
+	if tunName == "" {
+		tunName = "supervpn"
+	}
+	var physical []bridge.Interface
+	for _, iface := range ifaces {
+		if iface.Name == bc.TapName || iface.Name == tunName {
+			log.Printf("bridge: ignoring own VPN adapter %q", iface.Name)
+			continue
+		}
+		physical = append(physical, iface)
+	}
+
+	if len(physical) > 0 {
+		return openBridgeAdapter(cfg, physical[0])
 	}
 	return openDirectAdapter(cfg)
 }
