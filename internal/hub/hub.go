@@ -13,7 +13,10 @@ package hub
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,6 +36,7 @@ type Hub struct {
 	name     string
 	clients  map[uint32]*Client // sessionID → client
 	macTable map[[6]byte]macEntry
+	fwdLog   atomic.Uint64 // frame counter for throttled diagnostic logging
 }
 
 type macEntry struct {
@@ -86,13 +90,21 @@ func (h *Hub) Forward(srcSession uint32, frame []byte) {
 	isBroadcast := dst == ([6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
 	isMulticast := dst[0]&0x01 != 0
 
+	n := h.fwdLog.Add(1)
+	verbose := n%50 == 1 // log every 50th frame
+
 	if known && !isBroadcast && !isMulticast {
 		// unicast to known destination
 		h.mu.RLock()
 		c, ok := h.clients[dstEntry.sessionID]
 		h.mu.RUnlock()
 		if ok && c.SessionID != srcSession {
+			if verbose {
+				log.Printf("hub%d fwd unicast src=%d dst=%d mac=%s", h.id, srcSession, c.SessionID, fmtMAC(dst))
+			}
 			_ = c.Send(frame)
+		} else if verbose {
+			log.Printf("hub%d fwd unicast SELF-LOOP or missing: src=%d dstSession=%d ok=%v", h.id, srcSession, dstEntry.sessionID, ok)
 		}
 		return
 	}
@@ -106,9 +118,20 @@ func (h *Hub) Forward(srcSession uint32, frame []byte) {
 		}
 	}
 	h.mu.RUnlock()
+	if verbose {
+		ids := make([]uint32, len(targets))
+		for i, c := range targets {
+			ids[i] = c.SessionID
+		}
+		log.Printf("hub%d fwd flood src=%d targets=%v known=%v multicast=%v broadcast=%v dst=%s", h.id, srcSession, ids, known, isMulticast, isBroadcast, fmtMAC(dst))
+	}
 	for _, c := range targets {
 		_ = c.Send(frame)
 	}
+}
+
+func fmtMAC(m [6]byte) string {
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
 }
 
 // ClientCount returns number of connected clients.

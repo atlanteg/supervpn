@@ -101,9 +101,10 @@ type Session struct {
 	replay      crypto.ReplayWindow
 	pipe        *fec.Pipe
 	lastSeen    time.Time
-	framesRx    int64 // frames received from this client and forwarded to hub
-	framesTx    int64 // frames sent to this client from hub
-	mu          sync.Mutex
+	framesRx     int64 // frames received from this client and forwarded to hub
+	framesTx     int64 // frames sent to this client from hub
+	hubSendCalls int64 // times hub called client.Send (pre-FEC); if >0 and framesTx=0, pipe/cipher bug
+	mu           sync.Mutex
 }
 
 const kickBlockDuration = 5 * time.Minute
@@ -356,7 +357,12 @@ func (s *Server) handleAuth(payload []byte, sendReply func([]byte) error, remote
 	client := &hub.Client{
 		SessionID: sessionID,
 		Login:     hello.Login,
-		Send:      func(frame []byte) error { return sess.pipe.Send(frame) },
+		Send: func(frame []byte) error {
+			sess.mu.Lock()
+			sess.hubSendCalls++
+			sess.mu.Unlock()
+			return sess.pipe.Send(frame)
+		},
 	}
 	h.Join(client)
 	log.Printf("auth ok: %s@hub%d session=%d addr=%s mode=%s",
@@ -568,8 +574,9 @@ type clientStatus struct {
 	ConnectedAt string `json:"connected_at"`
 	LastSeen    string `json:"last_seen"`
 	Duration    string `json:"duration"`
-	FramesRx    int64  `json:"frames_rx"`
-	FramesTx    int64  `json:"frames_tx"`
+	FramesRx     int64 `json:"frames_rx"`
+	FramesTx     int64 `json:"frames_tx"`
+	HubSendCalls int64 `json:"hub_send_calls"`
 }
 
 func (s *Server) runStatusServer(ctx context.Context) {
@@ -643,14 +650,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Build session index by hub.
 	type sessSnapshot struct {
-		SessionID   uint32
-		Login       string
-		RemoteAddr  string
-		Mode        string
-		ConnectedAt time.Time
-		LastSeen    time.Time
-		FramesRx    int64
-		FramesTx    int64
+		SessionID    uint32
+		Login        string
+		RemoteAddr   string
+		Mode         string
+		ConnectedAt  time.Time
+		LastSeen     time.Time
+		FramesRx     int64
+		FramesTx     int64
+		HubSendCalls int64
 	}
 	byHub := make(map[uint16][]sessSnapshot)
 
@@ -658,14 +666,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	for _, sess := range s.sessions {
 		sess.mu.Lock()
 		snap := sessSnapshot{
-			SessionID:   sess.ID,
-			Login:       sess.Login,
-			RemoteAddr:  sess.RemoteAddr,
-			Mode:        sess.Mode,
-			ConnectedAt: sess.ConnectedAt,
-			LastSeen:    sess.lastSeen,
-			FramesRx:    sess.framesRx,
-			FramesTx:    sess.framesTx,
+			SessionID:    sess.ID,
+			Login:        sess.Login,
+			RemoteAddr:   sess.RemoteAddr,
+			Mode:         sess.Mode,
+			ConnectedAt:  sess.ConnectedAt,
+			LastSeen:     sess.lastSeen,
+			FramesRx:     sess.framesRx,
+			FramesTx:     sess.framesTx,
+			HubSendCalls: sess.hubSendCalls,
 		}
 		sess.mu.Unlock()
 		byHub[sess.HubID] = append(byHub[sess.HubID], snap)
@@ -678,15 +687,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		hs := hubStatus{ID: hcfg.ID, Name: hcfg.Name, Clients: []clientStatus{}}
 		for _, snap := range byHub[hcfg.ID] {
 			hs.Clients = append(hs.Clients, clientStatus{
-				SessionID:   snap.SessionID,
-				Login:       snap.Login,
-				RemoteAddr:  snap.RemoteAddr,
-				Mode:        snap.Mode,
-				ConnectedAt: snap.ConnectedAt.UTC().Format(time.RFC3339),
-				LastSeen:    snap.LastSeen.UTC().Format(time.RFC3339),
-				Duration:    now.Sub(snap.ConnectedAt).Truncate(time.Second).String(),
-				FramesRx:    snap.FramesRx,
-				FramesTx:    snap.FramesTx,
+				SessionID:    snap.SessionID,
+				Login:        snap.Login,
+				RemoteAddr:   snap.RemoteAddr,
+				Mode:         snap.Mode,
+				ConnectedAt:  snap.ConnectedAt.UTC().Format(time.RFC3339),
+				LastSeen:     snap.LastSeen.UTC().Format(time.RFC3339),
+				Duration:     now.Sub(snap.ConnectedAt).Truncate(time.Second).String(),
+				FramesRx:     snap.FramesRx,
+				FramesTx:     snap.FramesTx,
+				HubSendCalls: snap.HubSendCalls,
 			})
 		}
 		hubs = append(hubs, hs)
