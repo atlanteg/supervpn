@@ -71,7 +71,8 @@ func openBPF(ifaceName string) (*darwinBPF, error) {
 	}
 
 	// Read timeout: 100 ms so ReadFrame can wake up to check ctx.Done().
-	tv := unix.Timeval32{Sec: 0, Usec: 100_000}
+	// Must use unix.Timeval (int64 Sec) — arm64 macOS rejects Timeval32.
+	tv := unix.Timeval{Sec: 0, Usec: 100_000}
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL,
 		uintptr(fd), unix.BIOCSRTIMEOUT, uintptr(unsafe.Pointer(&tv))); errno != 0 {
 		unix.Close(fd)
