@@ -44,24 +44,25 @@ func openWinTUN(name string) (*windowsTUN, error) {
 	return &windowsTUN{adapter: adapter, session: session, name: name}, nil
 }
 
-func (t *windowsTUN) readIP(ctx context.Context) ([]byte, error) {
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		pkt, err := t.session.ReceivePacket()
-		if err != nil {
-			evt := t.session.ReadWaitEvent()
-			windows.WaitForSingleObject(windows.Handle(evt), 50)
-			continue
-		}
-		cp := make([]byte, len(pkt))
-		copy(cp, pkt)
-		t.session.ReleaseReceivePacket(pkt)
-		return cp, nil
+// readIPOnce attempts to receive one IP packet from WinTun.
+// If no packet is available it waits up to 50 ms and returns nil, nil so the
+// caller can check other channels (inject, ctx) before retrying.
+func (t *windowsTUN) readIPOnce(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
+	pkt, err := t.session.ReceivePacket()
+	if err != nil {
+		evt := t.session.ReadWaitEvent()
+		windows.WaitForSingleObject(windows.Handle(evt), 50)
+		return nil, nil // poll timeout — no packet yet
+	}
+	cp := make([]byte, len(pkt))
+	copy(cp, pkt)
+	t.session.ReleaseReceivePacket(pkt)
+	return cp, nil
 }
 
 func (t *windowsTUN) writeIP(ip []byte) error {

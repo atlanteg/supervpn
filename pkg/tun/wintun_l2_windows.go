@@ -53,17 +53,23 @@ func newWindowsTUNL2(t *windowsTUN) *windowsTUNL2 {
 }
 
 // ReadFrame returns an Ethernet frame destined for the hub.
-// Injected ARP replies are returned ahead of WinTun IP packets.
+// It polls WinTun in 50 ms increments so the inject channel (ARP replies) and
+// context cancellation are checked promptly even when WinTun is idle.
 func (d *windowsTUNL2) ReadFrame(ctx context.Context) ([]byte, error) {
-	select {
-	case f := <-d.inject:
-		return f, nil
-	default:
-	}
-
-	ip, err := d.tun.readIP(ctx)
-	if err != nil {
-		return nil, err
+	var ip []byte
+	for ip == nil {
+		select {
+		case f := <-d.inject:
+			return f, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		var err error
+		ip, err = d.tun.readIPOnce(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Learn our own IP from the first outgoing IPv4 packet.
