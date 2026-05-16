@@ -26,6 +26,7 @@ func DialTCP(addr string) (*TCPTransport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("transport/tcp: dial %s: %w", addr, err)
 	}
+	enableKeepalive(conn)
 	return &TCPTransport{conn: conn}, nil
 }
 

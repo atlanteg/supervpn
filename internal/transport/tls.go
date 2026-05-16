@@ -22,6 +22,23 @@ type TLSTransport struct {
 	conn *tls.Conn
 }
 
+// tcpKeepaliveInterval is the OS-level TCP keepalive probe interval.
+// At this cadence the kernel sends keepalive probes on idle connections;
+// a dead peer is detected after ~3 missed probes (OS default), so the
+// effective detection window is roughly 3× this value (~15 s).
+const tcpKeepaliveInterval = 5 * time.Second
+
+// enableKeepalive turns on TCP keepalive on conn with tcpKeepaliveInterval.
+// Silently ignored if conn is not a *net.TCPConn (e.g. in tests using net.Pipe).
+func enableKeepalive(conn net.Conn) {
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tc.SetKeepAlive(true)
+	_ = tc.SetKeepAlivePeriod(tcpKeepaliveInterval)
+}
+
 // DialTLS connects to addr with TLS. sni is sent in the ClientHello (SNI field).
 // Certificate verification is skipped — the server uses a self-signed cert.
 // TLS 1.3 is enforced. The TCP dial and TLS handshake both respect ctx cancellation.
@@ -32,12 +49,17 @@ func DialTLS(ctx context.Context, addr, sni string) (*TLSTransport, error) {
 		MinVersion:         tls.VersionTLS13,
 		MaxVersion:         tls.VersionTLS13,
 	}
-	d := tls.Dialer{Config: cfg}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	// Dial raw TCP first so we can enable keepalive before the TLS handshake.
+	rawConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("transport/tls: dial %s: %w", addr, err)
 	}
-	tlsConn := conn.(*tls.Conn)
+	enableKeepalive(rawConn)
+	tlsConn := tls.Client(rawConn, cfg)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		rawConn.Close()
+		return nil, fmt.Errorf("transport/tls: handshake %s: %w", addr, err)
+	}
 	return &TLSTransport{
 		TCPTransport: WrapTCP(tlsConn),
 		conn:         tlsConn,
