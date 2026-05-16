@@ -192,7 +192,7 @@ func (d *Decoder) FlushStale(maxAge time.Duration) [][]byte {
 	defer d.mu.Unlock()
 	now := time.Now()
 	var out [][]byte
-	for id, b := range d.blocks {
+	for _, b := range d.blocks {
 		if b.done || b.lastActivity.IsZero() || now.Sub(b.lastActivity) < maxAge {
 			continue
 		}
@@ -217,12 +217,12 @@ func (d *Decoder) FlushStale(maxAge time.Duration) [][]byte {
 		}
 		b.delivered = d.k
 		b.done = true
-		delete(d.blocks, id)
+		// Don't delete — leave for expire() so late-arriving packets are dropped.
 	}
 	return out
 }
 
-func (d *Decoder) tryRecover(id uint32, b *decBlock) ([][]byte, error) {
+func (d *Decoder) tryRecover(_ uint32, b *decBlock) ([][]byte, error) {
 	// If there are gaps, try FEC recovery before delivering.
 	missing := 0
 	for i := b.delivered; i < d.k; i++ {
@@ -265,7 +265,9 @@ func (d *Decoder) tryRecover(id uint32, b *decBlock) ([][]byte, error) {
 	}
 	if b.delivered == d.k {
 		b.done = true
-		delete(d.blocks, id)
+		// Keep the block in the map so arriving repair packets for this blockID
+		// hit the b.done check and are silently dropped instead of triggering
+		// re-delivery. expire() will remove it once maxSeen advances past it.
 	}
 	if len(out) == 0 {
 		return nil, nil
