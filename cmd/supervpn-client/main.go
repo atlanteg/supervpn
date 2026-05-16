@@ -222,7 +222,7 @@ func main() {
 		cfg.HubID = uint16(*hubIDFlag)
 		cfg.Login = *loginFlag
 		cfg.Password = *passwordFlag
-		cfg.FEC = config.FECConfig{K: 10, R: 6}
+		cfg.FEC = config.FECConfig{K: 1, R: 2, RepairDelay: 500}
 	}
 	// CLI flags override config file values.
 	if *transportFlag != "" {
@@ -310,7 +310,8 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 
 	// Record connected state for the status API.
 	sessionState.setConnected(tr.Mode(), cfg.Server, cfg.HubID, cfg.Login, sessionID)
-	log.Printf("session %d active via %s fec=K%d/R%d", sessionID, tr.Mode(), fecCfg.K, fecCfg.R)
+	log.Printf("session %d active via %s fec=K%d/R%d delay=%dms",
+		sessionID, tr.Mode(), fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
 
 	// lastPong is updated by recvLoop each time a pong arrives.
 	// Initialised to now so the first ping cycle doesn't immediately time out.
@@ -322,6 +323,7 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	pipe, err := fec.NewPipe(
 		fecCfg.K,
 		fecCfg.R,
+		fecCfg.RepairDelayDuration(),
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			stats.bytesTx.Add(uint64(len(data)))
 			return sendFECData(tr, sessionID, cfg.HubID, sessionCipher, blockID, pktIdx, data)

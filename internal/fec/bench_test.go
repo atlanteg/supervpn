@@ -190,7 +190,7 @@ func BenchmarkPipe_Roundtrip_K20R1(b *testing.B) {
 	b.ReportAllocs()
 
 	// Create a receiver pipe (no send callbacks needed — we call RecvData directly).
-	recvPipe, err := NewPipe(k, r, func(uint32, uint16, []byte) error { return nil }, nil)
+	recvPipe, err := NewPipe(k, r, 0, func(uint32, uint16, []byte) error { return nil }, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func BenchmarkPipe_Roundtrip_K20R1(b *testing.B) {
 	var dataQ []dataPkt
 	var repairQ []repairPkt
 
-	senderPipe, err := NewPipe(k, r,
+	senderPipe, err := NewPipe(k, r, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			cp := make([]byte, len(data))
 			copy(cp, data)

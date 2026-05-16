@@ -26,7 +26,7 @@ func TestFECPipe_EndToEnd_5PercentLoss(t *testing.T) {
 	var recovered [][]byte
 
 	// Receiver pipe — only the decode path is used; send callbacks are no-ops.
-	recvPipe, err := NewPipe(k, r,
+	recvPipe, err := NewPipe(k, r, 0,
 		func(uint32, uint16, []byte) error { return nil },
 		nil,
 	)
@@ -35,7 +35,7 @@ func TestFECPipe_EndToEnd_5PercentLoss(t *testing.T) {
 	}
 
 	// Sender pipe — callbacks simulate the UDP wire with random packet loss.
-	senderPipe, err := NewPipe(k, r,
+	senderPipe, err := NewPipe(k, r, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			if rng.Intn(100) < lossPercent {
 				return nil // dropped
@@ -113,7 +113,7 @@ func TestFECPipe_EndToEnd_R2_5PercentLoss(t *testing.T) {
 
 	var recovered [][]byte
 
-	recvPipe, err := NewPipe(k, r,
+	recvPipe, err := NewPipe(k, r, 0,
 		func(uint32, uint16, []byte) error { return nil },
 		nil,
 	)
@@ -121,7 +121,7 @@ func TestFECPipe_EndToEnd_R2_5PercentLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	senderPipe, err := NewPipe(k, r,
+	senderPipe, err := NewPipe(k, r, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			if rng.Intn(100) < lossPercent {
 				return nil
@@ -210,7 +210,7 @@ func TestFECPipe_EndToEnd_BurstLoss(t *testing.T) {
 		}
 
 		// Collect all sent packets first.
-		senderPipe, err := NewPipe(k, r,
+		senderPipe, err := NewPipe(k, r, 0,
 			func(blockID uint32, pktIdx uint16, data []byte) error {
 				cp := make([]byte, len(data))
 				copy(cp, data)
@@ -236,7 +236,7 @@ func TestFECPipe_EndToEnd_BurstLoss(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		recvPipe, err := NewPipe(k, r,
+		recvPipe, err := NewPipe(k, r, 0,
 			func(uint32, uint16, []byte) error { return nil },
 			nil,
 		)
@@ -303,7 +303,7 @@ func TestFECPipe_EndToEnd_BurstLoss(t *testing.T) {
 
 		originals := make([][]byte, k)
 
-		senderPipe, err := NewPipe(k, r,
+		senderPipe, err := NewPipe(k, r, 0,
 			func(blockID uint32, pktIdx uint16, data []byte) error {
 				cp := make([]byte, len(data))
 				copy(cp, data)
@@ -329,7 +329,7 @@ func TestFECPipe_EndToEnd_BurstLoss(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		recvPipe, err := NewPipe(k, r,
+		recvPipe, err := NewPipe(k, r, 0,
 			func(uint32, uint16, []byte) error { return nil },
 			nil,
 		)

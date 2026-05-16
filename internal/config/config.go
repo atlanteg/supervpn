@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -134,18 +135,26 @@ func (u UDPConfig) WithDefaults() UDPConfig {
 
 // FECConfig controls redundancy parameters.
 type FECConfig struct {
-	K int `toml:"k"` // data packets per block (default 20)
-	R int `toml:"r"` // repair packets per block (default 1)
+	K           int `toml:"k"`            // data packets per block (default 1)
+	R           int `toml:"r"`            // repair packets per block (default 2)
+	RepairDelay int `toml:"repair_delay"` // ms to delay repair packets after data (default 500)
 }
 
 func (f FECConfig) WithDefaults() FECConfig {
 	if f.K == 0 {
-		f.K = 10
+		f.K = 1
 	}
 	if f.R == 0 {
-		f.R = 6
+		f.R = 2
+	}
+	if f.RepairDelay == 0 {
+		f.RepairDelay = 500
 	}
 	return f
+}
+
+func (f FECConfig) RepairDelayDuration() time.Duration {
+	return time.Duration(f.RepairDelay) * time.Millisecond
 }
 
 // Validate returns an error if the config is unusable.

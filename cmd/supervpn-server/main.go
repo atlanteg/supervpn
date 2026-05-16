@@ -388,6 +388,7 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 	pipe, err := fec.NewPipe(
 		fecCfg.K,
 		fecCfg.R,
+		fecCfg.RepairDelayDuration(),
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			return s.sendFECData(sess, blockID, pktIdx, data)
 		},
@@ -434,8 +435,8 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		h.Forward(sessionID, frame)
 	})
 
-	log.Printf("auth ok: %s@hub%d session=%d addr=%s mode=%s fec=K%d/R%d",
-		hello.Login, hello.HubID, sessionID, remoteAddr, mode, fecCfg.K, fecCfg.R)
+	log.Printf("auth ok: %s@hub%d session=%d addr=%s mode=%s fec=K%d/R%d delay=%dms",
+		hello.Login, hello.HubID, sessionID, remoteAddr, mode, fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
 
 	okMsg := proto.AuthOK{SessionID: sessionID}
 	p := append([]byte{proto.AuthMsgOK}, okMsg.Marshal()...)

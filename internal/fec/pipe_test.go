@@ -30,7 +30,7 @@ func TestPipe_SendRecv_NoLoss(t *testing.T) {
 	}
 	var dataPkts []dataPkt
 
-	pipe, err := NewPipe(K, R,
+	pipe, err := NewPipe(K, R, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			cp := make([]byte, len(data))
 			copy(cp, data)
@@ -93,7 +93,7 @@ func TestPipe_SendRecv_OneLoss(t *testing.T) {
 	var dataPkts []dataPkt
 	var repairPkts []repairPkt
 
-	pipe, err := NewPipe(K, R,
+	pipe, err := NewPipe(K, R, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			cp := make([]byte, len(data))
 			copy(cp, data)
@@ -176,7 +176,7 @@ func TestPipe_SendRecv_MultipleBlocks(t *testing.T) {
 	var dataQ []dataPkt
 	var repairQ []repairPkt
 
-	pipe, err := NewPipe(K, R,
+	pipe, err := NewPipe(K, R, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			cp := make([]byte, len(data))
 			copy(cp, data)
@@ -237,7 +237,7 @@ func TestPipe_RepairCallback_CalledOnce(t *testing.T) {
 	const K, R = 5, 1
 
 	repairCount := 0
-	pipe, err := NewPipe(K, R,
+	pipe, err := NewPipe(K, R, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error { return nil },
 		func(blockID uint32, repairIdx uint8, data []byte) error {
 			repairCount++
@@ -266,7 +266,7 @@ func TestPipe_RepairCallback_CalledOnce(t *testing.T) {
 func TestPipe_SendRepairNil_NoLoss(t *testing.T) {
 	const K, R = 5, 1
 
-	pipe, err := NewPipe(K, R,
+	pipe, err := NewPipe(K, R, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error { return nil },
 		nil,
 	)
@@ -285,7 +285,7 @@ func TestPipe_SendRepairNil_NoLoss(t *testing.T) {
 func TestPipe_RecvData_WrongBlockID(t *testing.T) {
 	const K, R = 5, 1
 
-	pipe, err := NewPipe(K, R,
+	pipe, err := NewPipe(K, R, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error { return nil },
 		nil,
 	)
@@ -324,7 +324,7 @@ func TestPipe_RS_TwoLoss(t *testing.T) {
 	var dataQ []dataPkt
 	var repairQ []repairPkt
 
-	pipe, err := NewPipe(K, R,
+	pipe, err := NewPipe(K, R, 0,
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			cp := make([]byte, len(data))
 			copy(cp, data)
