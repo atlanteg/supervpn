@@ -651,7 +651,7 @@ func (s *Server) cleanupLoop(ctx context.Context) {
 }
 
 func (s *Server) cleanupSessions() {
-	deadline := time.Now().Add(-60 * time.Second)
+	deadline := time.Now().Add(-15 * time.Second)
 	now := time.Now()
 	s.mu.Lock()
 	for id, sess := range s.sessions {
