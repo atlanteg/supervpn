@@ -258,6 +258,7 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
 | `login` | string | — | Логин |
 | `password` | string | — | Пароль |
 | `transport` | string | `auto` | `auto` / `udp` / `tcp` |
+| `mode` | string | `auto` | Режим адаптера: `auto` — автодетект 169.254 и bridge; `direct` — принудительно TUN без bridge; `bridge` — принудительно bridge (ошибка если нет 169.254) |
 | `tun_name` | string | `supervpn` | Имя TUN в direct mode (macOS/Linux; на Windows игнорируется) |
 | `bridge.tap_name` | string | `supervpn-tap` | Имя TAP-адаптера (bridge и direct mode на Windows) |
 | `bridge.nic` | string | — | Имя физического NIC для bridge-режима (если пусто — автодетект по 169.254.x.x, адаптеры с `*` в имени пропускаются) |
@@ -293,8 +294,11 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
   "version": "b108",
   "uptime": "2h15m30s",
   "udp_listen": "0.0.0.0:5555",
+  "udp_listen_2": "0.0.0.0:5556",
   "tcp_listen": "0.0.0.0:443",
+  "tcp_listen_2": "0.0.0.0:444",
   "tcp_listener_up": true,
+  "tcp2_listener_up": true,
   "hubs": [
     {
       "id": 1,
@@ -304,6 +308,7 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
           "session_id": 3141592653,
           "login": "alice",
           "remote_addr": "1.2.3.4:51234",
+          "secondary_addr": "1.2.3.4:51235",
           "mode": "udp",
           "connected_at": "2026-05-15T10:00:00Z",
           "last_seen": "2026-05-15T12:14:58Z",
@@ -342,7 +347,9 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
 }
 ```
 
-`tcp_listener_up` — `true` если TLS/TCP listener реально поднялся.  
+`tcp_listener_up` / `tcp2_listener_up` — `true` если соответствующий TLS/TCP listener поднялся.  
+`udp_listen_2` / `tcp_listen_2` — адреса вторичных слушателей (порт+1) для dual-path транспорта.  
+`secondary_addr` — адрес клиента на вторичном пути; пусто если клиент подключён по одному каналу.  
 `frames_rx` — Ethernet фреймов получено от клиента и отправлено в hub.  
 `frames_tx` — Ethernet фреймов отправлено клиенту из hub.  
 `hub_send_calls` — сколько раз hub вызвал Send для этого клиента (до FEC-кодирования).  
@@ -363,6 +370,7 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
     "hub_id": 1,
     "login": "alice",
     "mode": "udp",
+    "secondary_addr": "vpn.example.com:5556",
     "connected_at": "2026-05-15T11:30:00Z",
     "duration": "45m10s"
   }
@@ -370,7 +378,8 @@ direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
 ```
 
 `state`: `starting` | `connecting` | `connected` | `reconnecting`  
-`mode`: `udp` | `tls`
+`mode`: `udp` | `tls`  
+`secondary_addr`: адрес вторичного пути (порт+1); отсутствует если dual-path не установлен
 
 ### `POST http://127.0.0.1:9090/api/hubs/{hub_id}/kick/{session_id}`
 

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,15 +51,16 @@ var sessionState = &clientSessionState{
 }
 
 type clientSessionState struct {
-	mu          sync.RWMutex
-	startTime   time.Time
-	state       string    // "starting" | "connecting" | "connected" | "reconnecting"
-	mode        string    // "udp" | "tls" | ""
-	server      string    // address actually connected to
-	hubID       uint16
-	login       string
-	sessionID   uint32
-	connectedAt time.Time
+	mu            sync.RWMutex
+	startTime     time.Time
+	state         string    // "starting" | "connecting" | "connected" | "reconnecting"
+	mode          string    // "udp" | "tls" | ""
+	server        string    // address actually connected to
+	hubID         uint16
+	login         string
+	sessionID     uint32
+	connectedAt   time.Time
+	secondaryAddr string    // non-empty when dual-path is active
 }
 
 func (cs *clientSessionState) setConnecting() {
@@ -68,6 +70,7 @@ func (cs *clientSessionState) setConnecting() {
 	cs.server = ""
 	cs.sessionID = 0
 	cs.connectedAt = time.Time{}
+	cs.secondaryAddr = ""
 	cs.mu.Unlock()
 }
 
@@ -90,6 +93,13 @@ func (cs *clientSessionState) setReconnecting() {
 	cs.server = ""
 	cs.sessionID = 0
 	cs.connectedAt = time.Time{}
+	cs.secondaryAddr = ""
+	cs.mu.Unlock()
+}
+
+func (cs *clientSessionState) setSecondaryAddr(addr string) {
+	cs.mu.Lock()
+	cs.secondaryAddr = addr
 	cs.mu.Unlock()
 }
 
@@ -107,6 +117,11 @@ func (cs *clientSessionState) setReconnecting() {
 //   All platforms — opens a TUN adapter (WinTun on Windows, utun on macOS).
 //   Assign an IP to the adapter after startup to reach other hub peers.
 func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, error) {
+	if cfg.Mode == "direct" {
+		log.Printf("adapter: mode=direct (forced via config)")
+		return openDirectAdapter(cfg)
+	}
+
 	ifaces, err := bridge.DetectLinkLocal()
 	if err != nil {
 		return bridge.Interface{}, nil, fmt.Errorf("detect interfaces: %w", err)
@@ -147,6 +162,9 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 		return openDirectAdapter(cfg)
 	}
 
+	if cfg.Mode == "bridge" && len(physical) == 0 {
+		return bridge.Interface{}, nil, fmt.Errorf("adapter: mode=bridge but no 169.254.0.0/16 interface found")
+	}
 	if len(physical) > 0 {
 		return openBridgeAdapter(cfg, physical[0])
 	}
@@ -197,7 +215,39 @@ func openDirectAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer
 	return bridge.Interface{Name: actual}, framer, nil
 }
 
+// pidFilePath returns the platform temp-dir path used to detect stale instances.
+func pidFilePath() string {
+	return filepath.Join(os.TempDir(), "supervpn-client.pid")
+}
+
+// killStaleClient reads the PID file and kills the previous instance if it is
+// still running. This prevents two supervpn-client processes on the same machine
+// (e.g. after a backgrounded crash or double-launch).
+func killStaleClient() {
+	data, err := os.ReadFile(pidFilePath())
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 || pid == os.Getpid() {
+		return
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	if err := proc.Kill(); err == nil {
+		log.Printf("killed stale supervpn-client process (pid=%d)", pid)
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 func main() {
+	killStaleClient()
+	if err := os.WriteFile(pidFilePath(), []byte(strconv.Itoa(os.Getpid())), 0644); err == nil {
+		defer os.Remove(pidFilePath())
+	}
+
 	var cfgPath string
 	flag.StringVar(&cfgPath, "config", "", "path to client config file (optional)")
 
@@ -355,8 +405,15 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	// Record connected state for the status API.
 	sessionState.setConnected(tr.Mode(), cfg.Server, cfg.HubID, cfg.Login, sessionID)
 	if tr2 != nil {
-		log.Printf("session %d active via %s+secondary fec=K%d/R%d delay=%dms",
-			sessionID, tr.Mode(), fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
+		var sec2Addr string
+		if tr.Mode() == "udp" {
+			sec2Addr = deriveSecondaryAddr(cfg.Server)
+		} else {
+			sec2Addr = deriveSecondaryAddr(resolveTCPAddr(cfg))
+		}
+		sessionState.setSecondaryAddr(sec2Addr)
+		log.Printf("session %d active via %s+%s fec=K%d/R%d delay=%dms",
+			sessionID, tr.Mode(), sec2Addr, fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
 	} else {
 		log.Printf("session %d active via %s fec=K%d/R%d delay=%dms",
 			sessionID, tr.Mode(), fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
@@ -815,13 +872,14 @@ type clientStatusResponse struct {
 }
 
 type sessionDetails struct {
-	SessionID   uint32 `json:"session_id"`
-	Server      string `json:"server"`
-	HubID       uint16 `json:"hub_id"`
-	Login       string `json:"login"`
-	Mode        string `json:"mode"`
-	ConnectedAt string `json:"connected_at"`
-	Duration    string `json:"duration"`
+	SessionID     uint32 `json:"session_id"`
+	Server        string `json:"server"`
+	HubID         uint16 `json:"hub_id"`
+	Login         string `json:"login"`
+	Mode          string `json:"mode"`
+	SecondaryAddr string `json:"secondary_addr,omitempty"` // set when dual-path is active
+	ConnectedAt   string `json:"connected_at"`
+	Duration      string `json:"duration"`
 }
 
 func runClientStatusServer(ctx context.Context, addr string) {
@@ -849,6 +907,7 @@ func handleClientStatus(w http.ResponseWriter, r *http.Request) {
 	sessionID := sessionState.sessionID
 	connectedAt := sessionState.connectedAt
 	startTime := sessionState.startTime
+	secondaryAddr := sessionState.secondaryAddr
 	sessionState.mu.RUnlock()
 
 	resp := clientStatusResponse{
@@ -858,13 +917,14 @@ func handleClientStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if state == "connected" {
 		resp.Session = &sessionDetails{
-			SessionID:   sessionID,
-			Server:      server,
-			HubID:       hubID,
-			Login:       login,
-			Mode:        mode,
-			ConnectedAt: connectedAt.UTC().Format(time.RFC3339),
-			Duration:    now.Sub(connectedAt).Truncate(time.Second).String(),
+			SessionID:     sessionID,
+			Server:        server,
+			HubID:         hubID,
+			Login:         login,
+			Mode:          mode,
+			SecondaryAddr: secondaryAddr,
+			ConnectedAt:   connectedAt.UTC().Format(time.RFC3339),
+			Duration:      now.Sub(connectedAt).Truncate(time.Second).String(),
 		}
 	}
 

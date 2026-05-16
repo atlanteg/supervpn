@@ -50,6 +50,11 @@ type ClientConfig struct {
 	//   "udp"            — UDP only, never fall back to TCP
 	//   "tcp"            — TCP/TLS only, skip UDP entirely
 	Transport string `toml:"transport"`
+	// Mode controls adapter selection:
+	//   "auto"   (default) — bridge if a 169.254.0.0/16 interface is found, otherwise direct TUN
+	//   "direct" — always use direct TUN; skip bridge detection entirely
+	//   "bridge" — force bridge mode; fail if no 169.254 interface is found
+	Mode string `toml:"mode"`
 	// TunName is the WinTun/utun adapter name used in direct mode (no 169.254.x.x interface
 	// detected). Defaults to "supervpn".
 	TunName string          `toml:"tun_name"`

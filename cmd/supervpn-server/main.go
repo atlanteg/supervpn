@@ -128,8 +128,9 @@ type Server struct {
 	kicked        map[string]time.Time // login → blocked until; prevents immediate reconnect after kick
 	mu            sync.RWMutex
 	startTime     time.Time
-	tcpListenerUp bool             // true once the TLS/TCP listener successfully binds
-	updateAssets  map[string]int64 // asset name → size in bytes (0 = missing)
+	tcpListenerUp  bool             // true once the primary TLS/TCP listener successfully binds
+	tcp2ListenerUp bool             // true once the secondary TLS/TCP listener successfully binds
+	updateAssets   map[string]int64 // asset name → size in bytes (0 = missing)
 }
 
 // Run starts the UDP listener (and TLS/TCP + status listeners if configured).
@@ -771,6 +772,9 @@ func (s *Server) runTCPListener2(ctx context.Context) {
 		log.Printf("TLS secondary listen %s FAILED: %v", sec2Addr, err)
 		return
 	}
+	s.mu.Lock()
+	s.tcp2ListenerUp = true
+	s.mu.Unlock()
 	log.Printf("listening TLS/TCP secondary %s", sec2Addr)
 	go func() { <-ctx.Done(); ln.Close() }()
 	for {
@@ -995,14 +999,17 @@ func (s *Server) handleUpdateAsset(w http.ResponseWriter, r *http.Request) {
 // ── Status HTTP API ──────────────────────────────────────────────────────────
 
 type statusResponse struct {
-	Version         string            `json:"version"`
-	Uptime          string            `json:"uptime"`
-	UDPListen       string            `json:"udp_listen"`
-	TCPListen       string            `json:"tcp_listen,omitempty"`
-	TCPListenerUp   bool              `json:"tcp_listener_up"`
-	Hubs            []hubStatus       `json:"hubs"`
-	Blocked         map[string]string `json:"blocked,omitempty"` // login → blocked_until (RFC3339)
-	UpdateMirror    *mirrorStatus     `json:"update_mirror,omitempty"`
+	Version        string            `json:"version"`
+	Uptime         string            `json:"uptime"`
+	UDPListen      string            `json:"udp_listen"`
+	UDPListen2     string            `json:"udp_listen_2,omitempty"`
+	TCPListen      string            `json:"tcp_listen,omitempty"`
+	TCPListen2     string            `json:"tcp_listen_2,omitempty"`
+	TCPListenerUp  bool              `json:"tcp_listener_up"`
+	TCP2ListenerUp bool              `json:"tcp2_listener_up,omitempty"`
+	Hubs           []hubStatus       `json:"hubs"`
+	Blocked        map[string]string `json:"blocked,omitempty"` // login → blocked_until (RFC3339)
+	UpdateMirror   *mirrorStatus     `json:"update_mirror,omitempty"`
 }
 
 type mirrorStatus struct {
@@ -1026,16 +1033,17 @@ type macTableEntry struct {
 }
 
 type clientStatus struct {
-	SessionID   uint32 `json:"session_id"`
-	Login       string `json:"login"`
-	RemoteAddr  string `json:"remote_addr"`
-	Mode        string `json:"mode"`
-	ConnectedAt string `json:"connected_at"`
-	LastSeen    string `json:"last_seen"`
-	Duration    string `json:"duration"`
-	FramesRx     int64 `json:"frames_rx"`
-	FramesTx     int64 `json:"frames_tx"`
-	HubSendCalls int64 `json:"hub_send_calls"`
+	SessionID     uint32 `json:"session_id"`
+	Login         string `json:"login"`
+	RemoteAddr    string `json:"remote_addr"`
+	SecondaryAddr string `json:"secondary_addr,omitempty"` // set when dual-path is active
+	Mode          string `json:"mode"`
+	ConnectedAt   string `json:"connected_at"`
+	LastSeen      string `json:"last_seen"`
+	Duration      string `json:"duration"`
+	FramesRx      int64  `json:"frames_rx"`
+	FramesTx      int64  `json:"frames_tx"`
+	HubSendCalls  int64  `json:"hub_send_calls"`
 }
 
 func (s *Server) runStatusServer(ctx context.Context) {
@@ -1122,15 +1130,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Build session index by hub.
 	type sessSnapshot struct {
-		SessionID    uint32
-		Login        string
-		RemoteAddr   string
-		Mode         string
-		ConnectedAt  time.Time
-		LastSeen     time.Time
-		FramesRx     int64
-		FramesTx     int64
-		HubSendCalls int64
+		SessionID     uint32
+		Login         string
+		RemoteAddr    string
+		SecondaryAddr string
+		Mode          string
+		ConnectedAt   time.Time
+		LastSeen      time.Time
+		FramesRx      int64
+		FramesTx      int64
+		HubSendCalls  int64
 	}
 	byHub := make(map[uint16][]sessSnapshot)
 
@@ -1138,15 +1147,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	for _, sess := range s.sessions {
 		sess.mu.Lock()
 		snap := sessSnapshot{
-			SessionID:    sess.ID,
-			Login:        sess.Login,
-			RemoteAddr:   sess.RemoteAddr,
-			Mode:         sess.Mode,
-			ConnectedAt:  sess.ConnectedAt,
-			LastSeen:     sess.lastSeen,
-			FramesRx:     sess.framesRx,
-			FramesTx:     sess.framesTx,
-			HubSendCalls: sess.hubSendCalls,
+			SessionID:     sess.ID,
+			Login:         sess.Login,
+			RemoteAddr:    sess.RemoteAddr,
+			SecondaryAddr: sess.secondaryAddr,
+			Mode:          sess.Mode,
+			ConnectedAt:   sess.ConnectedAt,
+			LastSeen:      sess.lastSeen,
+			FramesRx:      sess.framesRx,
+			FramesTx:      sess.framesTx,
+			HubSendCalls:  sess.hubSendCalls,
 		}
 		sess.mu.Unlock()
 		byHub[sess.HubID] = append(byHub[sess.HubID], snap)
@@ -1159,16 +1169,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		hs := hubStatus{ID: hcfg.ID, Name: hcfg.Name, Clients: []clientStatus{}, MACTable: []macTableEntry{}}
 		for _, snap := range byHub[hcfg.ID] {
 			hs.Clients = append(hs.Clients, clientStatus{
-				SessionID:    snap.SessionID,
-				Login:        snap.Login,
-				RemoteAddr:   snap.RemoteAddr,
-				Mode:         snap.Mode,
-				ConnectedAt:  snap.ConnectedAt.UTC().Format(time.RFC3339),
-				LastSeen:     snap.LastSeen.UTC().Format(time.RFC3339),
-				Duration:     now.Sub(snap.ConnectedAt).Truncate(time.Second).String(),
-				FramesRx:     snap.FramesRx,
-				FramesTx:     snap.FramesTx,
-				HubSendCalls: snap.HubSendCalls,
+				SessionID:     snap.SessionID,
+				Login:         snap.Login,
+				RemoteAddr:    snap.RemoteAddr,
+				SecondaryAddr: snap.SecondaryAddr,
+				Mode:          snap.Mode,
+				ConnectedAt:   snap.ConnectedAt.UTC().Format(time.RFC3339),
+				LastSeen:      snap.LastSeen.UTC().Format(time.RFC3339),
+				Duration:      now.Sub(snap.ConnectedAt).Truncate(time.Second).String(),
+				FramesRx:      snap.FramesRx,
+				FramesTx:      snap.FramesTx,
+				HubSendCalls:  snap.HubSendCalls,
 			})
 		}
 		if h, ok := s.manager.Get(hcfg.ID); ok {
@@ -1199,6 +1210,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	tcpUp := s.tcpListenerUp
+	tcp2Up := s.tcp2ListenerUp
 	s.mu.RUnlock()
 
 	var mirror *mirrorStatus
@@ -1223,13 +1235,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := statusResponse{
-		Version:       version,
-		Uptime:        now.Sub(s.startTime).Truncate(time.Second).String(),
-		UDPListen:     s.cfg.Listen,
-		TCPListen:     s.cfg.ListenTCP,
-		TCPListenerUp: tcpUp,
-		Hubs:          hubs,
-		UpdateMirror:  mirror,
+		Version:        version,
+		Uptime:         now.Sub(s.startTime).Truncate(time.Second).String(),
+		UDPListen:      s.cfg.Listen,
+		UDPListen2:     deriveSecondaryAddr(s.cfg.Listen),
+		TCPListen:      s.cfg.ListenTCP,
+		TCPListen2:     deriveSecondaryAddr(s.cfg.ListenTCP),
+		TCPListenerUp:  tcpUp,
+		TCP2ListenerUp: tcp2Up,
+		Hubs:           hubs,
+		UpdateMirror:   mirror,
 	}
 	if len(blocked) > 0 {
 		resp.Blocked = blocked
