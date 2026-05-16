@@ -316,22 +316,33 @@ func main() {
 	log.Printf("supervpn-client %s: server=%s hub=%d login=%s",
 		version, cfg.Server, cfg.HubID, cfg.Login)
 
-	const reconnectDelay = 2 * time.Second
+	backoff := 2 * time.Second
+	const maxBackoff = 30 * time.Second
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		sessionState.setConnecting()
+		t0 := time.Now()
 		err := runSession(ctx, cfg, iface, framer)
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("session ended: %v — reconnecting in %s", err, reconnectDelay)
+		// Reset backoff when the session was alive long enough to be useful —
+		// the server is reachable so no need to slow down reconnects.
+		if time.Since(t0) > 10*time.Second {
+			backoff = 2 * time.Second
+		}
+		log.Printf("session ended: %v — reconnecting in %s", err, backoff)
 		sessionState.setReconnecting()
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(reconnectDelay):
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
 		}
 	}
 }
