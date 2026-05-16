@@ -28,6 +28,18 @@ jobs:
           echo "# supervpn $VER" >> "$GITHUB_STEP_SUMMARY"
           echo "commit: \`$(git rev-parse --short HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Set run title
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "{\"display_title\":\"supervpn ${{ steps.ver.outputs.ver }}\"}" \
+          | xargs -I{} echo "PATCH display_title → HTTP {}"
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
