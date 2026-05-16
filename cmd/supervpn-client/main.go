@@ -261,6 +261,7 @@ func main() {
 		loginFlag     = flag.String("login", "", "login")
 		passwordFlag  = flag.String("password", "", "password")
 		transportFlag = flag.String("transport", "", "transport mode: auto (default), udp, tcp")
+		modeFlag      = flag.String("mode", "", "adapter mode: auto (default), direct, bridge")
 	)
 	flag.Parse()
 
@@ -281,6 +282,9 @@ func main() {
 	// CLI flags override config file values.
 	if *transportFlag != "" {
 		cfg.Transport = *transportFlag
+	}
+	if *modeFlag != "" {
+		cfg.Mode = *modeFlag
 	}
 	if *serverTCPFlag != "" {
 		cfg.ServerTCP = *serverTCPFlag
