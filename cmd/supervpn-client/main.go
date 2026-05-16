@@ -284,6 +284,7 @@ func main() {
 		passwordFlag  = flag.String("password", "", "password")
 		transportFlag = flag.String("transport", "", "transport mode: auto (default), udp, tcp")
 		modeFlag      = flag.String("mode", "", "adapter mode: auto (default), direct, bridge")
+		bridgeNICFlag = flag.String("bridge-nic", "", "physical NIC name to bridge (e.g. \"Ethernet\")")
 	)
 	flag.Parse()
 
@@ -307,6 +308,9 @@ func main() {
 	}
 	if *modeFlag != "" {
 		cfg.Mode = *modeFlag
+	}
+	if *bridgeNICFlag != "" {
+		cfg.Bridge.NIC = *bridgeNICFlag
 	}
 	if *serverTCPFlag != "" {
 		cfg.ServerTCP = *serverTCPFlag
