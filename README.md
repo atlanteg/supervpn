@@ -235,7 +235,13 @@ keepalive: ping #4 sent, last pong 9s ago | FEC data=1247 repair=62 recovered=3 
 
 # Direct mode (нет 169.254 интерфейса):
 direct mode: opened "supervpn-tap" (L2 TAP — participates in hub L2 domain)
-# Назначить IP: netsh interface ip set address "supervpn-tap" static 192.168.5.1 255.255.255.0
+# Windows — назначить IP:
+# netsh interface ip set address "supervpn-tap" static 192.168.5.1 255.255.255.0
+
+# macOS — utun работает в режиме point-to-point, маршрут в подсеть надо добавить вручную:
+# sudo ifconfig utun9 192.168.5.4 192.168.5.4 netmask 255.255.255.0
+# sudo route add -net 192.168.5.0/24 -interface utun9
+# (номер utun9 смотри в выводе: direct mode: opened "supervpn" → ifconfig | grep utun)
 ```
 
 `FEC recovered` — пакеты, потерянные при передаче и восстановленные из repair-символов без retransmit.
