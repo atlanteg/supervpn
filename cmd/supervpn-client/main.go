@@ -288,11 +288,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// If no mirrors configured, auto-derive from the server address.
-	// The server's status listener (which also acts as update mirror) defaults to :9090.
+	// Auto-derive update mirror from server host on the default update port (80).
 	if len(cfg.UpdateMirrors) == 0 && cfg.Server != "" {
 		if host := serverHost(cfg.Server); host != "" {
-			cfg.UpdateMirrors = []string{"http://" + host + ":9090/update"}
+			cfg.UpdateMirrors = []string{"http://" + host + "/update"}
 			log.Printf("update: mirror auto-set to %s", cfg.UpdateMirrors[0])
 		}
 	}

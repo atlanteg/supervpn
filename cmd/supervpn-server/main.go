@@ -165,6 +165,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.cfg.StatusListen != "" {
 		go s.runStatusServer(ctx)
 	}
+	if s.cfg.UpdateListen != "" {
+		go s.runUpdateServer(ctx)
+	}
 
 	go s.cleanupLoop(ctx)
 
@@ -952,17 +955,22 @@ func (s *Server) checkUpdateAssets() {
 }
 
 // mirrorURL returns the client-facing base URL for the update mirror.
-// Uses the host from status_listen, with two adjustments:
-//   - wildcard (0.0.0.0 / ::) → replaced with the host from cfg.Listen
-//   - loopback (127.0.0.1 / ::1) → replaced with <your_server_ip> and a warning
+// Prefers update_listen when set; falls back to status_listen.
+// Wildcards (0.0.0.0 / ::) are replaced with the UDP host; loopback triggers a warning.
 func (s *Server) mirrorURL() string {
-	host, port, err := net.SplitHostPort(s.cfg.StatusListen)
+	listen := s.cfg.UpdateListen
+	if listen == "" {
+		listen = s.cfg.StatusListen
+	}
+	if listen == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		return "http://" + s.cfg.StatusListen + "/update"
+		return "http://" + listen + "/update"
 	}
 	switch host {
 	case "", "0.0.0.0", "::":
-		// Wildcard — derive host from the UDP listen address.
 		if udpHost, _, e := net.SplitHostPort(s.cfg.Listen); e == nil &&
 			udpHost != "" && udpHost != "0.0.0.0" && udpHost != "::" {
 			host = udpHost
@@ -970,10 +978,16 @@ func (s *Server) mirrorURL() string {
 			host = "<your_server_ip>"
 		}
 	case "127.0.0.1", "::1":
-		log.Printf("update mirror: WARNING: status_listen is bound to loopback (%s) — "+
-			"clients on other machines cannot reach the mirror; "+
-			"set status_listen = \"0.0.0.0:%s\" to expose it", s.cfg.StatusListen, port)
+		src := "update_listen"
+		if s.cfg.UpdateListen == "" {
+			src = "status_listen"
+		}
+		log.Printf("update mirror: WARNING: %s is bound to loopback (%s) — "+
+			"clients on other machines cannot reach the mirror", src, listen)
 		host = "<your_server_ip>"
+	}
+	if port == "80" {
+		return fmt.Sprintf("http://%s/update", host)
 	}
 	return fmt.Sprintf("http://%s:%s/update", host, port)
 }
@@ -1049,9 +1063,12 @@ type clientStatus struct {
 func (s *Server) runStatusServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
-	mux.HandleFunc("/api/hubs/", s.handleAPI)    // POST /api/hubs/{id}/kick/{session}
-	mux.HandleFunc("/update/version", s.handleUpdateVersion) // mirror: plain-text current version
-	mux.HandleFunc("/update/", s.handleUpdateAsset)          // mirror: client binary download
+	mux.HandleFunc("/api/hubs/", s.handleAPI) // POST /api/hubs/{id}/kick/{session}
+	// Serve /update/* on status_listen only when update_listen is not configured.
+	if s.cfg.UpdateListen == "" {
+		mux.HandleFunc("/update/version", s.handleUpdateVersion)
+		mux.HandleFunc("/update/", s.handleUpdateAsset)
+	}
 
 	srv := &http.Server{Addr: s.cfg.StatusListen, Handler: mux}
 	go func() {
@@ -1061,6 +1078,24 @@ func (s *Server) runStatusServer(ctx context.Context) {
 	log.Printf("status API on http://%s/status", s.cfg.StatusListen)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Printf("status server error: %v", err)
+	}
+}
+
+// runUpdateServer runs a dedicated HTTP listener for the client update mirror.
+// Serves GET /update/version and GET /update/{asset} on cfg.UpdateListen.
+func (s *Server) runUpdateServer(ctx context.Context) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/update/version", s.handleUpdateVersion)
+	mux.HandleFunc("/update/", s.handleUpdateAsset)
+
+	srv := &http.Server{Addr: s.cfg.UpdateListen, Handler: mux}
+	go func() {
+		<-ctx.Done()
+		srv.Close()
+	}()
+	log.Printf("update mirror on http://%s/update", s.cfg.UpdateListen)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("update server error: %v", err)
 	}
 }
 

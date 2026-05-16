@@ -13,7 +13,12 @@ import (
 type ServerConfig struct {
 	Listen       string          `toml:"listen"`        // e.g. "0.0.0.0:5555"
 	ListenTCP    string          `toml:"listen_tcp"`    // TCP fallback, e.g. "0.0.0.0:443"
-	StatusListen string          `toml:"status_listen"` // HTTP status API, e.g. "127.0.0.1:9090"
+	StatusListen string          `toml:"status_listen"`  // HTTP status API, e.g. "127.0.0.1:9090"
+	// UpdateListen is a separate listener for the client update mirror only.
+	// Clients download binaries from GET /update/{asset} and check the version
+	// via GET /update/version. Typically "0.0.0.0:80" so clients can reach it
+	// without a custom port. When empty, /update/* is served on status_listen.
+	UpdateListen string          `toml:"update_listen"`
 	// UpdateDir is the directory containing client binaries served as a
 	// mirror fallback when GitHub is unreachable. The server exposes them at
 	// GET /update/{asset} (same base URL as /update/version).

@@ -1,6 +1,7 @@
 listen        = "0.0.0.0:5555"
 listen_tcp    = "0.0.0.0:443"
 status_listen = "127.0.0.1:9090"
+update_listen = "0.0.0.0:80"
 
 [fec]
 k = 20
