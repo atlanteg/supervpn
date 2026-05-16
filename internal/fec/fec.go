@@ -22,7 +22,8 @@ const (
 	DefaultR     = 6   // repair packets per block — handles burst of 6, ≈30% overhead, ~99.9% recovery at 5% loss
 	MaxK         = 128
 	MaxR         = 32
-	maxOldBlocks = 8 // drop decoder state for blocks this many behind current
+	maxOldBlocks = 8              // minimum block-ID distance before a block is eligible for expiry
+	blockKeepAge = 2 * time.Second // blocks with recent activity are kept for this long regardless of block distance
 )
 
 var ErrUnrecoverable = errors.New("fec: too many losses in block, unrecoverable")
@@ -176,8 +177,19 @@ func (d *Decoder) expire() {
 		return
 	}
 	threshold := d.maxSeen - uint32(maxOldBlocks)
-	for id := range d.blocks {
-		if id < threshold {
+	now := time.Now()
+	for id, b := range d.blocks {
+		if id >= threshold {
+			continue // too recent to consider
+		}
+		// Blocks that never received a packet can be dropped immediately.
+		if b.lastActivity.IsZero() {
+			delete(d.blocks, id)
+			continue
+		}
+		// Keep recently-active blocks long enough for delayed repair packets to
+		// arrive (default repairDelay=500ms); blockKeepAge provides 4× margin.
+		if now.Sub(b.lastActivity) > blockKeepAge {
 			delete(d.blocks, id)
 		}
 	}

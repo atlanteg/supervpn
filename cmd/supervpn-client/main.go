@@ -335,8 +335,8 @@ func main() {
 }
 
 const (
-	pingInterval     = 25 * time.Second
-	keepaliveTimeout = 75 * time.Second // 3 missed pongs → reconnect
+	pingInterval     = 10 * time.Second
+	keepaliveTimeout = 30 * time.Second // 3 missed pongs → reconnect
 )
 
 // fecStats tracks FEC and bandwidth counters for one session.

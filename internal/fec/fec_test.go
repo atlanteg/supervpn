@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
+	"time"
 )
 
 // makePackets generates n packets of the given size with deterministic pseudo-random content.
@@ -369,12 +370,20 @@ func TestXorAll_VariableLengths(t *testing.T) {
 	}
 }
 
-// TestDecoder_OldBlocksExpired: blocks far behind maxSeen are dropped.
+// TestDecoder_OldBlocksExpired: blocks far behind maxSeen are dropped once their
+// lastActivity is older than blockKeepAge.
 func TestDecoder_OldBlocksExpired(t *testing.T) {
 	const k, r = 4, 1
 	dec, _ := NewDecoder(k, r)
 
 	_, _ = dec.AddData(0, 0, []byte("hello"))
+
+	// Back-date block 0's lastActivity so the time guard does not protect it.
+	dec.mu.Lock()
+	if b, ok := dec.blocks[0]; ok {
+		b.lastActivity = time.Now().Add(-(blockKeepAge + time.Second))
+	}
+	dec.mu.Unlock()
 
 	for id := uint32(1); id <= uint32(maxOldBlocks)+2; id++ {
 		_, _ = dec.AddData(id, 0, []byte("x"))
