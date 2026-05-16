@@ -157,6 +157,13 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 			log.Printf("bridge: skipping VPN adapter %q (use bridge.nic in config to override)", iface.Name)
 			continue
 		}
+		// Skip tap-windows6 TAP adapters (OpenVPN, WireGuard, previous installs).
+		// MAC prefix 00:FF is the tap-windows6 signature; these adapters have APIPA
+		// addresses but cannot serve as bridge source NICs.
+		if len(iface.HWAddr) >= 2 && iface.HWAddr[0] == 0x00 && iface.HWAddr[1] == 0xFF {
+			log.Printf("bridge: skipping TAP adapter %q mac=%s (use bridge.nic in config to override)", iface.Name, iface.HWAddr)
+			continue
+		}
 		physical = append(physical, iface)
 	}
 
@@ -176,7 +183,15 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 		return bridge.Interface{}, nil, fmt.Errorf("adapter: mode=bridge but no 169.254.0.0/16 interface found")
 	}
 	if len(physical) > 0 {
-		return openBridgeAdapter(cfg, physical[0])
+		iface, framer, err := openBridgeAdapter(cfg, physical[0])
+		if err != nil {
+			if cfg.Mode == "bridge" {
+				return bridge.Interface{}, nil, err
+			}
+			log.Printf("bridge: failed to open bridge adapter: %v — falling back to direct mode", err)
+			return openDirectAdapter(cfg)
+		}
+		return iface, framer, nil
 	}
 	return openDirectAdapter(cfg)
 }
