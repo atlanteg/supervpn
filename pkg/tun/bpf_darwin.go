@@ -140,9 +140,8 @@ func openBPFDevice() (int, error) {
 func bpfWordAlign(n int) int { return (n + 3) &^ 3 }
 
 // frameHash returns a 64-bit hash of a frame for dedup purposes.
-// Short frames are zero-padded to 60 bytes (minimum Ethernet payload without
-// FCS) before hashing, matching what the NIC delivers back to BPF after
-// hardware padding.
+// Short frames are zero-padded to 60 bytes before hashing to match
+// what the NIC delivers after hardware padding.
 func frameHash(frame []byte) uint64 {
 	const minEth = 60
 	if len(frame) < minEth {
@@ -169,9 +168,15 @@ func (b *darwinBPF) dedupRecord(frame []byte) {
 }
 
 // dedupSeen returns true if the frame was recently injected (bridge loop).
+// It checks the frame both as-is and with the last 4 bytes stripped,
+// because some NICs append a 4-byte FCS/CRC to the captured copy, causing
+// the BPF-read frame to be 4 bytes longer than what was written.
 func (b *darwinBPF) dedupSeen(frame []byte) bool {
 	b.dedupMu.Lock()
 	t, ok := b.dedupMap[frameHash(frame)]
+	if !ok && len(frame) > 4 {
+		t, ok = b.dedupMap[frameHash(frame[:len(frame)-4])]
+	}
 	b.dedupMu.Unlock()
 	return ok && time.Since(t) < bpfDedupTTL
 }
