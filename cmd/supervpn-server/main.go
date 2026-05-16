@@ -434,8 +434,8 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		h.Forward(sessionID, frame)
 	})
 
-	log.Printf("auth ok: %s@hub%d session=%d addr=%s mode=%s",
-		hello.Login, hello.HubID, sessionID, remoteAddr, mode)
+	log.Printf("auth ok: %s@hub%d session=%d addr=%s mode=%s fec=K%d/R%d",
+		hello.Login, hello.HubID, sessionID, remoteAddr, mode, fecCfg.K, fecCfg.R)
 
 	okMsg := proto.AuthOK{SessionID: sessionID}
 	p := append([]byte{proto.AuthMsgOK}, okMsg.Marshal()...)

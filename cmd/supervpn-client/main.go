@@ -222,7 +222,7 @@ func main() {
 		cfg.HubID = uint16(*hubIDFlag)
 		cfg.Login = *loginFlag
 		cfg.Password = *passwordFlag
-		cfg.FEC = config.FECConfig{K: 1, R: 2}
+		cfg.FEC = config.FECConfig{K: 10, R: 6}
 	}
 	// CLI flags override config file values.
 	if *transportFlag != "" {
@@ -306,11 +306,11 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	}
 	defer tr.Close()
 
+	fecCfg := cfg.FEC.WithDefaults()
+
 	// Record connected state for the status API.
 	sessionState.setConnected(tr.Mode(), cfg.Server, cfg.HubID, cfg.Login, sessionID)
-	log.Printf("session %d active via %s", sessionID, tr.Mode())
-
-	fecCfg := cfg.FEC.WithDefaults()
+	log.Printf("session %d active via %s fec=K%d/R%d", sessionID, tr.Mode(), fecCfg.K, fecCfg.R)
 
 	// lastPong is updated by recvLoop each time a pong arrives.
 	// Initialised to now so the first ping cycle doesn't immediately time out.
