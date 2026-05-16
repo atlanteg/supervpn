@@ -20,11 +20,19 @@
 // bpf_hdr (Tstamp+Caplen+Datalen+Hdrlen); consecutive packets are aligned to
 // BPF_WORDALIGN (4-byte) boundaries.  We return frames one at a time; any
 // additional packets in the same read buffer are queued in darwinBPF.pending.
+//
+// Bridge loop prevention: BIOCSSEESENT=0 is unreliable on newer macOS/arm64.
+// WriteFrame stores a short hash of each injected frame; ReadFrame drops any
+// frame whose hash matches a recently-injected one (within 300 ms TTL).
 package tun
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
+	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -32,11 +40,16 @@ import (
 	"github.com/atlanteg/supervpn/internal/bridge"
 )
 
+const bpfDedupTTL = 300 * time.Millisecond
+
 type darwinBPF struct {
 	fd      int
 	iface   string
 	bufSize int
 	pending [][]byte // frames already read but not yet returned
+
+	dedupMu  sync.Mutex
+	dedupMap map[uint64]time.Time // frame hash → time injected
 }
 
 // openBPF opens a BPF device bound to ifaceName for L2 Ethernet capture/inject.
@@ -80,6 +93,7 @@ func openBPF(ifaceName string) (*darwinBPF, error) {
 	}
 
 	// Don't see frames we inject — prevents bridge loops.
+	// Not reliable on all macOS versions; software dedup (dedupMap) is the backstop.
 	zero := uint32(0)
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL,
 		uintptr(fd), unix.BIOCSSEESENT, uintptr(unsafe.Pointer(&zero))); errno != 0 {
@@ -95,7 +109,12 @@ func openBPF(ifaceName string) (*darwinBPF, error) {
 		return nil, fmt.Errorf("bpf/darwin: BIOCGBLEN: %w", errno)
 	}
 
-	return &darwinBPF{fd: fd, iface: ifaceName, bufSize: int(bufLen)}, nil
+	return &darwinBPF{
+		fd:       fd,
+		iface:    ifaceName,
+		bufSize:  int(bufLen),
+		dedupMap: make(map[uint64]time.Time),
+	}, nil
 }
 
 // openBPFDevice finds and opens the first available /dev/bpfN device.
@@ -117,15 +136,47 @@ func openBPFDevice() (int, error) {
 // bpfWordAlign rounds up to BPF_WORDALIGN (4-byte alignment).
 func bpfWordAlign(n int) int { return (n + 3) &^ 3 }
 
+// frameHash returns a 64-bit hash of a frame for dedup purposes.
+func frameHash(frame []byte) uint64 {
+	h := sha256.Sum256(frame)
+	return binary.LittleEndian.Uint64(h[:8])
+}
+
+// dedupRecord records a frame hash as recently injected.
+func (b *darwinBPF) dedupRecord(frame []byte) {
+	h := frameHash(frame)
+	now := time.Now()
+	b.dedupMu.Lock()
+	b.dedupMap[h] = now
+	// Evict stale entries while we hold the lock.
+	for k, t := range b.dedupMap {
+		if now.Sub(t) > bpfDedupTTL {
+			delete(b.dedupMap, k)
+		}
+	}
+	b.dedupMu.Unlock()
+}
+
+// dedupSeen returns true if the frame was recently injected (bridge loop).
+func (b *darwinBPF) dedupSeen(frame []byte) bool {
+	h := frameHash(frame)
+	b.dedupMu.Lock()
+	t, ok := b.dedupMap[h]
+	b.dedupMu.Unlock()
+	return ok && time.Since(t) < bpfDedupTTL
+}
+
 // ReadFrame returns one Ethernet frame. Blocks until a frame arrives or ctx
 // is cancelled. Multiple frames from one BPF read are queued internally.
 func (b *darwinBPF) ReadFrame(ctx context.Context) ([]byte, error) {
 	for {
 		// Return queued frames before doing another read.
-		if len(b.pending) > 0 {
+		for len(b.pending) > 0 {
 			f := b.pending[0]
 			b.pending = b.pending[1:]
-			return f, nil
+			if !b.dedupSeen(f) {
+				return f, nil
+			}
 		}
 
 		select {
@@ -165,6 +216,7 @@ func (b *darwinBPF) WriteFrame(frame []byte) error {
 	if len(frame) == 0 {
 		return nil
 	}
+	b.dedupRecord(frame)
 	_, err := unix.Write(b.fd, frame)
 	return err
 }
