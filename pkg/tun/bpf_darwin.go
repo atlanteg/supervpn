@@ -31,7 +31,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -48,8 +50,9 @@ type darwinBPF struct {
 	bufSize int
 	pending [][]byte // frames already read but not yet returned
 
-	dedupMu  sync.Mutex
-	dedupMap map[uint64]time.Time // frame hash → time injected
+	dedupMu   sync.Mutex
+	dedupMap  map[uint64]time.Time // frame hash → time injected
+	dedupDrops atomic.Uint64       // total frames dropped by dedup
 }
 
 // openBPF opens a BPF device bound to ifaceName for L2 Ethernet capture/inject.
@@ -137,18 +140,26 @@ func openBPFDevice() (int, error) {
 func bpfWordAlign(n int) int { return (n + 3) &^ 3 }
 
 // frameHash returns a 64-bit hash of a frame for dedup purposes.
+// Short frames are zero-padded to 60 bytes (minimum Ethernet payload without
+// FCS) before hashing, matching what the NIC delivers back to BPF after
+// hardware padding.
 func frameHash(frame []byte) uint64 {
+	const minEth = 60
+	if len(frame) < minEth {
+		var padded [minEth]byte
+		copy(padded[:], frame)
+		h := sha256.Sum256(padded[:])
+		return binary.LittleEndian.Uint64(h[:8])
+	}
 	h := sha256.Sum256(frame)
 	return binary.LittleEndian.Uint64(h[:8])
 }
 
-// dedupRecord records a frame hash as recently injected.
+// dedupRecord records the frame hash as recently injected.
 func (b *darwinBPF) dedupRecord(frame []byte) {
-	h := frameHash(frame)
 	now := time.Now()
 	b.dedupMu.Lock()
-	b.dedupMap[h] = now
-	// Evict stale entries while we hold the lock.
+	b.dedupMap[frameHash(frame)] = now
 	for k, t := range b.dedupMap {
 		if now.Sub(t) > bpfDedupTTL {
 			delete(b.dedupMap, k)
@@ -159,9 +170,8 @@ func (b *darwinBPF) dedupRecord(frame []byte) {
 
 // dedupSeen returns true if the frame was recently injected (bridge loop).
 func (b *darwinBPF) dedupSeen(frame []byte) bool {
-	h := frameHash(frame)
 	b.dedupMu.Lock()
-	t, ok := b.dedupMap[h]
+	t, ok := b.dedupMap[frameHash(frame)]
 	b.dedupMu.Unlock()
 	return ok && time.Since(t) < bpfDedupTTL
 }
@@ -174,9 +184,15 @@ func (b *darwinBPF) ReadFrame(ctx context.Context) ([]byte, error) {
 		for len(b.pending) > 0 {
 			f := b.pending[0]
 			b.pending = b.pending[1:]
-			if !b.dedupSeen(f) {
-				return f, nil
+			if b.dedupSeen(f) {
+				n := b.dedupDrops.Add(1)
+				if n <= 10 || n%100 == 0 {
+					log.Printf("bpf/darwin: dedup drop #%d src=%s dst=%s len=%d",
+						n, fmtMACSlice(f[6:12]), fmtMACSlice(f[0:6]), len(f))
+				}
+				continue
 			}
+			return f, nil
 		}
 
 		select {
@@ -223,5 +239,12 @@ func (b *darwinBPF) WriteFrame(frame []byte) error {
 
 func (b *darwinBPF) Close() error   { return unix.Close(b.fd) }
 func (b *darwinBPF) IfName() string { return b.iface }
+
+func fmtMACSlice(b []byte) string {
+	if len(b) < 6 {
+		return "?"
+	}
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5])
+}
 
 var _ bridge.Framer = (*darwinBPF)(nil)
