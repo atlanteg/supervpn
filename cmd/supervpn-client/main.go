@@ -334,8 +334,8 @@ func main() {
 }
 
 const (
-	pingInterval     = 10 * time.Second
-	keepaliveTimeout = 30 * time.Second // 3 missed pongs → reconnect
+	pingInterval     = 5 * time.Second  // keepalive probe cadence; stats logged every 2nd ping (10 s)
+	keepaliveTimeout = 10 * time.Second // 2 missed pongs → reconnect (~10 s detection)
 )
 
 // fecStats tracks FEC and bandwidth counters for one session.
@@ -527,17 +527,19 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 			sendPing(tr, sessionID, cfg.HubID)
 			since := time.Since(time.Unix(0, lastPong.Load()))
 
-			curTx := stats.bytesTx.Load()
-			curRx := stats.bytesRx.Load()
-			txKBps := float64(curTx-prevTx) / pingInterval.Seconds() / 1024
-			rxKBps := float64(curRx-prevRx) / pingInterval.Seconds() / 1024
-			prevTx, prevRx = curTx, curRx
-
-			log.Printf("keepalive: ping #%d sent, last pong %s ago | FEC data=%d repair=%d recovered=%d lost=%d | ↑%.1f KB/s ↓%.1f KB/s",
-				pingSeq, since.Truncate(time.Second),
-				stats.dataRecv.Load(), stats.repairRecv.Load(),
-				stats.recovered.Load(), stats.unrecoverable.Load(),
-				txKBps, rxKBps)
+			// Log stats every 2nd ping (every 10 s) to keep the log readable.
+			if pingSeq%2 == 0 {
+				curTx := stats.bytesTx.Load()
+				curRx := stats.bytesRx.Load()
+				txKBps := float64(curTx-prevTx) / (2 * pingInterval.Seconds()) / 1024
+				rxKBps := float64(curRx-prevRx) / (2 * pingInterval.Seconds()) / 1024
+				prevTx, prevRx = curTx, curRx
+				log.Printf("keepalive: ping #%d sent, last pong %s ago | FEC data=%d repair=%d recovered=%d lost=%d | ↑%.1f KB/s ↓%.1f KB/s",
+					pingSeq, since.Truncate(time.Second),
+					stats.dataRecv.Load(), stats.repairRecv.Load(),
+					stats.recovered.Load(), stats.unrecoverable.Load(),
+					txKBps, rxKBps)
+			}
 			if since > keepaliveTimeout {
 				return fmt.Errorf("keepalive timeout: no pong for %s", since.Truncate(time.Second))
 			}
