@@ -904,9 +904,10 @@ func (s *Server) updateDir() string {
 	return "dist"
 }
 
-// checkUpdateAssets verifies that client binaries are present in updateDir.
-// Missing files are downloaded from the GitHub release matching the server's
-// own version tag. Dev builds skip auto-download. Populates s.updateAssets.
+// checkUpdateAssets verifies that client binaries in updateDir match the server
+// version. If a .mirror-version file records a different version (or is absent),
+// all assets are re-downloaded so stale binaries from a previous deployment are
+// replaced. Dev builds skip auto-download. Populates s.updateAssets.
 func (s *Server) checkUpdateAssets() {
 	dir := s.updateDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -918,13 +919,25 @@ func (s *Server) checkUpdateAssets() {
 		log.Printf("update mirror: dev build — skipping auto-download of client binaries")
 	}
 
+	// Check whether the cached binaries match the current server version.
+	versionFile := filepath.Join(dir, ".mirror-version")
+	cachedVer, _ := os.ReadFile(versionFile)
+	stale := strings.TrimSpace(string(cachedVer)) != version
+
+	if stale && canFetch {
+		log.Printf("update mirror: cached version %q → server %s, re-downloading all assets",
+			strings.TrimSpace(string(cachedVer)), version)
+	}
+
 	assets := make(map[string]int64, len(clientAssets))
 	for _, name := range clientAssets {
 		path := filepath.Join(dir, name)
-		if fi, err := os.Stat(path); err == nil {
-			log.Printf("update mirror: ok  %s  (%d bytes)", name, fi.Size())
-			assets[name] = fi.Size()
-			continue
+		if !stale {
+			if fi, err := os.Stat(path); err == nil {
+				log.Printf("update mirror: ok  %s  (%d bytes)", name, fi.Size())
+				assets[name] = fi.Size()
+				continue
+			}
 		}
 		if !canFetch {
 			log.Printf("update mirror: missing  %s", name)
@@ -938,6 +951,11 @@ func (s *Server) checkUpdateAssets() {
 		fi, _ := os.Stat(path)
 		log.Printf("update mirror: ready  %s  (%d bytes)", name, fi.Size())
 		assets[name] = fi.Size()
+	}
+
+	// Write version stamp so next restart skips re-download when version matches.
+	if canFetch {
+		_ = os.WriteFile(versionFile, []byte(version), 0644)
 	}
 
 	s.mu.Lock()
