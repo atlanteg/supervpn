@@ -987,10 +987,15 @@ func (s *Server) mirrorURL() string {
 	return fmt.Sprintf("http://%s:%s/update", host, port)
 }
 
-// handleUpdateAsset serves a client binary from updateDir.
+// handleUpdateAsset serves a client binary from updateDir, or a directory
+// listing when the path is exactly /update/.
 // Only names in clientAssets are allowed — path traversal is impossible.
 func (s *Server) handleUpdateAsset(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/update/")
+	if name == "" {
+		s.handleUpdateListing(w, r)
+		return
+	}
 	allowed := false
 	for _, a := range clientAssets {
 		if name == a {
@@ -1003,6 +1008,33 @@ func (s *Server) handleUpdateAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, filepath.Join(s.updateDir(), name))
+}
+
+func (s *Server) handleUpdateListing(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	ver := version
+	assets := make(map[string]int64, len(s.updateAssets))
+	for k, v := range s.updateAssets {
+		assets[k] = v
+	}
+	s.mu.Unlock()
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, "<!DOCTYPE html><html><head><title>supervpn update mirror</title>"+
+		"<style>body{font-family:monospace;padding:2em}table{border-collapse:collapse}"+
+		"td,th{padding:4px 16px 4px 0;text-align:left}a{color:#0066cc}</style></head>"+
+		"<body><h2>supervpn update mirror — %s</h2><table>"+
+		"<tr><th>file</th><th>size</th></tr>\n", ver)
+	for _, name := range clientAssets {
+		size := assets[name]
+		if size > 0 {
+			fmt.Fprintf(w, "<tr><td><a href=\"/update/%s\">%s</a></td><td>%d bytes</td></tr>\n",
+				name, name, size)
+		} else {
+			fmt.Fprintf(w, "<tr><td>%s</td><td><em>not available</em></td></tr>\n", name)
+		}
+	}
+	fmt.Fprintf(w, "</table><p><a href=\"/update/version\">/update/version</a></p></body></html>")
 }
 
 // ── Status HTTP API ──────────────────────────────────────────────────────────
