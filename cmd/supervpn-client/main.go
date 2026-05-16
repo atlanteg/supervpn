@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -308,10 +309,58 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 
 	fecCfg := cfg.FEC.WithDefaults()
 
+	// Connect secondary path on port+1 (best-effort, non-fatal).
+	var tr2 transport.Transport
+	udpCfg := cfg.UDP.WithDefaults()
+	if tr.Mode() == "udp" {
+		if sec2Addr := deriveSecondaryAddr(cfg.Server); sec2Addr != "" {
+			if t2, e := transport.KnockAndDial(sec2Addr, udpCfg.KnockCount, udpCfg.KnockSize); e == nil {
+				tr2 = t2
+				log.Printf("transport: secondary UDP connected to %s", sec2Addr)
+			} else {
+				log.Printf("transport: secondary UDP dial %s failed: %v", sec2Addr, e)
+			}
+		}
+	} else {
+		tcpAddr := resolveTCPAddr(cfg)
+		if sec2Addr := deriveSecondaryAddr(tcpAddr); sec2Addr != "" {
+			sni := cfg.TLS.SNI
+			if sni == "" {
+				if h, _, e := net.SplitHostPort(sec2Addr); e == nil {
+					sni = h
+				}
+			}
+			dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
+			t2, e := transport.DialTLS(dialCtx, sec2Addr, sni)
+			dialCancel()
+			if e == nil {
+				joinHdr := make([]byte, proto.HeaderSize)
+				proto.Header{Type: proto.FrameJoin, SessionID: sessionID}.Marshal(joinHdr)
+				if e2 := t2.Send(transport.Frame{Data: joinHdr}); e2 == nil {
+					tr2 = t2
+					log.Printf("transport: secondary TLS connected to %s", sec2Addr)
+				} else {
+					t2.Close()
+					log.Printf("transport: secondary TLS join %s failed: %v", sec2Addr, e2)
+				}
+			} else {
+				log.Printf("transport: secondary TLS dial %s failed: %v", sec2Addr, e)
+			}
+		}
+	}
+	if tr2 != nil {
+		defer tr2.Close()
+	}
+
 	// Record connected state for the status API.
 	sessionState.setConnected(tr.Mode(), cfg.Server, cfg.HubID, cfg.Login, sessionID)
-	log.Printf("session %d active via %s fec=K%d/R%d delay=%dms",
-		sessionID, tr.Mode(), fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
+	if tr2 != nil {
+		log.Printf("session %d active via %s+secondary fec=K%d/R%d delay=%dms",
+			sessionID, tr.Mode(), fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
+	} else {
+		log.Printf("session %d active via %s fec=K%d/R%d delay=%dms",
+			sessionID, tr.Mode(), fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
+	}
 
 	// lastPong is updated by recvLoop each time a pong arrives.
 	// Initialised to now so the first ping cycle doesn't immediately time out.
@@ -326,11 +375,21 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 		fecCfg.RepairDelayDuration(),
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			stats.bytesTx.Add(uint64(len(data)))
-			return sendFECData(tr, sessionID, cfg.HubID, sessionCipher, blockID, pktIdx, data)
+			pkt, err := buildFECDataPkt(sessionID, cfg.HubID, sessionCipher, blockID, pktIdx, data)
+			if err != nil {
+				return err
+			}
+			sendOnBoth(tr, tr2, pkt)
+			return nil
 		},
 		func(blockID uint32, repairIdx uint8, data []byte) error {
 			stats.bytesTx.Add(uint64(len(data)))
-			return sendFECRepair(tr, sessionID, cfg.HubID, sessionCipher, blockID, repairIdx, uint8(fecCfg.K), uint8(fecCfg.R), data)
+			pkt, err := buildFECRepairPkt(sessionID, cfg.HubID, sessionCipher, blockID, repairIdx, uint8(fecCfg.K), uint8(fecCfg.R), data)
+			if err != nil {
+				return err
+			}
+			sendOnBoth(tr, tr2, pkt)
+			return nil
 		},
 	)
 	if err != nil {
@@ -383,6 +442,14 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	go func() {
 		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, downstream, &lastPong, &stats)
 	}()
+
+	if tr2 != nil {
+		go func() {
+			if err := recvLoop(sessionCtx, tr2, sessionID, sessionCipher, pipe, downstream, &lastPong, &stats); err != nil {
+				log.Printf("secondary recv: %v", err)
+			}
+		}()
+	}
 
 	pingTick := time.NewTicker(pingInterval)
 	defer pingTick.Stop()
@@ -679,10 +746,24 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 	}
 }
 
-func sendFECData(tr transport.Transport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, pktIdx uint16, frame []byte) error {
+// deriveSecondaryAddr returns host:port+1 for the given host:port address.
+func deriveSecondaryAddr(addr string) string {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return ""
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port+1))
+}
+
+// buildFECDataPkt encrypts a data frame and returns the complete wire packet.
+func buildFECDataPkt(sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, pktIdx uint16, frame []byte) ([]byte, error) {
 	encrypted, err := cipher.Seal(frame)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	hdr := make([]byte, proto.HeaderSize)
 	proto.Header{
@@ -691,13 +772,14 @@ func sendFECData(tr transport.Transport, sessionID uint32, hubID uint16, cipher 
 		SessionID: sessionID,
 		Seq:       proto.PackDataSeq(blockID, pktIdx),
 	}.Marshal(hdr)
-	return tr.Send(transport.Frame{Data: append(hdr, encrypted...)})
+	return append(hdr, encrypted...), nil
 }
 
-func sendFECRepair(tr transport.Transport, sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) error {
+// buildFECRepairPkt encrypts a repair symbol and returns the complete wire packet.
+func buildFECRepairPkt(sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) ([]byte, error) {
 	encrypted, err := cipher.Seal(data)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	hdr := make([]byte, proto.HeaderSize)
 	proto.Header{
@@ -706,7 +788,15 @@ func sendFECRepair(tr transport.Transport, sessionID uint32, hubID uint16, ciphe
 		SessionID: sessionID,
 		Seq:       proto.PackRepairSeq(blockID, repairIdx, blockK, blockR),
 	}.Marshal(hdr)
-	return tr.Send(transport.Frame{Data: append(hdr, encrypted...)})
+	return append(hdr, encrypted...), nil
+}
+
+// sendOnBoth sends pkt on the primary transport and, best-effort, on the secondary.
+func sendOnBoth(tr1, tr2 transport.Transport, pkt []byte) {
+	_ = tr1.Send(transport.Frame{Data: pkt})
+	if tr2 != nil {
+		_ = tr2.Send(transport.Frame{Data: pkt})
+	}
 }
 
 func sendPing(tr transport.Transport, sessionID uint32, hubID uint16) {

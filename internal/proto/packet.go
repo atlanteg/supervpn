@@ -17,6 +17,7 @@ type FrameType uint8
 const (
 	FrameData   FrameType = 0x01 // encrypted L2 Ethernet frame
 	FrameRepair FrameType = 0x02 // FEC repair symbol
+	FrameJoin   FrameType = 0x03 // register secondary path (no payload; SessionID identifies session)
 	FrameAuth   FrameType = 0x10 // handshake/auth
 	FramePing   FrameType = 0x20
 	FramePong   FrameType = 0x21

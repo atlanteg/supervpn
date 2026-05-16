@@ -94,19 +94,22 @@ func main() {
 
 // Session holds the per-client state for an authenticated VPN session.
 type Session struct {
-	ID          uint32
-	HubID       uint16
-	Login       string
-	RemoteAddr  string    // IP:port of the client
-	Mode        string    // "udp" or "tls"
-	ConnectedAt time.Time // when auth completed
-	sendRaw     func([]byte) error
-	closeConn   func()             // closes the underlying transport (no-op for UDP)
-	cipher      *crypto.Cipher
-	replay      crypto.ReplayWindow
-	pipe        *fec.Pipe
-	cancel      context.CancelFunc // cancels per-session goroutines (e.g. FEC flush)
-	lastSeen    time.Time
+	ID           uint32
+	HubID        uint16
+	Login        string
+	RemoteAddr   string    // IP:port of the client
+	Mode         string    // "udp" or "tls"
+	ConnectedAt  time.Time // when auth completed
+	sendRaw      func([]byte) error
+	sendRaw2     func([]byte) error // secondary send path; nil = no secondary
+	secondaryAddr string            // remote addr of secondary path (for logging)
+	closeConn    func()             // closes the underlying transport (no-op for UDP)
+	closeConn2   func()             // closes secondary TLS conn (nil = no secondary)
+	cipher       *crypto.Cipher
+	replay       crypto.ReplayWindow
+	pipe         *fec.Pipe
+	cancel       context.CancelFunc // cancels per-session goroutines (e.g. FEC flush)
+	lastSeen     time.Time
 	framesRx     int64 // frames received from this client and forwarded to hub
 	framesTx     int64 // frames sent to this client from hub
 	hubSendCalls int64 // times hub called client.Send (pre-FEC); if >0 and framesTx=0, pipe/cipher bug
@@ -117,15 +120,16 @@ const kickBlockDuration = 5 * time.Minute
 
 // Server handles auth, data forwarding, and ping/pong over UDP and TLS/TCP.
 type Server struct {
-	cfg             *config.ServerConfig
-	manager         *hub.Manager
-	conn            *net.UDPConn
-	sessions        map[uint32]*Session
-	kicked          map[string]time.Time // login → blocked until; prevents immediate reconnect after kick
-	mu              sync.RWMutex
-	startTime       time.Time
-	tcpListenerUp   bool // true once the TLS/TCP listener successfully binds
-	updateAssets    map[string]int64 // asset name → size in bytes (0 = missing)
+	cfg           *config.ServerConfig
+	manager       *hub.Manager
+	conn          *net.UDPConn
+	conn2         *net.UDPConn      // secondary UDP listener on port+1
+	sessions      map[uint32]*Session
+	kicked        map[string]time.Time // login → blocked until; prevents immediate reconnect after kick
+	mu            sync.RWMutex
+	startTime     time.Time
+	tcpListenerUp bool             // true once the TLS/TCP listener successfully binds
+	updateAssets  map[string]int64 // asset name → size in bytes (0 = missing)
 }
 
 // Run starts the UDP listener (and TLS/TCP + status listeners if configured).
@@ -141,8 +145,21 @@ func (s *Server) Run(ctx context.Context) error {
 	s.conn = conn
 	log.Printf("listening UDP %s", s.cfg.Listen)
 
+	if sec2Addr := deriveSecondaryAddr(s.cfg.Listen); sec2Addr != "" {
+		if sec2UDPAddr, e := net.ResolveUDPAddr("udp", sec2Addr); e == nil {
+			if conn2, e := net.ListenUDP("udp", sec2UDPAddr); e == nil {
+				s.conn2 = conn2
+				log.Printf("listening UDP secondary %s", sec2Addr)
+				go s.runSecondaryUDP(ctx, conn2)
+			} else {
+				log.Printf("secondary UDP listen %s: %v", sec2Addr, e)
+			}
+		}
+	}
+
 	if s.cfg.ListenTCP != "" {
 		go s.runTCPListener(ctx)
+		go s.runTCPListener2(ctx)
 	}
 	if s.cfg.StatusListen != "" {
 		go s.runStatusServer(ctx)
@@ -177,7 +194,7 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.handlePacket(ctx, pkt, func(p []byte) error {
 			_, err := s.conn.WriteToUDP(p, ra)
 			return err
-		}, ra.String(), "udp", func() {})
+		}, ra.String(), "udp", func() {}, false)
 	}
 }
 
@@ -252,17 +269,17 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 		if sessionID == 0 {
 			log.Printf("TCP %s: received %d bytes (pre-auth)", remoteAddr, len(f.Data))
 		}
-		if sid := s.handlePacket(ctx, f.Data, sendReply, remoteAddr, "tls", closeConn); sid != 0 {
+		if sid := s.handlePacket(ctx, f.Data, sendReply, remoteAddr, "tls", closeConn, false); sid != 0 {
 			sessionID = sid
 			log.Printf("TCP %s: session %d established", remoteAddr, sessionID)
 		}
 	}
 }
 
-// handlePacket dispatches one wire packet. remoteAddr, mode, and closeConn are
-// recorded in the session when an auth packet creates it.
+// handlePacket dispatches one wire packet. secondary=true means the packet arrived
+// on the secondary listener (port+1); auth is skipped and the path is auto-registered.
 // Returns new session ID on auth, 0 otherwise.
-func (s *Server) handlePacket(ctx context.Context, pkt []byte, sendReply func([]byte) error, remoteAddr, mode string, closeConn func()) uint32 {
+func (s *Server) handlePacket(ctx context.Context, pkt []byte, sendReply func([]byte) error, remoteAddr, mode string, closeConn func(), secondary bool) uint32 {
 	hdr, ok := proto.ParseHeader(pkt)
 	if !ok {
 		return 0
@@ -270,11 +287,17 @@ func (s *Server) handlePacket(ctx context.Context, pkt []byte, sendReply func([]
 	payload := pkt[proto.HeaderSize:]
 	switch hdr.Type {
 	case proto.FrameAuth:
-		return s.handleAuth(ctx, payload, sendReply, remoteAddr, mode, closeConn)
+		if !secondary {
+			return s.handleAuth(ctx, payload, sendReply, remoteAddr, mode, closeConn)
+		}
 	case proto.FrameData:
-		s.handleData(hdr, payload)
+		s.handleData(hdr, payload, sendReply, remoteAddr, secondary)
 	case proto.FrameRepair:
-		s.handleRepair(hdr, payload)
+		s.handleRepair(hdr, payload, sendReply, remoteAddr, secondary)
+	case proto.FrameJoin:
+		if secondary {
+			s.handleJoin(hdr, sendReply, remoteAddr, closeConn)
+		}
 	case proto.FramePing:
 		s.handlePing(hdr, sendReply)
 	}
@@ -353,6 +376,12 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 			h2.Leave(ex.ID)
 		}
 		ex.closeConn() // no-op for UDP; closes TCP connection immediately
+		ex.mu.Lock()
+		cc2 := ex.closeConn2
+		ex.mu.Unlock()
+		if cc2 != nil {
+			cc2()
+		}
 		log.Printf("evicted stale session %d (%s@hub%d) on reconnect", ex.ID, ex.Login, ex.HubID)
 	}
 
@@ -446,7 +475,7 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 	return sessionID
 }
 
-func (s *Server) handleData(hdr proto.Header, payload []byte) {
+func (s *Server) handleData(hdr proto.Header, payload []byte, sendReply func([]byte) error, remoteAddr string, secondary bool) {
 	s.mu.RLock()
 	sess, ok := s.sessions[hdr.SessionID]
 	s.mu.RUnlock()
@@ -461,6 +490,17 @@ func (s *Server) handleData(hdr proto.Header, payload []byte) {
 	if err != nil {
 		return
 	}
+
+	if secondary {
+		sess.mu.Lock()
+		if sess.sendRaw2 == nil {
+			sess.sendRaw2 = sendReply
+			sess.secondaryAddr = remoteAddr
+			log.Printf("session %d: secondary UDP path registered from %s", sess.ID, remoteAddr)
+		}
+		sess.mu.Unlock()
+	}
+
 	blockID, pktIdx := proto.UnpackDataSeq(hdr.Seq)
 	recovered, err := sess.pipe.RecvData(blockID, pktIdx, frame)
 	if err != nil || recovered == nil {
@@ -480,7 +520,7 @@ func (s *Server) handleData(hdr proto.Header, payload []byte) {
 	}
 }
 
-func (s *Server) handleRepair(hdr proto.Header, payload []byte) {
+func (s *Server) handleRepair(hdr proto.Header, payload []byte, sendReply func([]byte) error, remoteAddr string, secondary bool) {
 	s.mu.RLock()
 	sess, ok := s.sessions[hdr.SessionID]
 	s.mu.RUnlock()
@@ -491,6 +531,17 @@ func (s *Server) handleRepair(hdr proto.Header, payload []byte) {
 	if err != nil {
 		return
 	}
+
+	if secondary {
+		sess.mu.Lock()
+		if sess.sendRaw2 == nil {
+			sess.sendRaw2 = sendReply
+			sess.secondaryAddr = remoteAddr
+			log.Printf("session %d: secondary UDP path registered from %s", sess.ID, remoteAddr)
+		}
+		sess.mu.Unlock()
+	}
+
 	blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
 	recovered, err := sess.pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
 	if err != nil || recovered == nil {
@@ -536,10 +587,16 @@ func (s *Server) sendFECData(sess *Session, blockID uint32, pktIdx uint16, frame
 		SessionID: sess.ID,
 		Seq:       proto.PackDataSeq(blockID, pktIdx),
 	}.Marshal(hdr)
+	pkt := append(hdr, encrypted...)
 	sess.mu.Lock()
 	sess.framesTx++
+	send2 := sess.sendRaw2
 	sess.mu.Unlock()
-	return sess.sendRaw(append(hdr, encrypted...))
+	err = sess.sendRaw(pkt)
+	if send2 != nil {
+		_ = send2(pkt)
+	}
+	return err
 }
 
 func (s *Server) sendFECRepair(sess *Session, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) error {
@@ -554,7 +611,15 @@ func (s *Server) sendFECRepair(sess *Session, blockID uint32, repairIdx, blockK,
 		SessionID: sess.ID,
 		Seq:       proto.PackRepairSeq(blockID, repairIdx, blockK, blockR),
 	}.Marshal(hdr)
-	return sess.sendRaw(append(hdr, encrypted...))
+	pkt := append(hdr, encrypted...)
+	sess.mu.Lock()
+	send2 := sess.sendRaw2
+	sess.mu.Unlock()
+	err = sess.sendRaw(pkt)
+	if send2 != nil {
+		_ = send2(pkt)
+	}
+	return err
 }
 
 func (s *Server) newSessionID() uint32 {
@@ -577,6 +642,12 @@ func (s *Server) removeSession(id uint32) {
 	if ok {
 		if sess.cancel != nil {
 			sess.cancel()
+		}
+		sess.mu.Lock()
+		cc2 := sess.closeConn2
+		sess.mu.Unlock()
+		if cc2 != nil {
+			cc2()
 		}
 		if h, ok2 := s.manager.Get(sess.HubID); ok2 {
 			h.Leave(id)
@@ -611,6 +682,12 @@ func (s *Server) cleanupSessions() {
 			if sess.cancel != nil {
 				sess.cancel()
 			}
+			sess.mu.Lock()
+			cc2 := sess.closeConn2
+			sess.mu.Unlock()
+			if cc2 != nil {
+				cc2()
+			}
 			if h, ok := s.manager.Get(sess.HubID); ok {
 				h.Leave(id)
 			}
@@ -623,6 +700,175 @@ func (s *Server) cleanupSessions() {
 		}
 	}
 	s.mu.Unlock()
+}
+
+// ── Dual-path (secondary listener) ───────────────────────────────────────────
+
+// deriveSecondaryAddr returns host:port+1 for the given host:port address.
+func deriveSecondaryAddr(addr string) string {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return ""
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port+1))
+}
+
+// runSecondaryUDP reads from the secondary UDP socket (port+1) and routes packets
+// through handlePacket with secondary=true, enabling auto-registration of the
+// client's secondary source address as sess.sendRaw2.
+func (s *Server) runSecondaryUDP(ctx context.Context, conn *net.UDPConn) {
+	defer conn.Close()
+	buf := make([]byte, 2048)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, raddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				log.Printf("secondary UDP: read error: %v", err)
+				return
+			}
+		}
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+		ra := raddr
+		go s.handlePacket(ctx, pkt, func(p []byte) error {
+			_, err := conn.WriteToUDP(p, ra)
+			return err
+		}, ra.String(), "udp2", func() {}, true)
+	}
+}
+
+// runTCPListener2 starts a secondary TLS/TCP listener on ListenTCP+1.
+// Clients connect here as a second path; the first packet must be FrameJoin
+// carrying the session ID obtained from the primary auth.
+func (s *Server) runTCPListener2(ctx context.Context) {
+	sec2Addr := deriveSecondaryAddr(s.cfg.ListenTCP)
+	if sec2Addr == "" {
+		return
+	}
+	tlsCfg, err := transport.NewServerTLSConfig(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+	if err != nil {
+		log.Printf("TLS secondary: config error: %v", err)
+		return
+	}
+	ln, err := transport.ListenTLS(sec2Addr, tlsCfg)
+	if err != nil {
+		log.Printf("TLS secondary listen %s FAILED: %v", sec2Addr, err)
+		return
+	}
+	log.Printf("listening TLS/TCP secondary %s", sec2Addr)
+	go func() { <-ctx.Done(); ln.Close() }()
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				log.Printf("TLS secondary accept error: %v", err)
+				continue
+			}
+		}
+		go s.handleTCPConn2(ctx, conn)
+	}
+}
+
+// handleTCPConn2 manages one secondary TLS connection.
+// It expects FrameJoin as the first packet to identify the session, then
+// forwards FrameData/FrameRepair through the normal handlers.
+func (s *Server) handleTCPConn2(ctx context.Context, conn net.Conn) {
+	remoteAddr := conn.RemoteAddr().String()
+	tr, err := transport.AcceptTLS(conn)
+	if err != nil {
+		log.Printf("TCP secondary %s: TLS handshake failed: %v", remoteAddr, err)
+		return
+	}
+	defer tr.Close()
+
+	sendReply := func(pkt []byte) error {
+		return tr.Send(transport.Frame{Data: pkt})
+	}
+	closeConn := func() { tr.Close() }
+
+	var sessionID uint32
+	for {
+		f, err := tr.Recv(ctx)
+		if err != nil {
+			if sessionID != 0 {
+				s.mu.RLock()
+				sess, ok := s.sessions[sessionID]
+				s.mu.RUnlock()
+				if ok {
+					sess.mu.Lock()
+					sess.sendRaw2 = nil
+					sess.secondaryAddr = ""
+					sess.closeConn2 = nil
+					sess.mu.Unlock()
+					log.Printf("TCP secondary %s: session %d secondary path lost", remoteAddr, sessionID)
+				}
+			}
+			return
+		}
+		hdr, ok := proto.ParseHeader(f.Data)
+		if !ok {
+			continue
+		}
+
+		if sessionID == 0 {
+			if hdr.Type == proto.FrameJoin && hdr.SessionID != 0 {
+				s.handleJoin(hdr, sendReply, remoteAddr, closeConn)
+				sessionID = hdr.SessionID
+				log.Printf("TCP secondary %s: session %d registered", remoteAddr, sessionID)
+			}
+			continue
+		}
+
+		payload := f.Data[proto.HeaderSize:]
+		switch hdr.Type {
+		case proto.FrameData:
+			s.handleData(hdr, payload, sendReply, remoteAddr, false)
+		case proto.FrameRepair:
+			s.handleRepair(hdr, payload, sendReply, remoteAddr, false)
+		case proto.FramePing:
+			s.handlePing(hdr, sendReply)
+		}
+	}
+}
+
+// handleJoin registers a TLS secondary connection as sess.sendRaw2.
+func (s *Server) handleJoin(hdr proto.Header, sendReply func([]byte) error, remoteAddr string, closeConn func()) {
+	if hdr.SessionID == 0 {
+		return
+	}
+	s.mu.RLock()
+	sess, ok := s.sessions[hdr.SessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return
+	}
+	sess.mu.Lock()
+	if sess.sendRaw2 == nil {
+		sess.sendRaw2 = sendReply
+		sess.secondaryAddr = remoteAddr
+		sess.closeConn2 = closeConn
+		log.Printf("session %d: secondary TLS path registered from %s", sess.ID, remoteAddr)
+	}
+	sess.mu.Unlock()
 }
 
 // ── Update mirror ────────────────────────────────────────────────────────────
@@ -850,6 +1096,12 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Close transport (no-op for UDP; closes TCP connection immediately).
 	sess.closeConn()
+	sess.mu.Lock()
+	cc2 := sess.closeConn2
+	sess.mu.Unlock()
+	if cc2 != nil {
+		cc2()
+	}
 
 	if h, ok2 := s.manager.Get(sess.HubID); ok2 {
 		h.Leave(sessionID)
