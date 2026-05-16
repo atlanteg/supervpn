@@ -284,6 +284,9 @@ func (t *windowsTAP) WriteFrame(frame []byte) error {
 		return fmt.Errorf("tap/windows: write: %w", err)
 	}
 	windows.WaitForSingleObject(ev, windows.INFINITE)
+	if err := windows.GetOverlappedResult(t.handle, ol, &n, false); err != nil {
+		return fmt.Errorf("tap/windows: write result: %w", err)
+	}
 	return nil
 }
 
