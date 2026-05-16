@@ -16,12 +16,22 @@ import (
 type windowsTUN struct {
 	adapter *wintun.Adapter
 	session wintun.Session
+	name    string
 }
 
-func openPlatform(name string) (*windowsTUN, error) {
+// openPlatform creates or opens a WinTun adapter and returns an L2-emulated
+// Framer (windowsTUNL2) suitable for connecting to the hub's Ethernet domain.
+func openPlatform(name string) (*windowsTUNL2, error) {
+	raw, err := openWinTUN(name)
+	if err != nil {
+		return nil, err
+	}
+	return newWindowsTUNL2(raw), nil
+}
+
+func openWinTUN(name string) (*windowsTUN, error) {
 	adapter, err := wintun.CreateAdapter(name, "supervpn", nil)
 	if err != nil {
-		// try to open existing
 		adapter, err = wintun.OpenAdapter(name)
 		if err != nil {
 			return nil, fmt.Errorf("tun/windows: open adapter %q: %w", name, err)
@@ -31,10 +41,10 @@ func openPlatform(name string) (*windowsTUN, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tun/windows: start session: %w", err)
 	}
-	return &windowsTUN{adapter: adapter, session: session}, nil
+	return &windowsTUN{adapter: adapter, session: session, name: name}, nil
 }
 
-func (t *windowsTUN) ReadFrame(ctx context.Context) ([]byte, error) {
+func (t *windowsTUN) readIP(ctx context.Context) ([]byte, error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -43,7 +53,6 @@ func (t *windowsTUN) ReadFrame(ctx context.Context) ([]byte, error) {
 		}
 		pkt, err := t.session.ReceivePacket()
 		if err != nil {
-			// No packet available — wait up to 50ms for the driver event.
 			evt := t.session.ReadWaitEvent()
 			windows.WaitForSingleObject(windows.Handle(evt), 50)
 			continue
@@ -55,15 +64,20 @@ func (t *windowsTUN) ReadFrame(ctx context.Context) ([]byte, error) {
 	}
 }
 
-func (t *windowsTUN) WriteFrame(frame []byte) error {
-	pkt, err := t.session.AllocateSendPacket(len(frame))
+func (t *windowsTUN) writeIP(ip []byte) error {
+	if len(ip) == 0 {
+		return nil
+	}
+	pkt, err := t.session.AllocateSendPacket(len(ip))
 	if err != nil {
 		return fmt.Errorf("tun/windows: alloc send: %w", err)
 	}
-	copy(pkt, frame)
+	copy(pkt, ip)
 	t.session.SendPacket(pkt)
 	return nil
 }
+
+func (t *windowsTUN) IfName() string { return t.name }
 
 func (t *windowsTUN) Close() error {
 	t.session.End()
