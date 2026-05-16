@@ -191,8 +191,12 @@ attempts    = 3
 # Windows
 supervpn-client.exe -config client.toml
 
+# macOS — снять карантин и дать права на запуск:
+xattr -d com.apple.quarantine supervpn-client-darwin-arm64
+chmod +x supervpn-client-darwin-arm64
+
 # macOS (bridge mode требует root)
-sudo supervpn-client -config client.toml
+sudo ./supervpn-client-darwin-arm64 -config client.toml
 
 # Без конфига
 supervpn-client -server vpn.example.com:5555 -login alice -password mypassword
