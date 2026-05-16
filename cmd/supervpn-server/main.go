@@ -366,35 +366,6 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		return 0
 	}
 
-	// Evict any existing session for this login@hub (stale UDP session or rapid reconnect).
-	// This ensures only one active session per user, prevents hub from holding two entries,
-	// and makes old sessions disappear immediately instead of waiting 90 s for timeout.
-	s.mu.Lock()
-	var stale []*Session
-	for id, ex := range s.sessions {
-		if ex.Login == hello.Login && ex.HubID == hello.HubID {
-			stale = append(stale, ex)
-			delete(s.sessions, id)
-		}
-	}
-	s.mu.Unlock()
-	for _, ex := range stale {
-		if ex.cancel != nil {
-			ex.cancel()
-		}
-		if h2, ok2 := s.manager.Get(ex.HubID); ok2 {
-			h2.Leave(ex.ID)
-		}
-		ex.closeConn() // no-op for UDP; closes TCP connection immediately
-		ex.mu.Lock()
-		cc2 := ex.closeConn2
-		ex.mu.Unlock()
-		if cc2 != nil {
-			cc2()
-		}
-		log.Printf("evicted stale session %d (%s@hub%d) on reconnect", ex.ID, ex.Login, ex.HubID)
-	}
-
 	sessionID := s.newSessionID()
 	hubNetName := fmt.Sprintf("hub%d", hello.HubID)
 	key, err := crypto.DeriveKey(wireHex, hubNetName, "server", hello.Login)
