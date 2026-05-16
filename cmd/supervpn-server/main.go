@@ -165,9 +165,15 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.cfg.StatusListen != "" {
 		go s.runStatusServer(ctx)
 	}
-	if s.cfg.UpdateListen != "" {
-		go s.runUpdateServer(ctx)
+	// update_listen defaults to ":80" when not set.
+	// If status_listen is also set, /update/* is served there as fallback,
+	// but a dedicated port 80 listener is preferred for client-reachability.
+	updateListen := s.cfg.UpdateListen
+	if updateListen == "" {
+		updateListen = ":80"
+		s.cfg.UpdateListen = updateListen
 	}
+	go s.runUpdateServer(ctx)
 
 	go s.cleanupLoop(ctx)
 

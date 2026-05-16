@@ -60,7 +60,8 @@ type clientSessionState struct {
 	login         string
 	sessionID     uint32
 	connectedAt   time.Time
-	secondaryAddr string    // non-empty when dual-path is active
+	secondaryAddr string     // non-empty when dual-path is active
+	stats         *fecStats  // live counters for the current session; nil when disconnected
 }
 
 func (cs *clientSessionState) setConnecting() {
@@ -71,6 +72,7 @@ func (cs *clientSessionState) setConnecting() {
 	cs.sessionID = 0
 	cs.connectedAt = time.Time{}
 	cs.secondaryAddr = ""
+	cs.stats = nil
 	cs.mu.Unlock()
 }
 
@@ -94,6 +96,7 @@ func (cs *clientSessionState) setReconnecting() {
 	cs.sessionID = 0
 	cs.connectedAt = time.Time{}
 	cs.secondaryAddr = ""
+	cs.stats = nil
 	cs.mu.Unlock()
 }
 
@@ -424,6 +427,9 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 	lastPong.Store(time.Now().UnixNano())
 
 	var stats fecStats
+	sessionState.mu.Lock()
+	sessionState.stats = &stats
+	sessionState.mu.Unlock()
 
 	pipe, err := fec.NewPipe(
 		fecCfg.K,
@@ -878,9 +884,15 @@ type sessionDetails struct {
 	HubID         uint16 `json:"hub_id"`
 	Login         string `json:"login"`
 	Mode          string `json:"mode"`
-	SecondaryAddr string `json:"secondary_addr,omitempty"` // set when dual-path is active
+	SecondaryAddr string `json:"secondary_addr,omitempty"`
 	ConnectedAt   string `json:"connected_at"`
 	Duration      string `json:"duration"`
+	FECDataRx     uint64 `json:"fec_data_rx"`
+	FECRepairRx   uint64 `json:"fec_repair_rx"`
+	FECRecovered  uint64 `json:"fec_recovered"`
+	FECLost       uint64 `json:"fec_lost"`
+	BytesTx       uint64 `json:"bytes_tx"`
+	BytesRx       uint64 `json:"bytes_rx"`
 }
 
 func runClientStatusServer(ctx context.Context, addr string) {
@@ -909,6 +921,7 @@ func handleClientStatus(w http.ResponseWriter, r *http.Request) {
 	connectedAt := sessionState.connectedAt
 	startTime := sessionState.startTime
 	secondaryAddr := sessionState.secondaryAddr
+	st := sessionState.stats
 	sessionState.mu.RUnlock()
 
 	resp := clientStatusResponse{
@@ -917,7 +930,7 @@ func handleClientStatus(w http.ResponseWriter, r *http.Request) {
 		State:   state,
 	}
 	if state == "connected" {
-		resp.Session = &sessionDetails{
+		sd := &sessionDetails{
 			SessionID:     sessionID,
 			Server:        server,
 			HubID:         hubID,
@@ -927,6 +940,15 @@ func handleClientStatus(w http.ResponseWriter, r *http.Request) {
 			ConnectedAt:   connectedAt.UTC().Format(time.RFC3339),
 			Duration:      now.Sub(connectedAt).Truncate(time.Second).String(),
 		}
+		if st != nil {
+			sd.FECDataRx = st.dataRecv.Load()
+			sd.FECRepairRx = st.repairRecv.Load()
+			sd.FECRecovered = st.recovered.Load()
+			sd.FECLost = st.unrecoverable.Load()
+			sd.BytesTx = st.bytesTx.Load()
+			sd.BytesRx = st.bytesRx.Load()
+		}
+		resp.Session = sd
 	}
 
 	w.Header().Set("Content-Type", "application/json")
