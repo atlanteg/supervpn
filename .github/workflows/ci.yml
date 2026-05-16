@@ -11,11 +11,24 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: write   # required to update the run display title
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # full history required for git rev-list --count
+
+      - name: Compute version
+        id: ver
+        run: echo "ver=b$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set run name
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }} \
+            -X PATCH \
+            --field display_title="supervpn ${{ steps.ver.outputs.ver }}" || true
 
       - uses: actions/setup-go@v5
         with:
@@ -29,10 +42,6 @@ jobs:
 
       - name: Vet
         run: go vet ./...
-
-      - name: Compute version
-        id: ver
-        run: echo "ver=b$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build server (linux/amd64)
         run: |
