@@ -150,6 +150,13 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 			log.Printf("bridge: skipping virtual adapter %q", iface.Name)
 			continue
 		}
+		// Skip third-party VPN client adapters (FortiClient, Cisco AnyConnect, etc.).
+		// They get APIPA addresses but don't support raw L2 injection via Npcap.
+		// User can override with bridge.nic = "..." in config.
+		if strings.Contains(strings.ToLower(iface.Name), "vpn") {
+			log.Printf("bridge: skipping VPN adapter %q (use bridge.nic in config to override)", iface.Name)
+			continue
+		}
 		physical = append(physical, iface)
 	}
 
@@ -175,7 +182,7 @@ func openAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 }
 
 func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (bridge.Interface, bridge.Framer, error) {
-	bc := cfg.Bridge // already has defaults applied by LoadClientConfig
+	bc := cfg.Bridge.WithDefaults()
 
 	// On Windows, try Npcap → NDISUIO → tap+wbridge in order.
 	// On macOS, OpenBridge opens a BPF device on the detected physical NIC directly.
