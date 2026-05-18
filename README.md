@@ -205,8 +205,26 @@ attempts    = 3
 # update_mirrors не нужен — автоматически: http://vpn.example.com/update
 ```
 
-**GUI-клиент** — просто запустить `supervpn-client-gui`, заполнить поля и нажать Connect.
-Все параметры конфига доступны во вкладке Advanced. Можно загрузить `.toml`-конфиг через Browse.
+**GUI-клиент — macOS:**
+
+1. Скачать `superVPN-macos.zip` со [страницы релизов](https://github.com/atlanteg/supervpn-releases/releases/latest)
+2. Распаковать zip — появится `superVPN.app`
+3. Снять карантин Gatekeeper (обязательно, иначе macOS заблокирует):
+   ```bash
+   xattr -d com.apple.quarantine superVPN.app
+   ```
+4. Перенести `superVPN.app` в `/Applications` (опционально)
+5. Двойной клик — открывается окно без терминала
+
+Приложение универсальное (arm64 + amd64), работает на Apple Silicon и Intel.
+
+**GUI-клиент — Windows:**
+
+1. Скачать `supervpn-client-gui-windows-amd64.exe` со [страницы релизов](https://github.com/atlanteg/supervpn-releases/releases/latest)
+2. Запустить двойным кликом — откроется окно superVPN (консоль не появляется)
+3. Если Windows SmartScreen блокирует — нажать «Подробнее» → «Выполнить в любом случае»
+
+Все параметры конфига доступны во вкладке Advanced. Конфиг `.toml` можно загрузить через Browse.
 
 **Консольный клиент:**
 
