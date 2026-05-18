@@ -9,3 +9,6 @@
 *.key
 /example_encryption_to_check_myvpn/
 .DS_Store
+*.exe
+supervpn-client-gui
+supervpn-client-gui-*
