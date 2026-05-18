@@ -212,11 +212,24 @@ jobs:
       - name: Fix permissions on unix executables
         run: chmod +x dist/supervpn-server dist/supervpn-client-darwin-* dist/supervpn-client-gui-darwin-*
 
+      - name: Package zip (all binaries)
+        run: |
+          cd dist
+          zip -j ../supervpn-dist.zip \
+            supervpn-server \
+            supervpn-client-windows-amd64.exe \
+            supervpn-client-darwin-amd64 \
+            supervpn-client-darwin-arm64 \
+            supervpn-client-gui-windows-amd64.exe \
+            supervpn-client-gui-darwin-amd64 \
+            supervpn-client-gui-darwin-arm64
+
       - name: Publish release to supervpn-releases
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           gh release create ${{ steps.ver.outputs.ver }} \
+            supervpn-dist.zip \
             dist/supervpn-server \
             dist/supervpn-client-windows-amd64.exe \
             dist/supervpn-client-darwin-amd64 \
