@@ -148,21 +148,13 @@ jobs:
           name: gui-macos-binaries
           path: dist/
 
-  # ── GUI client — Windows (CGo via MSYS2/MinGW) ────────────────────────────
+  # ── GUI client — Windows (pure Win32/GDI via lxn/walk, no CGo, no OpenGL) ──
+  # walk uses Win32 syscalls — works on RDP, Hyper-V, and any VM without GPU.
   build-gui-windows:
     needs: [setup]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Install MinGW gcc; path-type: inherit adds UCRT64/bin to Windows PATH.
-      # No update: true — avoids package manager restart that breaks PATH mid-job.
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          path-type: inherit
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
 
       - uses: actions/setup-go@v5
         with:
@@ -174,15 +166,11 @@ jobs:
       - name: Build GUI client (windows/amd64)
         shell: pwsh
         run: |
-          $env:CGO_ENABLED = "1"
+          $env:CGO_ENABLED = "0"
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
-          # Static-link MinGW runtime so the exe works without libgcc_s_seh-1.dll
-          # and libstdc++-6.dll on machines that don't have MSYS2 installed.
-          $env:CGO_LDFLAGS = "-static-libgcc -static-libstdc++"
           $VER = "${{ needs.setup.outputs.ver }}"
           go build `
-            -tags software `
             -ldflags="-s -w -H windowsgui -X main.version=$VER" `
             -o dist/supervpn-client-gui-windows-amd64.exe `
             ./cmd/supervpn-client-gui
