@@ -138,22 +138,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Install MinGW gcc and add UCRT64/bin to PATH for subsequent steps.
-      # path-type: inherit keeps the existing Windows PATH so actions/setup-go works.
+      # Compute version before MSYS2 setup — MSYS2 update can shadow Git Bash,
+      # causing shell: bash steps to fail with exit 127 (git not found).
+      - name: Compute version
+        id: ver
+        shell: pwsh
+        run: |
+          $VER = "b$(git rev-list --count HEAD)"
+          echo "ver=$VER" >> $env:GITHUB_OUTPUT
+
+      # Install MinGW gcc; path-type: inherit adds UCRT64/bin to Windows PATH.
+      # No update: true — avoids package manager restart that breaks PATH mid-job.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          update: true
           path-type: inherit
           install: >-
             mingw-w64-ucrt-x86_64-gcc
-
-      - name: Compute version
-        id: ver
-        shell: bash
-        run: |
-          VER="b$(git rev-list --count HEAD)"
-          echo "ver=$VER" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-go@v5
         with:
@@ -163,11 +164,14 @@ jobs:
         run: go mod download
 
       - name: Build GUI client (windows/amd64)
-        shell: bash
+        shell: pwsh
         run: |
-          CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build \
-            -ldflags="-s -w -H windowsgui -X main.version=${{ steps.ver.outputs.ver }}" \
-            -o dist/supervpn-client-gui-windows-amd64.exe \
+          $env:CGO_ENABLED = "1"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build `
+            -ldflags="-s -w -H windowsgui -X main.version=${{ steps.ver.outputs.ver }}" `
+            -o dist/supervpn-client-gui-windows-amd64.exe `
             ./cmd/supervpn-client-gui
 
       - uses: actions/upload-artifact@v4
