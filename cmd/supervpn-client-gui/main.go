@@ -45,8 +45,8 @@ func main() {
 	w.SetContent(ui.build())
 	w.Resize(fyne.NewSize(540, 640))
 
-	// Auto-populate fields from the sole *.toml next to the binary, if any.
-	ui.tryAutoLoadConfig()
+	// Populate config dropdown from *.toml files next to the binary.
+	ui.initConfigSelect()
 
 	w.ShowAndRun()
 }

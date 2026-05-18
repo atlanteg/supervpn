@@ -49,6 +49,8 @@ type mainUI struct {
 	hubEntry        *widget.Entry
 	modeSelect      *widget.Select
 	transportSelect *widget.Select
+	configSelect    *widget.Select
+	configFilePaths map[string]string // display name (basename) → full path
 	configPathLabel *widget.Label
 	configPath      string // path of currently loaded/saved config file
 	statsLabel      *widget.Label
@@ -166,8 +168,25 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 		widget.NewFormItem("Transport", ui.transportSelect),
 	)
 
-	ui.configPathLabel = widget.NewLabel("")
-	browseBtn := widget.NewButton("Browse...", func() {
+	// Config file selector — populated from *.toml files next to the binary.
+	ui.configFilePaths = make(map[string]string)
+	ui.configSelect = widget.NewSelect(nil, func(name string) {
+		path, ok := ui.configFilePaths[name]
+		if !ok {
+			return
+		}
+		cfg, err := config.LoadClientConfig(path)
+		if err != nil {
+			dialog.ShowError(err, ui.win)
+			return
+		}
+		ui.populateFromConfig(cfg)
+		ui.configPath = path
+		ui.configPathLabel.SetText(filepath.Base(path))
+	})
+	ui.configSelect.PlaceHolder = "— select config —"
+
+	browseBtn := widget.NewButton("Browse…", func() {
 		dialog.ShowFileOpen(func(f fyne.URIReadCloser, err error) {
 			if err != nil || f == nil {
 				return
@@ -180,10 +199,18 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 			}
 			ui.populateFromConfig(cfg)
 			ui.configPath = path
+			// Add the browsed file to the dropdown if not already there.
+			name := filepath.Base(path)
+			if _, exists := ui.configFilePaths[name]; !exists {
+				ui.configFilePaths[name] = path
+				ui.configSelect.Options = append(ui.configSelect.Options, name)
+				ui.configSelect.Refresh()
+			}
+			ui.configSelect.SetSelected(name)
 			ui.configPathLabel.SetText(path)
 		}, ui.win)
 	})
-	saveBtn := widget.NewButton("Save...", func() {
+	saveBtn := widget.NewButton("Save…", func() {
 		dialog.ShowFileSave(func(f fyne.URIWriteCloser, err error) {
 			if err != nil || f == nil {
 				return
@@ -196,10 +223,26 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 				return
 			}
 			ui.configPath = path
+			// Add the saved file to the dropdown if not already there.
+			name := filepath.Base(path)
+			if _, exists := ui.configFilePaths[name]; !exists {
+				ui.configFilePaths[name] = path
+				ui.configSelect.Options = append(ui.configSelect.Options, name)
+				ui.configSelect.Refresh()
+			}
+			ui.configSelect.SetSelected(name)
 			ui.configPathLabel.SetText(path)
 		}, ui.win)
 	})
-	configRow := container.NewHBox(widget.NewLabel("Config file:"), browseBtn, saveBtn, ui.configPathLabel)
+
+	ui.configPathLabel = widget.NewLabel("")
+	ui.configPathLabel.Wrapping = fyne.TextTruncate
+
+	// Layout: [dropdown expands] [Browse…] [Save…]
+	configRow := container.NewBorder(nil, nil, nil,
+		container.NewHBox(browseBtn, saveBtn),
+		ui.configSelect,
+	)
 
 	ui.connectBtn = widget.NewButton("Connect", ui.onConnect)
 	ui.disconnectBtn = widget.NewButton("Disconnect", ui.onDisconnect)
@@ -208,7 +251,7 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 
 	ui.statsLabel = widget.NewLabel("")
 
-	return container.NewVBox(form, configRow, btnRow, ui.statsLabel)
+	return container.NewVBox(form, configRow, ui.configPathLabel, btnRow, ui.statsLabel)
 }
 
 func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
@@ -373,25 +416,34 @@ func (ui *mainUI) autoSaveConfig() {
 	}
 }
 
-// tryAutoLoadConfig loads the sole *.toml found next to the executable,
-// if exactly one such file exists. Called from main() on the main goroutine
-// after build(), so widget access is safe without fyne.Do.
-func (ui *mainUI) tryAutoLoadConfig() {
+// initConfigSelect scans the directory containing the executable for *.toml
+// files and populates the config dropdown. If exactly one file is found it is
+// auto-selected and loaded. Called from main() on the main goroutine after
+// build(), so direct widget access is safe without fyne.Do.
+func (ui *mainUI) initConfigSelect() {
 	exe, err := os.Executable()
 	if err != nil {
 		return
 	}
 	matches, err := filepath.Glob(filepath.Join(filepath.Dir(exe), "*.toml"))
-	if err != nil || len(matches) != 1 {
+	if err != nil || len(matches) == 0 {
 		return
 	}
-	cfg, err := config.LoadClientConfig(matches[0])
-	if err != nil {
-		return
+
+	names := make([]string, 0, len(matches))
+	for _, path := range matches {
+		name := filepath.Base(path)
+		ui.configFilePaths[name] = path
+		names = append(names, name)
 	}
-	ui.populateFromConfig(cfg)
-	ui.configPath = matches[0]
-	ui.configPathLabel.SetText(matches[0])
+	ui.configSelect.Options = names
+	ui.configSelect.Refresh()
+
+	// Auto-select when there is only one option — triggers OnChanged which
+	// loads the config and updates configPathLabel.
+	if len(names) == 1 {
+		ui.configSelect.SetSelected(names[0])
+	}
 }
 
 func (ui *mainUI) onDisconnect() {
