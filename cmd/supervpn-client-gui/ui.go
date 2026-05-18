@@ -107,7 +107,7 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 		ui.serverSelect.SetSelected(text)
 	})
 
-	serverRow := container.NewHBox(ui.serverSelect, ui.serverEntry, addBtn)
+	serverRow := container.NewBorder(nil, nil, ui.serverSelect, addBtn, ui.serverEntry)
 
 	ui.loginEntry = widget.NewEntry()
 	ui.passwordEntry = widget.NewPasswordEntry()

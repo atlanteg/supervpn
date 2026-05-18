@@ -188,6 +188,7 @@ jobs:
           # and libstdc++-6.dll on machines that don't have MSYS2 installed.
           $env:CGO_LDFLAGS = "-static-libgcc -static-libstdc++"
           go build `
+            -tags software `
             -ldflags="-s -w -H windowsgui -X main.version=${{ steps.ver.outputs.ver }}" `
             -o dist/supervpn-client-gui-windows-amd64.exe `
             ./cmd/supervpn-client-gui
