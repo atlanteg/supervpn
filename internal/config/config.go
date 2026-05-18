@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -226,6 +227,13 @@ func ParseClientConfig(path string) (*ClientConfig, error) {
 	cfg.UDP = cfg.UDP.WithDefaults()
 	cfg.Bridge = cfg.Bridge.WithDefaults()
 	return &cfg, nil
+}
+
+// WriteClientConfig encodes cfg as TOML into w.
+// Used by GUI save dialogs that write directly to a fyne.URIWriteCloser,
+// avoiding the close-and-reopen pattern that causes empty files on macOS.
+func WriteClientConfig(w io.Writer, cfg *ClientConfig) error {
+	return toml.NewEncoder(w).Encode(cfg)
 }
 
 // SaveClientConfig writes cfg to a TOML file at path, creating parent directories as needed.

@@ -206,27 +206,38 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 		}, ui.win)
 	})
 	saveBtn := widget.NewButton("Save…", func() {
+		// Read widget state here — OnClicked runs on the main goroutine, so
+		// all widget fields are guaranteed to reflect what the user entered.
+		// The ShowFileSave callback may run on a different goroutine, so we
+		// capture cfg by value now rather than reading widgets inside it.
+		cfg := ui.buildConfig()
+
 		dialog.ShowFileSave(func(f fyne.URIWriteCloser, err error) {
 			if err != nil || f == nil {
 				return
 			}
+			defer f.Close()
 			path := f.URI().Path()
-			f.Close() // we'll write via SaveClientConfig
-			cfg := ui.buildConfig()
-			if err := config.SaveClientConfig(path, &cfg); err != nil {
-				dialog.ShowError(err, ui.win)
+
+			// Write directly to the handle the dialog gave us.
+			// Closing f and re-opening with os.Create causes an empty file on
+			// macOS because the OS file-access grant expires with the first close.
+			if encErr := config.WriteClientConfig(f, &cfg); encErr != nil {
+				fyne.Do(func() { dialog.ShowError(encErr, ui.win) })
 				return
 			}
-			ui.configPath = path
-			// Add the saved file to the dropdown if not already there.
-			name := filepath.Base(path)
-			if _, exists := ui.configFilePaths[name]; !exists {
-				ui.configFilePaths[name] = path
-				ui.configSelect.Options = append(ui.configSelect.Options, name)
-				ui.configSelect.Refresh()
-			}
-			ui.configSelect.SetSelected(name)
-			ui.configPathLabel.SetText(path)
+
+			fyne.Do(func() {
+				ui.configPath = path
+				name := filepath.Base(path)
+				if _, exists := ui.configFilePaths[name]; !exists {
+					ui.configFilePaths[name] = path
+					ui.configSelect.Options = append(ui.configSelect.Options, name)
+					ui.configSelect.Refresh()
+				}
+				ui.configSelect.SetSelected(name)
+				ui.configPathLabel.SetText(path)
+			})
 		}, ui.win)
 	})
 
