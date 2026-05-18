@@ -133,23 +133,24 @@ jobs:
   # ── GUI client — Windows (CGo via MSYS2/MinGW) ────────────────────────────
   build-gui-windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Install MinGW gcc and add UCRT64/bin to PATH for subsequent steps.
+      # path-type: inherit keeps the existing Windows PATH so actions/setup-go works.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
+          path-type: inherit
           install: >-
             mingw-w64-ucrt-x86_64-gcc
 
       - name: Compute version
         id: ver
+        shell: bash
         run: |
           VER="b$(git rev-list --count HEAD)"
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
@@ -162,6 +163,7 @@ jobs:
         run: go mod download
 
       - name: Build GUI client (windows/amd64)
+        shell: bash
         run: |
           CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build \
             -ldflags="-s -w -H windowsgui -X main.version=${{ steps.ver.outputs.ver }}" \
