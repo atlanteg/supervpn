@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -233,7 +234,7 @@ func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
 	ui.timeoutEntry = widget.NewEntry()
 	ui.timeoutEntry.SetPlaceHolder("30s")
 
-	return widget.NewForm(
+	items := []*widget.FormItem{
 		widget.NewFormItem("FEC K", ui.fecKEntry),
 		widget.NewFormItem("FEC R", ui.fecREntry),
 		widget.NewFormItem("FEC Delay ms", ui.fecDelayEntry),
@@ -242,12 +243,20 @@ func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
 		widget.NewFormItem("UDP Knock Size", ui.knockSizeEntry),
 		widget.NewFormItem("UDP Attempts", ui.udpAttemptsEntry),
 		widget.NewFormItem("Bridge NIC", ui.bridgeNICEntry),
-		widget.NewFormItem("Bridge TAP Name", ui.bridgeTAPEntry),
-		widget.NewFormItem("Bridge Method", ui.bridgeMethodEntry),
+	}
+	if runtime.GOOS == "windows" {
+		// TAP adapter name and bridge setup method are Windows-only concepts.
+		items = append(items,
+			widget.NewFormItem("Bridge TAP Name", ui.bridgeTAPEntry),
+			widget.NewFormItem("Bridge Method", ui.bridgeMethodEntry),
+		)
+	}
+	items = append(items,
 		widget.NewFormItem("TUN Name", ui.tunNameEntry),
 		widget.NewFormItem("Status Listen", ui.statusListenEntry),
 		widget.NewFormItem("Timeout", ui.timeoutEntry),
 	)
+	return widget.NewForm(items...)
 }
 
 func (ui *mainUI) buildLogTab() fyne.CanvasObject {

@@ -213,10 +213,27 @@ attempts    = 3
    ```bash
    xattr -d com.apple.quarantine superVPN.app
    ```
-4. Перенести `superVPN.app` в `/Applications` (опционально)
-5. Двойной клик — открывается окно без терминала
+4. Перенести `superVPN.app` в `/Applications`
 
 Приложение универсальное (arm64 + amd64), работает на Apple Silicon и Intel.
+
+**Запуск с правами root (обязателен для VPN-адаптера на macOS):**
+
+На macOS создание TUN/BPF интерфейсов требует root. Запускать через Terminal:
+
+```bash
+sudo /Applications/superVPN.app/Contents/MacOS/superVPN
+```
+
+Чтобы не вводить каждый раз, добавьте алиас в `~/.zshrc`:
+
+```bash
+alias supervpn='sudo /Applications/superVPN.app/Contents/MacOS/superVPN'
+```
+
+> Двойной клик на `.app` без sudo запустит приложение, но подключение завершится ошибкой
+> `operation not permitted` — это ограничение macOS, обойти которое без подписи
+> Apple Developer можно только через sudo.
 
 **GUI-клиент — Windows:**
 
