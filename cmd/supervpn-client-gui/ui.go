@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"image/color"
 	"strconv"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -18,6 +20,15 @@ import (
 	"github.com/atlanteg/supervpn/internal/vpnclient"
 )
 
+// predefinedServers defines the built-in server list shown in the dropdown.
+var predefinedServers = []struct{ name, addr string }{
+	{"RDVM", "185.108.16.16:5555"},
+	{"ADVM", "212.48.224.5:5555"},
+	{"RAVM", "81.27.241.25:5555"},
+	{"HE2", "49.13.4.85:5555"},
+	{"HE3", "162.55.48.218:5555"},
+}
+
 type mainUI struct {
 	app fyne.App
 	win fyne.Window
@@ -29,6 +40,7 @@ type mainUI struct {
 
 	// connection tab widgets
 	serverSelect    *widget.Select
+	serverAddrs     map[string]string // display name → address
 	serverEntry     *widget.Entry
 	loginEntry      *widget.Entry
 	passwordEntry   *widget.Entry
@@ -36,6 +48,12 @@ type mainUI struct {
 	modeSelect      *widget.Select
 	transportSelect *widget.Select
 	configPathLabel *widget.Label
+	statsLabel      *widget.Label
+
+	// for speed calculation in refreshStatus
+	prevBytesRx   uint64
+	prevBytesTx   uint64
+	prevStatsTime time.Time
 
 	// advanced tab widgets
 	fecKEntry         *widget.Entry
@@ -85,23 +103,34 @@ func (ui *mainUI) build() fyne.CanvasObject {
 }
 
 func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
-	ui.serverSelect = widget.NewSelect([]string{}, nil)
+	// Populate predefined server map and dropdown names.
+	ui.serverAddrs = make(map[string]string)
+	names := make([]string, 0, len(predefinedServers))
+	for _, s := range predefinedServers {
+		ui.serverAddrs[s.name] = s.addr
+		names = append(names, s.name)
+	}
+
 	ui.serverEntry = widget.NewEntry()
 	ui.serverEntry.SetPlaceHolder("host:port")
+
+	ui.serverSelect = widget.NewSelect(names, func(name string) {
+		if addr, ok := ui.serverAddrs[name]; ok {
+			ui.serverEntry.SetText(addr)
+		}
+	})
 
 	addBtn := widget.NewButton("Add", func() {
 		text := strings.TrimSpace(ui.serverEntry.Text)
 		if text == "" {
 			return
 		}
-		opts := ui.serverSelect.Options
-		for _, o := range opts {
-			if o == text {
-				ui.serverSelect.SetSelected(text)
-				return
-			}
+		if _, exists := ui.serverAddrs[text]; exists {
+			ui.serverSelect.SetSelected(text)
+			return
 		}
-		opts = append(opts, text)
+		ui.serverAddrs[text] = text
+		opts := append(ui.serverSelect.Options, text)
 		ui.serverSelect.Options = opts
 		ui.serverSelect.Refresh()
 		ui.serverSelect.SetSelected(text)
@@ -153,7 +182,9 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 	ui.disconnectBtn.Disable()
 	btnRow := container.NewHBox(ui.connectBtn, ui.disconnectBtn)
 
-	return container.NewVBox(form, configRow, btnRow)
+	ui.statsLabel = widget.NewLabel("")
+
+	return container.NewVBox(form, configRow, btnRow, ui.statsLabel)
 }
 
 func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
@@ -297,6 +328,29 @@ func (ui *mainUI) refreshStatus() {
 	canvas.Refresh(ui.statusDot)
 	ui.statusLabel.SetText(labelText)
 
+	// Update live stats row on the Connection tab.
+	if stats.State == vpnclient.StateConnected {
+		now := time.Now()
+		var rxSpeed, txSpeed float64
+		if !ui.prevStatsTime.IsZero() {
+			dt := now.Sub(ui.prevStatsTime).Seconds()
+			if dt > 0 {
+				rxSpeed = float64(stats.BytesRx-ui.prevBytesRx) / dt / 1024
+				txSpeed = float64(stats.BytesTx-ui.prevBytesTx) / dt / 1024
+			}
+		}
+		ui.prevBytesRx = stats.BytesRx
+		ui.prevBytesTx = stats.BytesTx
+		ui.prevStatsTime = now
+		ui.statsLabel.SetText(fmt.Sprintf(
+			"↑ %.1f KB/s  ↓ %.1f KB/s  |  Recovered: %d  Lost: %d",
+			txSpeed, rxSpeed, stats.FECRecovered, stats.FECLost,
+		))
+	} else {
+		ui.statsLabel.SetText("")
+		ui.prevStatsTime = time.Time{}
+	}
+
 	logs := c.Logs()
 	ui.logEntry.SetText(strings.Join(logs, "\n"))
 }
@@ -304,7 +358,12 @@ func (ui *mainUI) refreshStatus() {
 func (ui *mainUI) buildConfig() config.ClientConfig {
 	server := strings.TrimSpace(ui.serverEntry.Text)
 	if server == "" {
-		server = ui.serverSelect.Selected
+		selected := ui.serverSelect.Selected
+		if addr, ok := ui.serverAddrs[selected]; ok {
+			server = addr
+		} else {
+			server = selected
+		}
 	}
 
 	hubID := uint16(1)
