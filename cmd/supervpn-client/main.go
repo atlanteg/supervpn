@@ -815,9 +815,10 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 			stats.bytesRx.Add(uint64(len(frame)))
 			blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
 			if !fecMismatchLogged && (int(blockK) != localK || int(blockR) != localR) {
-				log.Printf("FEC MISMATCH: server K=%d/R=%d, client K=%d/R=%d — data will not decode; fix fec.k and fec.r in config to match the server",
+				log.Printf("FEC MISMATCH: server K=%d/R=%d, client K=%d/R=%d — fix fec.k and fec.r in config to match the server",
 					blockK, blockR, localK, localR)
 				fecMismatchLogged = true
+				return fmt.Errorf("FEC mismatch: server K=%d/R=%d vs client K=%d/R=%d", blockK, blockR, localK, localR)
 			}
 			delivered, err := pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
 			if err != nil {
