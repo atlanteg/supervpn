@@ -344,28 +344,54 @@ func (ui *mainUI) runRefreshLoop(ctx context.Context) {
 			if c == nil {
 				return
 			}
+			// Join log lines outside fyne.Do (pure string work, no Fyne API).
 			text := strings.Join(c.Logs(), "\n")
-			// widget.Entry.SetText is goroutine-safe in Fyne 2.x.
-			ui.logEntry.SetText(text)
+			fyne.Do(func() { ui.logEntry.SetText(text) })
 		}
 	}
 }
 
 func (ui *mainUI) autoSaveConfig() {
+	// buildConfig reads widget fields — must run on the main thread.
+	var cfg config.ClientConfig
+	fyne.Do(func() { cfg = ui.buildConfig() })
+
 	path := ui.configPath
 	if path == "" {
-		// Default location when no file was loaded.
 		dir, err := os.UserConfigDir()
 		if err != nil {
 			return
 		}
 		path = filepath.Join(dir, "superVPN", "client.toml")
 	}
-	cfg := ui.buildConfig()
 	if err := config.SaveClientConfig(path, &cfg); err == nil {
-		ui.configPath = path
-		ui.configPathLabel.SetText(path)
+		// configPathLabel mutation must also be on the main thread.
+		fyne.Do(func() {
+			ui.configPath = path
+			ui.configPathLabel.SetText(path)
+		})
 	}
+}
+
+// tryAutoLoadConfig loads the sole *.toml found next to the executable,
+// if exactly one such file exists. Called from main() on the main goroutine
+// after build(), so widget access is safe without fyne.Do.
+func (ui *mainUI) tryAutoLoadConfig() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(exe), "*.toml"))
+	if err != nil || len(matches) != 1 {
+		return
+	}
+	cfg, err := config.LoadClientConfig(matches[0])
+	if err != nil {
+		return
+	}
+	ui.populateFromConfig(cfg)
+	ui.configPath = matches[0]
+	ui.configPathLabel.SetText(matches[0])
 }
 
 func (ui *mainUI) onDisconnect() {
@@ -417,23 +443,8 @@ func (ui *mainUI) refreshStatus() {
 		}
 	}
 
-	// canvas.Rectangle.FillColor is a plain struct field — mutating it from a
-	// goroutine while the renderer reads it is a data race. fyne.Do schedules
-	// the mutation on the main thread and blocks until it completes.
-	fyne.Do(func() {
-		ui.statusDot.FillColor = dotColor
-		canvas.Refresh(ui.statusDot)
-	})
-	// widget.Label.SetText / widget.Label.SetText are goroutine-safe in Fyne 2.x.
-	ui.statusLabel.SetText(labelText)
-
-	// Auto-save config once on first successful connect.
-	if stats.State == vpnclient.StateConnected && !ui.autoSaveDone {
-		ui.autoSaveDone = true
-		go ui.autoSaveConfig()
-	}
-
-	// Update live stats row on the Connection tab.
+	// Compute stats text before entering the main thread (no Fyne API calls here).
+	var statsText string
 	if stats.State == vpnclient.StateConnected {
 		now := time.Now()
 		var rxSpeed, txSpeed float64
@@ -447,13 +458,25 @@ func (ui *mainUI) refreshStatus() {
 		ui.prevBytesRx = stats.BytesRx
 		ui.prevBytesTx = stats.BytesTx
 		ui.prevStatsTime = now
-		ui.statsLabel.SetText(fmt.Sprintf(
+		statsText = fmt.Sprintf(
 			"↑ %.1f KB/s  ↓ %.1f KB/s  |  Recovered: %d  Lost: %d",
 			txSpeed, rxSpeed, stats.FECRecovered, stats.FECLost,
-		))
-	} else {
-		ui.statsLabel.SetText("")
-		ui.prevStatsTime = time.Time{}
+		)
+	}
+
+	// Fyne 2.7+ requires ALL widget/canvas mutations on the main thread.
+	// Batch everything into one fyne.Do to minimise scheduling overhead.
+	fyne.Do(func() {
+		ui.statusDot.FillColor = dotColor
+		canvas.Refresh(ui.statusDot)
+		ui.statusLabel.SetText(labelText)
+		ui.statsLabel.SetText(statsText)
+	})
+
+	// Auto-save config once on first successful connect.
+	if stats.State == vpnclient.StateConnected && !ui.autoSaveDone {
+		ui.autoSaveDone = true
+		go ui.autoSaveConfig()
 	}
 	// Log text is updated on a 1s ticker in runRefreshLoop — not here.
 	// Joining 500 lines + SetText on every OnChange event would flood the UI.
