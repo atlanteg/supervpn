@@ -39,7 +39,7 @@ func main() {
 	mirrors := loadSavedMirrors(a)
 	go update.CheckAndUpdate(version, update.AssetForClientGUI(), mirrors)
 
-	w := a.NewWindow("superVPN")
+	w := a.NewWindow("superVPN " + version + " by NBTboost creators © Atlanteg")
 	w.SetMaster()
 	ui := newMainUI(a, w)
 	w.SetContent(ui.build())
