@@ -188,26 +188,76 @@ func findAnyTAP0901() (guid, name string, err error) {
 	return "", "", fmt.Errorf("no tap0901 adapter installed")
 }
 
-// installTAPDriver installs the tap0901 driver using devcon.exe bundled in the
-// tap-driver/ directory next to the running executable.
+// installTAPDriver installs the tap0901 driver using pnputil.exe (built into
+// Windows Vista+). Driver files are embedded in the binary by tapdrv_embed_windows.go;
+// if the embedded package is empty (local dev build), falls back to a tap-driver/
+// subdirectory next to the running executable.
 // Requires Administrator privileges.
 func installTAPDriver() error {
+	// Check whether CI embedded real driver files (indicated by a .sys file).
+	entries, _ := tapDriverFS.ReadDir("tap-driver")
+	for _, e := range entries {
+		if strings.HasSuffix(strings.ToLower(e.Name()), ".sys") {
+			return installTAPDriverFromEmbed()
+		}
+	}
+	// Fall back: look for driver files on disk next to the executable.
+	return installTAPDriverFromDisk()
+}
+
+// installTAPDriverFromEmbed extracts the embedded driver package to a temp
+// directory and installs it with pnputil.
+func installTAPDriverFromEmbed() error {
+	tmp, err := os.MkdirTemp("", "tapdrv-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	entries, _ := tapDriverFS.ReadDir("tap-driver")
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := tapDriverFS.ReadFile("tap-driver/" + e.Name())
+		if err != nil {
+			return fmt.Errorf("read embedded %s: %w", e.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(tmp, e.Name()), data, 0o644); err != nil {
+			return fmt.Errorf("write %s to temp: %w", e.Name(), err)
+		}
+	}
+
+	inf := filepath.Join(tmp, "OemVista.inf")
+	if _, err := os.Stat(inf); err != nil {
+		return fmt.Errorf("OemVista.inf not found in embedded driver package")
+	}
+	return runPnpUtil(inf)
+}
+
+// installTAPDriverFromDisk looks for OemVista.inf in a tap-driver/ subdirectory
+// next to the running executable and installs it with pnputil.
+func installTAPDriverFromDisk() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate executable: %w", err)
 	}
-	dir := filepath.Dir(exe)
-	devcon := filepath.Join(dir, "tap-driver", "devcon.exe")
-	inf := filepath.Join(dir, "tap-driver", "OemVista.inf")
-	if _, err := os.Stat(devcon); err != nil {
-		return fmt.Errorf("devcon.exe not found at %s", devcon)
+	inf := filepath.Join(filepath.Dir(exe), "tap-driver", "OemVista.inf")
+	if _, err := os.Stat(inf); err != nil {
+		return fmt.Errorf("TAP driver not embedded and OemVista.inf not found at %s — place tap-windows6 driver files in tap-driver/ next to the executable", inf)
 	}
-	out, err := exec.Command(devcon, "install", inf, "tap0901").CombinedOutput()
+	return runPnpUtil(inf)
+}
+
+// runPnpUtil stages and installs an INF driver package using the built-in
+// pnputil.exe (available since Windows Vista, no additional tools required).
+func runPnpUtil(inf string) error {
+	out, err := exec.Command("pnputil.exe", "/add-driver", inf, "/install").CombinedOutput()
 	msg := strings.TrimSpace(string(out))
 	if err != nil {
-		return fmt.Errorf("devcon install: %v: %s", err, msg)
+		return fmt.Errorf("pnputil /add-driver: %v: %s", err, msg)
 	}
-	log.Printf("tap/windows: driver installed: %s", msg)
+	log.Printf("tap/windows: driver installed via pnputil: %s", msg)
 	return nil
 }
 

@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && !fyne
 
 // Windows GUI built with github.com/lxn/walk (pure Win32/GDI, no OpenGL).
 // Works on RDP sessions, Hyper-V VMs, and any environment where GLFW/OpenGL
@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -195,6 +196,12 @@ func (ui *winUI) connectionPage() TabPage {
 					},
 				},
 				Label{AssignTo: &ui.statsLabel, Text: ""},
+				LinkLabel{
+					Text: `Packet capture (bridge mode): install <a href="https://npcap.com/dist/npcap-1.88.exe">Npcap 1.88</a>`,
+					OnLinkActivated: func(link *walk.LinkLabelLink) {
+						exec.Command("rundll32", "url.dll,FileProtocolHandler", link.URL()).Start()
+					},
+				},
 			},
 		},
 	}
@@ -389,18 +396,48 @@ func (ui *winUI) addConfigToCombo(path string) {
 }
 
 func (ui *winUI) initConfigSelect() {
-	exe, err := os.Executable()
-	if err != nil {
+	var searchDirs []string
+	if exe, err := os.Executable(); err == nil {
+		searchDirs = append(searchDirs, filepath.Dir(exe))
+	}
+	if cfgDir, err := os.UserConfigDir(); err == nil {
+		searchDirs = append(searchDirs, filepath.Join(cfgDir, "superVPN"))
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		searchDirs = append(searchDirs, homeDir)
+	}
+
+	type entry struct{ displayName, path string }
+	var found []entry
+	seenPath := map[string]bool{}
+
+	for _, dir := range searchDirs {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*.toml"))
+		for _, path := range matches {
+			if seenPath[path] {
+				continue
+			}
+			seenPath[path] = true
+			found = append(found, entry{filepath.Base(path), path})
+		}
+	}
+	if len(found) == 0 {
 		return
 	}
-	matches, err := filepath.Glob(filepath.Join(filepath.Dir(exe), "*.toml"))
-	if err != nil || len(matches) == 0 {
-		return
+
+	baseCount := map[string]int{}
+	for _, e := range found {
+		baseCount[e.displayName]++
 	}
-	for _, path := range matches {
-		name := filepath.Base(path)
-		ui.configFilePaths[name] = path
-		ui.configNames = append(ui.configNames, name)
+	for i, e := range found {
+		if baseCount[e.displayName] > 1 {
+			found[i].displayName = filepath.Base(filepath.Dir(e.path)) + "/" + e.displayName
+		}
+	}
+
+	for _, e := range found {
+		ui.configFilePaths[e.displayName] = e.path
+		ui.configNames = append(ui.configNames, e.displayName)
 	}
 	_ = ui.configCombo.SetModel(ui.configNames)
 	if len(ui.configNames) == 1 {

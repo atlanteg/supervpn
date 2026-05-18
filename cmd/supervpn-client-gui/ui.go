@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows || (windows && fyne)
 
 package main
 
@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -245,7 +246,13 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 
 	ui.statsLabel = widget.NewLabel("")
 
-	return container.NewVBox(form, configRow, ui.configPathLabel, btnRow, ui.statsLabel)
+	npcapURL, _ := url.Parse("https://npcap.com/dist/npcap-1.88.exe")
+	npcapRow := container.NewHBox(
+		widget.NewLabel("Packet capture (bridge mode):"),
+		widget.NewHyperlink("Install Npcap 1.88", npcapURL),
+	)
+
+	return container.NewVBox(form, configRow, ui.configPathLabel, btnRow, ui.statsLabel, npcapRow)
 }
 
 func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
@@ -410,31 +417,64 @@ func (ui *mainUI) autoSaveConfig() {
 	}
 }
 
-// initConfigSelect scans the directory containing the executable for *.toml
-// files and populates the config dropdown. If exactly one file is found it is
-// auto-selected and loaded. Called from main() on the main goroutine after
-// build(), so direct widget access is safe without fyne.Do.
+// initConfigSelect scans several directories for *.toml files and populates
+// the config dropdown. Directories searched (in order):
+//  1. The directory containing the executable (works for both AppBundles and CLI installs)
+//  2. os.UserConfigDir()/superVPN/ (auto-save location after a successful connect)
+//  3. os.UserHomeDir() (default save-dialog location)
+//
+// If exactly one file is found across all directories it is auto-selected and loaded.
+// Called from main() on the main goroutine after build(), so direct widget access is
+// safe without fyne.Do.
 func (ui *mainUI) initConfigSelect() {
-	exe, err := os.Executable()
-	if err != nil {
-		return
+	var searchDirs []string
+	if exe, err := os.Executable(); err == nil {
+		searchDirs = append(searchDirs, filepath.Dir(exe))
 	}
-	matches, err := filepath.Glob(filepath.Join(filepath.Dir(exe), "*.toml"))
-	if err != nil || len(matches) == 0 {
+	if cfgDir, err := os.UserConfigDir(); err == nil {
+		searchDirs = append(searchDirs, filepath.Join(cfgDir, "superVPN"))
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		searchDirs = append(searchDirs, homeDir)
+	}
+
+	type entry struct{ displayName, path string }
+	var found []entry
+	seenPath := map[string]bool{}
+
+	for _, dir := range searchDirs {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*.toml"))
+		for _, path := range matches {
+			if seenPath[path] {
+				continue
+			}
+			seenPath[path] = true
+			found = append(found, entry{filepath.Base(path), path})
+		}
+	}
+	if len(found) == 0 {
 		return
 	}
 
-	names := make([]string, 0, len(matches))
-	for _, path := range matches {
-		name := filepath.Base(path)
-		ui.configFilePaths[name] = path
-		names = append(names, name)
+	// Disambiguate entries that share the same basename (e.g. client.toml in two dirs).
+	baseCount := map[string]int{}
+	for _, e := range found {
+		baseCount[e.displayName]++
+	}
+	for i, e := range found {
+		if baseCount[e.displayName] > 1 {
+			found[i].displayName = filepath.Base(filepath.Dir(e.path)) + "/" + e.displayName
+		}
+	}
+
+	names := make([]string, 0, len(found))
+	for _, e := range found {
+		ui.configFilePaths[e.displayName] = e.path
+		names = append(names, e.displayName)
 	}
 	ui.configSelect.Options = names
 	ui.configSelect.Refresh()
 
-	// Auto-select when there is only one option — triggers OnChanged which
-	// loads the config and updates configPathLabel.
 	if len(names) == 1 {
 		ui.configSelect.SetSelected(names[0])
 	}

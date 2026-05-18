@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows || (windows && fyne)
 
 package main
 
