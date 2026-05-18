@@ -168,6 +168,18 @@ func AssetForClient() string {
 	}
 }
 
+// AssetForClientGUI returns the release asset filename for the GUI client on the current platform.
+func AssetForClientGUI() string {
+	switch {
+	case runtime.GOOS == "windows":
+		return "supervpn-client-gui-windows-amd64.exe"
+	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
+		return "supervpn-client-gui-darwin-arm64"
+	default:
+		return "supervpn-client-gui-darwin-amd64"
+	}
+}
+
 const AssetServer = "supervpn-server"
 
 // FetchAsset downloads one release asset from the tag-specific GitHub URL to

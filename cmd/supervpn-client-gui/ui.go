@@ -235,6 +235,11 @@ func (ui *mainUI) onConnect() {
 		ui.connectCtx = ctx
 		ui.connectCancel = cancel
 
+		// Persist server address so the update checker can derive a mirror URL.
+		if cfg.Server != "" {
+			ui.app.Preferences().SetString("last_server", cfg.Server)
+		}
+
 		c := vpnclient.New(cfg, iface, framer)
 		ui.client = c
 		c.OnChange(func() { ui.refreshStatus() })

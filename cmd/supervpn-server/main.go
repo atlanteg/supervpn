@@ -862,6 +862,9 @@ var clientAssets = []string{
 	"supervpn-client-windows-amd64.exe",
 	"supervpn-client-darwin-arm64",
 	"supervpn-client-darwin-amd64",
+	"supervpn-client-gui-windows-amd64.exe",
+	"supervpn-client-gui-darwin-arm64",
+	"supervpn-client-gui-darwin-amd64",
 }
 
 // updateDir returns the resolved directory for client assets.
