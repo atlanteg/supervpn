@@ -16,7 +16,7 @@
 - ✅ Auth: bcrypt + SHA-256 wire hash
 - ✅ Config: TOML структуры
 - ✅ pkg/tun: WinTun (Windows) + TAP (Linux)
-- ✅ GitHub Actions CI (linux + windows cross-compile, tests)
+- ✅ GitHub Actions CI (4 джоба: ubuntu server+CLI, macOS GUI matrix, Windows GUI, release)
 - ✅ CLAUDE.md с 7 агентами
 - ✅ Приватное репо atlanteg/supervpn
 
@@ -51,6 +51,9 @@
 ### 1.4 Windows клиент — WinTun интеграция
 - ✅ Создание WinTun адаптера при старте
 - ✅ ReadFrame / WriteFrame через wintun.Session
+- ✅ WinTun L2 эмуляция (windowsTUNL2): виртуальный MAC, ARP-кэш, inject-канал; обходит NDIS LWF (FortiClient, OpenVPN)
+- ✅ Direct mode: WinTun L2 primary, tap-windows6 fallback
+- ✅ Фикс ARP-инжекта: readIPOnce с 50ms timeout вместо бесконечного блока
 - 📋 Установка IP-адреса на WinTun интерфейсе (необязательно — мы L2)
 - 📋 Сборка как Windows Service (golang.org/x/sys/windows/svc)
 - 📋 Инсталлятор (NSIS или WiX) с wintun.dll в комплекте
@@ -58,6 +61,7 @@
 ### 1.5 Конфигурация и утилиты
 - ✅ Парсинг TOML конфига (сервер + клиент, BurntSushi/toml)
 - ✅ `supervpn-server hashpw <password>` — генерация bcrypt хеша
+- ✅ Все параметры конфига доступны как CLI-флаги (перекрывают .toml)
 - 📋 `supervpn-server status` — список хабов и клиентов (HTTP API, Фаза 4)
 
 ---
@@ -81,6 +85,7 @@
 - ✅ Decoder встраивается в receive-path (через FECPipe)
 - ✅ Repair-фреймы передаются в том же UDP потоке (FrameRepair тип)
 - ✅ Block reordering tolerance: буфер на 8 блоков вперёд (maxOldBlocks)
+- ✅ FEC mismatch detection: клиент сравнивает K/R из repair-заголовка с конфигом, при несоответствии — лог + disconnect
 
 ### 2.3 Адаптивный FEC
 - 📋 Мониторинг реального процента потерь (скользящее окно)
@@ -174,6 +179,24 @@
 - ✅ `tun.Namer` interface — auto-assigned kernel name (utun0, utun1…)
 - 💡 macOS app bundle / launchd service
 - 💡 Универсальный бинарник (amd64 + arm64)
+
+---
+
+## Фаза 7 — GUI-клиент ✅
+
+- ✅ Фреймворк: Fyne (CGo, нативный рендеринг: Metal macOS, OpenGL/DX Windows)
+- ✅ `cmd/supervpn-client-gui/` — оконный клиент (без трей-иконки)
+- ✅ 3 вкладки: Connection (сервер, логин, пароль, хаб, режим, транспорт), Advanced (FEC, TLS, UDP, Bridge, TUN), Log
+- ✅ Загрузка конфига из `.toml` через Browse
+- ✅ Индикатор состояния (цветная точка + текст: Disconnected / Connecting / Connected / Reconnecting)
+- ✅ Лог VPN-движка в реальном времени (кольцевой буфер 500 строк)
+- ✅ Общий VPN-движок через `internal/vpnclient` и `internal/clientadapter` (код не дублируется)
+- ✅ Авто-обновление (GUI-специфичные бинарники: `supervpn-client-gui-*`)
+- ✅ Windows: подавление консоли через `-H windowsgui` + `FreeConsole()`
+- ✅ CI: macOS matrix (macos-13 amd64, macos-latest arm64), Windows (MSYS2 MinGW)
+- ✅ Сервер раздаёт GUI-бинарники через `/update` (добавлены в `clientAssets`)
+- 📋 Список серверов в выпадающем меню (пока пустой, пользователь добавляет вручную)
+- 💡 Трей-иконка (опционально)
 
 ---
 
