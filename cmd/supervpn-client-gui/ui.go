@@ -170,7 +170,7 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 		if !ok {
 			return
 		}
-		cfg, err := config.LoadClientConfig(path)
+		cfg, err := config.ParseClientConfig(path)
 		if err != nil {
 			dialog.ShowError(err, ui.win)
 			return
@@ -187,7 +187,7 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 				return
 			}
 			path := f.URI().Path()
-			cfg, err := config.LoadClientConfig(path)
+			cfg, err := config.ParseClientConfig(path)
 			if err != nil {
 				dialog.ShowError(err, ui.win)
 				return
@@ -321,6 +321,11 @@ func (ui *mainUI) buildLogTab() fyne.CanvasObject {
 
 func (ui *mainUI) onConnect() {
 	cfg := ui.buildConfig()
+
+	if err := cfg.Validate(); err != nil {
+		dialog.ShowError(err, ui.win)
+		return
+	}
 
 	ui.connectBtn.Disable()
 	ui.disconnectBtn.Enable()

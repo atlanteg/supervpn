@@ -331,7 +331,7 @@ func (ui *winUI) onConfigSelected() {
 	if !ok {
 		return
 	}
-	cfg, err := config.LoadClientConfig(path)
+	cfg, err := config.ParseClientConfig(path)
 	if err != nil {
 		walk.MsgBox(ui.form, "Error", "Cannot load config: "+err.Error(), walk.MsgBoxIconError)
 		return
@@ -350,7 +350,7 @@ func (ui *winUI) onBrowseConfig() {
 		return
 	}
 	path := dlg.FilePath
-	cfg, err := config.LoadClientConfig(path)
+	cfg, err := config.ParseClientConfig(path)
 	if err != nil {
 		walk.MsgBox(ui.form, "Error", "Cannot load config: "+err.Error(), walk.MsgBoxIconError)
 		return
@@ -448,6 +448,10 @@ func (ui *winUI) initConfigSelect() {
 
 func (ui *winUI) onConnect() {
 	cfg := ui.buildConfig()
+	if err := cfg.Validate(); err != nil {
+		walk.MsgBox(ui.form, "Cannot connect", err.Error(), walk.MsgBoxIconWarning)
+		return
+	}
 	ui.connectBtn.SetEnabled(false)
 	ui.disconnectBtn.SetEnabled(true)
 

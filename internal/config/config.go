@@ -202,7 +202,22 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 }
 
 // LoadClientConfig reads and validates a client config from a TOML file.
+// Returns an error if parsing fails or if required fields (server, login,
+// password) are missing. Use ParseClientConfig in GUI contexts where you
+// want to populate widgets from a partial or incomplete config file.
 func LoadClientConfig(path string) (*ClientConfig, error) {
+	cfg, err := ParseClientConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	return cfg, cfg.Validate()
+}
+
+// ParseClientConfig reads a client config from a TOML file without validating
+// required fields. Use this in GUI contexts where an incomplete config should
+// still populate the form fields — validation happens separately when the user
+// clicks Connect.
+func ParseClientConfig(path string) (*ClientConfig, error) {
 	var cfg ClientConfig
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return nil, fmt.Errorf("config: decode %s: %w", path, err)
@@ -210,7 +225,7 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 	cfg.FEC = cfg.FEC.WithDefaults()
 	cfg.UDP = cfg.UDP.WithDefaults()
 	cfg.Bridge = cfg.Bridge.WithDefaults()
-	return &cfg, cfg.Validate()
+	return &cfg, nil
 }
 
 // SaveClientConfig writes cfg to a TOML file at path, creating parent directories as needed.
