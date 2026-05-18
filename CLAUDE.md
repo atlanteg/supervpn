@@ -19,10 +19,13 @@ combines the bridge + client roles.
 | Transport | UDP primary + TCP fallback | FEC requires UDP; TCP fallback for restrictive firewalls/ТСПУ |
 | Encryption | AES-128-GCM from internal/crypto | Taken verbatim from myvpn. Speed over strength. Works through ТСПУ. |
 | FEC | Reed-Solomon/XOR matrix (SMPTE 2022-1 style) | Recovers from ≤5% random packet loss without retransmit |
+| FEC negotiation | Server advertises K/R in AuthOK (+2 bytes) | Client auto-adopts server params; no manual config alignment needed |
 | Authentication | Login + password (bcrypt stored, SHA-256 wire) | Simple, no PKI required |
 | Server language | Go | Fast development, excellent networking, single binary deploy |
 | Client language | Go | Same codebase, cross-compile to Windows/macOS |
+| Windows GUI | Walk (Win32/GDI default) + Fyne (-tags fyne) | Walk works on RDP/Hyper-V without GPU; Fyne for native look |
 | Windows capture | WinTun (WireGuard driver) | Signed, modern, no NDIS complexity |
+| TAP driver | Embedded in exe, auto-installed via pnputil | No external tools; pnputil built into Windows Vista+ |
 
 ## Repository structure
 
