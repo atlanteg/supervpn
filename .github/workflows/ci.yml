@@ -8,16 +8,17 @@ on:
     branches: [main]
 
 jobs:
-  build-test-release:
+  # ── Server + CLI clients (CGo-free, linux runner) ─────────────────────────
+  build-server-cli:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: write   # required to update the run display title
+      actions: write
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history required for git rev-list --count
+          fetch-depth: 0
 
       - name: Compute version
         id: ver
@@ -48,67 +49,181 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Test
-        run: go test -race ./...
+      # Exclude the GUI package — it requires CGo (Fyne) which needs GL/X11 headers
+      # not present on ubuntu-latest.
+      - name: Test (excluding GUI)
+        run: go test -race $(go list ./... | grep -v 'supervpn-client-gui')
 
-      - name: Vet
-        run: go vet ./...
+      - name: Vet (excluding GUI)
+        run: go vet $(go list ./... | grep -v 'supervpn-client-gui')
 
       - name: Build server (linux/amd64)
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
-            -o dist/linux/supervpn-server \
+            -o dist/supervpn-server \
             ./cmd/supervpn-server
 
-      - name: Build client (windows/amd64)
+      - name: Build CLI client (windows/amd64)
         run: |
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
             -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
-            -o dist/windows/supervpn-client.exe \
+            -o dist/supervpn-client-windows-amd64.exe \
             ./cmd/supervpn-client
 
-      - name: Build client (darwin/amd64)
+      - name: Build CLI client (darwin/amd64)
         run: |
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build \
             -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
-            -o dist/macos/supervpn-client-amd64 \
+            -o dist/supervpn-client-darwin-amd64 \
             ./cmd/supervpn-client
 
-      - name: Build client (darwin/arm64)
+      - name: Build CLI client (darwin/arm64)
         run: |
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
             -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
-            -o dist/macos/supervpn-client-arm64 \
+            -o dist/supervpn-client-darwin-arm64 \
             ./cmd/supervpn-client
 
-      - name: Package zip
-        run: |
-          cd dist
-          zip -r ../supervpn-dist.zip linux windows macos --exclude "**/.DS_Store"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-cli-binaries
+          path: dist/
 
-      # Only publish a release on direct pushes to main (not on PRs).
-      # Requires a repository secret GH_PAT — a Personal Access Token with
-      # repo scope on atlanteg/supervpn-releases.
-      - name: Prepare release assets
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  # ── GUI client — macOS (CGo required; one job per arch for reliability) ────
+  build-gui-macos:
+    strategy:
+      matrix:
+        include:
+          - os: macos-13      # Intel runner → native amd64 build
+            goarch: amd64
+          - os: macos-latest  # Apple Silicon runner → native arm64 build
+            goarch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: ver
         run: |
-          cp dist/linux/supervpn-server supervpn-server
-          cp dist/windows/supervpn-client.exe supervpn-client-windows-amd64.exe
-          cp dist/macos/supervpn-client-amd64 supervpn-client-darwin-amd64
-          cp dist/macos/supervpn-client-arm64 supervpn-client-darwin-arm64
+          VER="b$(git rev-list --count HEAD)"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build GUI client (darwin/${{ matrix.goarch }})
+        run: |
+          CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.goarch }} go build \
+            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -o dist/supervpn-client-gui-darwin-${{ matrix.goarch }} \
+            ./cmd/supervpn-client-gui
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gui-macos-${{ matrix.goarch }}
+          path: dist/
+
+  # ── GUI client — Windows (CGo via MSYS2/MinGW) ────────────────────────────
+  build-gui-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+
+      - name: Compute version
+        id: ver
+        run: |
+          VER="b$(git rev-list --count HEAD)"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build GUI client (windows/amd64)
+        run: |
+          CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build \
+            -ldflags="-s -w -H windowsgui -X main.version=${{ steps.ver.outputs.ver }}" \
+            -o dist/supervpn-client-gui-windows-amd64.exe \
+            ./cmd/supervpn-client-gui
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gui-windows-amd64
+          path: dist/
+
+  # ── Publish release (push to main only, waits for all builds) ─────────────
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [build-server-cli, build-gui-macos, build-gui-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: ver
+        run: |
+          VER="b$(git rev-list --count HEAD)"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-cli-binaries
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gui-macos-amd64
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gui-macos-arm64
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gui-windows-amd64
+          path: dist/
+
+      - name: Fix permissions on unix executables
+        run: chmod +x dist/supervpn-server dist/supervpn-client-darwin-* dist/supervpn-client-gui-darwin-*
 
       - name: Publish release to supervpn-releases
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           gh release create ${{ steps.ver.outputs.ver }} \
-            supervpn-dist.zip \
-            supervpn-server \
-            supervpn-client-windows-amd64.exe \
-            supervpn-client-darwin-amd64 \
-            supervpn-client-darwin-arm64 \
+            dist/supervpn-server \
+            dist/supervpn-client-windows-amd64.exe \
+            dist/supervpn-client-darwin-amd64 \
+            dist/supervpn-client-darwin-arm64 \
+            dist/supervpn-client-gui-windows-amd64.exe \
+            dist/supervpn-client-gui-darwin-amd64 \
+            dist/supervpn-client-gui-darwin-arm64 \
             --repo atlanteg/supervpn-releases \
             --title "supervpn ${{ steps.ver.outputs.ver }}" \
             --notes "Build ${{ steps.ver.outputs.ver }} — commit $(git rev-parse --short HEAD)" \
