@@ -532,12 +532,12 @@ func runSession(ctx context.Context, cfg config.ClientConfig, iface bridge.Inter
 
 	recvErr := make(chan error, 1)
 	go func() {
-		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, downstream, &lastPong, &stats)
+		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, fecCfg.K, fecCfg.R, downstream, &lastPong, &stats)
 	}()
 
 	if tr2 != nil {
 		go func() {
-			if err := recvLoop(sessionCtx, tr2, sessionID, sessionCipher, pipe, downstream, &lastPong, &stats); err != nil {
+			if err := recvLoop(sessionCtx, tr2, sessionID, sessionCipher, pipe, fecCfg.K, fecCfg.R, downstream, &lastPong, &stats); err != nil {
 				log.Printf("secondary recv: %v", err)
 			}
 		}()
@@ -764,8 +764,9 @@ func wireHashHex(password string) string {
 	return string(buf)
 }
 
-func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, out chan<- []byte, lastPong *atomic.Int64, stats *fecStats) error {
+func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, localK, localR int, out chan<- []byte, lastPong *atomic.Int64, stats *fecStats) error {
 	var replay crypto.ReplayWindow
+	var fecMismatchLogged bool
 	for {
 		f, err := tr.Recv(ctx)
 		if err != nil {
@@ -813,6 +814,11 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 			stats.repairRecv.Add(1)
 			stats.bytesRx.Add(uint64(len(frame)))
 			blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
+			if !fecMismatchLogged && (int(blockK) != localK || int(blockR) != localR) {
+				log.Printf("FEC MISMATCH: server K=%d/R=%d, client K=%d/R=%d — data will not decode; fix fec.k and fec.r in config to match the server",
+					blockK, blockR, localK, localR)
+				fecMismatchLogged = true
+			}
 			delivered, err := pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
 			if err != nil {
 				stats.unrecoverable.Add(1)
