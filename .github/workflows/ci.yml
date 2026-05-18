@@ -129,6 +129,17 @@ jobs:
             -o dist/supervpn-client-gui-darwin-amd64 \
             ./cmd/supervpn-client-gui
 
+      # Build a universal .app bundle so users can double-click without Terminal.
+      - name: Create superVPN.app bundle (universal)
+        run: |
+          mkdir -p dist/superVPN.app/Contents/MacOS
+          lipo -create \
+            dist/supervpn-client-gui-darwin-arm64 \
+            dist/supervpn-client-gui-darwin-amd64 \
+            -output dist/superVPN.app/Contents/MacOS/superVPN
+          cp cmd/supervpn-client-gui/Info.plist dist/superVPN.app/Contents/Info.plist
+          cd dist && zip -r superVPN-macos.zip superVPN.app
+
       - uses: actions/upload-artifact@v4
         with:
           name: gui-macos-binaries
@@ -173,6 +184,9 @@ jobs:
           $env:CGO_ENABLED = "1"
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
+          # Static-link MinGW runtime so the exe works without libgcc_s_seh-1.dll
+          # and libstdc++-6.dll on machines that don't have MSYS2 installed.
+          $env:CGO_LDFLAGS = "-static-libgcc -static-libstdc++"
           go build `
             -ldflags="-s -w -H windowsgui -X main.version=${{ steps.ver.outputs.ver }}" `
             -o dist/supervpn-client-gui-windows-amd64.exe `
@@ -242,6 +256,7 @@ jobs:
             dist/supervpn-client-gui-windows-amd64.exe \
             dist/supervpn-client-gui-darwin-amd64 \
             dist/supervpn-client-gui-darwin-arm64 \
+            dist/superVPN-macos.zip \
             --repo atlanteg/supervpn-releases \
             --title "supervpn ${{ steps.ver.outputs.ver }}" \
             --notes "Build ${{ steps.ver.outputs.ver }} — commit $(git rev-parse --short HEAD)" \
