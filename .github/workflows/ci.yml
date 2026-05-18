@@ -8,13 +8,11 @@ on:
     branches: [main]
 
 jobs:
-  # ── Server + CLI clients (CGo-free, linux runner) ─────────────────────────
-  build-server-cli:
+  # ── Compute version once; all other jobs inherit it via needs.setup.outputs ──
+  setup:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
-
+    outputs:
+      ver: ${{ steps.ver.outputs.ver }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,14 +31,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
+          VER="${{ steps.ver.outputs.ver }}"
           RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X PATCH \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            -d "{\"display_title\":\"supervpn ${{ steps.ver.outputs.ver }}\"}")
+            -d "{\"display_title\":\"supervpn $VER\"}")
           echo "$RESP" | grep -v '^HTTP_CODE' | head -5
           echo "$RESP" | grep 'HTTP_CODE'
+
+  # ── Server + CLI clients (CGo-free, linux runner) ─────────────────────────
+  build-server-cli:
+    needs: [setup]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
@@ -60,28 +70,28 @@ jobs:
       - name: Build server (linux/amd64)
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -ldflags="-s -w -X main.version=${{ needs.setup.outputs.ver }}" \
             -o dist/supervpn-server \
             ./cmd/supervpn-server
 
       - name: Build CLI client (windows/amd64)
         run: |
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
-            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -ldflags="-s -w -X main.version=${{ needs.setup.outputs.ver }}" \
             -o dist/supervpn-client-windows-amd64.exe \
             ./cmd/supervpn-client
 
       - name: Build CLI client (darwin/amd64)
         run: |
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build \
-            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -ldflags="-s -w -X main.version=${{ needs.setup.outputs.ver }}" \
             -o dist/supervpn-client-darwin-amd64 \
             ./cmd/supervpn-client
 
       - name: Build CLI client (darwin/arm64)
         run: |
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
-            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -ldflags="-s -w -X main.version=${{ needs.setup.outputs.ver }}" \
             -o dist/supervpn-client-darwin-arm64 \
             ./cmd/supervpn-client
 
@@ -94,17 +104,10 @@ jobs:
   # macos-13 (Intel) is effectively deprecated — no runners available.
   # Cross-compile amd64 from Apple Silicon using -arch x86_64 clang flags.
   build-gui-macos:
+    needs: [setup]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Compute version
-        id: ver
-        run: |
-          VER="b$(git rev-list --count HEAD)"
-          echo "ver=$VER" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-go@v5
         with:
@@ -116,7 +119,7 @@ jobs:
       - name: Build GUI client (darwin/arm64)
         run: |
           CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build \
-            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -ldflags="-s -w -X main.version=${{ needs.setup.outputs.ver }}" \
             -o dist/supervpn-client-gui-darwin-arm64 \
             ./cmd/supervpn-client-gui
 
@@ -125,7 +128,7 @@ jobs:
           CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
             CGO_CFLAGS="-arch x86_64" CGO_LDFLAGS="-arch x86_64" \
             go build \
-            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -ldflags="-s -w -X main.version=${{ needs.setup.outputs.ver }}" \
             -o dist/supervpn-client-gui-darwin-amd64 \
             ./cmd/supervpn-client-gui
 
@@ -147,20 +150,10 @@ jobs:
 
   # ── GUI client — Windows (CGo via MSYS2/MinGW) ────────────────────────────
   build-gui-windows:
+    needs: [setup]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # Compute version before MSYS2 setup — MSYS2 update can shadow Git Bash,
-      # causing shell: bash steps to fail with exit 127 (git not found).
-      - name: Compute version
-        id: ver
-        shell: pwsh
-        run: |
-          $VER = "b$(git rev-list --count HEAD)"
-          echo "ver=$VER" >> $env:GITHUB_OUTPUT
 
       # Install MinGW gcc; path-type: inherit adds UCRT64/bin to Windows PATH.
       # No update: true — avoids package manager restart that breaks PATH mid-job.
@@ -187,9 +180,10 @@ jobs:
           # Static-link MinGW runtime so the exe works without libgcc_s_seh-1.dll
           # and libstdc++-6.dll on machines that don't have MSYS2 installed.
           $env:CGO_LDFLAGS = "-static-libgcc -static-libstdc++"
+          $VER = "${{ needs.setup.outputs.ver }}"
           go build `
             -tags software `
-            -ldflags="-s -w -H windowsgui -X main.version=${{ steps.ver.outputs.ver }}" `
+            -ldflags="-s -w -H windowsgui -X main.version=$VER" `
             -o dist/supervpn-client-gui-windows-amd64.exe `
             ./cmd/supervpn-client-gui
 
@@ -201,18 +195,12 @@ jobs:
   # ── Publish release (push to main only, waits for all builds) ─────────────
   release:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [build-server-cli, build-gui-macos, build-gui-windows]
+    needs: [setup, build-server-cli, build-gui-macos, build-gui-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Compute version
-        id: ver
-        run: |
-          VER="b$(git rev-list --count HEAD)"
-          echo "ver=$VER" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
         with:
@@ -248,7 +236,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          gh release create ${{ steps.ver.outputs.ver }} \
+          VER="${{ needs.setup.outputs.ver }}"
+          gh release create "$VER" \
             supervpn-dist.zip \
             dist/supervpn-server \
             dist/supervpn-client-windows-amd64.exe \
@@ -259,6 +248,6 @@ jobs:
             dist/supervpn-client-gui-darwin-arm64 \
             dist/superVPN-macos.zip \
             --repo atlanteg/supervpn-releases \
-            --title "supervpn ${{ steps.ver.outputs.ver }}" \
-            --notes "Build ${{ steps.ver.outputs.ver }} — commit $(git rev-parse --short HEAD)" \
+            --title "supervpn $VER" \
+            --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
             --latest
