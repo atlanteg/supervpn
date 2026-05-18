@@ -90,16 +90,11 @@ jobs:
           name: server-cli-binaries
           path: dist/
 
-  # ── GUI client — macOS (CGo required; one job per arch for reliability) ────
+  # ── GUI clients — macOS (CGo required; both arches from arm64 runner) ───────
+  # macos-13 (Intel) is effectively deprecated — no runners available.
+  # Cross-compile amd64 from Apple Silicon using -arch x86_64 clang flags.
   build-gui-macos:
-    strategy:
-      matrix:
-        include:
-          - os: macos-13      # Intel runner → native amd64 build
-            goarch: amd64
-          - os: macos-latest  # Apple Silicon runner → native arm64 build
-            goarch: arm64
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,16 +113,25 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Build GUI client (darwin/${{ matrix.goarch }})
+      - name: Build GUI client (darwin/arm64)
         run: |
-          CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.goarch }} go build \
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build \
             -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
-            -o dist/supervpn-client-gui-darwin-${{ matrix.goarch }} \
+            -o dist/supervpn-client-gui-darwin-arm64 \
+            ./cmd/supervpn-client-gui
+
+      - name: Build GUI client (darwin/amd64)
+        run: |
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
+            CGO_CFLAGS="-arch x86_64" CGO_LDFLAGS="-arch x86_64" \
+            go build \
+            -ldflags="-s -w -X main.version=${{ steps.ver.outputs.ver }}" \
+            -o dist/supervpn-client-gui-darwin-amd64 \
             ./cmd/supervpn-client-gui
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gui-macos-${{ matrix.goarch }}
+          name: gui-macos-binaries
           path: dist/
 
   # ── GUI client — Windows (CGo via MSYS2/MinGW) ────────────────────────────
@@ -202,12 +206,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: gui-macos-amd64
-          path: dist/
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: gui-macos-arm64
+          name: gui-macos-binaries
           path: dist/
 
       - uses: actions/download-artifact@v4
