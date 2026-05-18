@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -48,12 +50,14 @@ type mainUI struct {
 	modeSelect      *widget.Select
 	transportSelect *widget.Select
 	configPathLabel *widget.Label
+	configPath      string // path of currently loaded/saved config file
 	statsLabel      *widget.Label
 
 	// for speed calculation in refreshStatus
 	prevBytesRx   uint64
 	prevBytesTx   uint64
 	prevStatsTime time.Time
+	autoSaveDone  bool // auto-saved once per connect session
 
 	// advanced tab widgets
 	fecKEntry         *widget.Entry
@@ -172,10 +176,27 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 				return
 			}
 			ui.populateFromConfig(cfg)
+			ui.configPath = path
 			ui.configPathLabel.SetText(path)
 		}, ui.win)
 	})
-	configRow := container.NewHBox(widget.NewLabel("Config file:"), browseBtn, ui.configPathLabel)
+	saveBtn := widget.NewButton("Save...", func() {
+		dialog.ShowFileSave(func(f fyne.URIWriteCloser, err error) {
+			if err != nil || f == nil {
+				return
+			}
+			path := f.URI().Path()
+			f.Close() // we'll write via SaveClientConfig
+			cfg := ui.buildConfig()
+			if err := config.SaveClientConfig(path, &cfg); err != nil {
+				dialog.ShowError(err, ui.win)
+				return
+			}
+			ui.configPath = path
+			ui.configPathLabel.SetText(path)
+		}, ui.win)
+	})
+	configRow := container.NewHBox(widget.NewLabel("Config file:"), browseBtn, saveBtn, ui.configPathLabel)
 
 	ui.connectBtn = widget.NewButton("Connect", ui.onConnect)
 	ui.disconnectBtn = widget.NewButton("Disconnect", ui.onDisconnect)
@@ -278,6 +299,23 @@ func (ui *mainUI) onConnect() {
 	}()
 }
 
+func (ui *mainUI) autoSaveConfig() {
+	path := ui.configPath
+	if path == "" {
+		// Default location when no file was loaded.
+		dir, err := os.UserConfigDir()
+		if err != nil {
+			return
+		}
+		path = filepath.Join(dir, "superVPN", "client.toml")
+	}
+	cfg := ui.buildConfig()
+	if err := config.SaveClientConfig(path, &cfg); err == nil {
+		ui.configPath = path
+		ui.configPathLabel.SetText(path)
+	}
+}
+
 func (ui *mainUI) onDisconnect() {
 	if ui.connectCancel != nil {
 		ui.connectCancel()
@@ -293,6 +331,9 @@ func (ui *mainUI) onDisconnect() {
 	ui.statusDot.FillColor = color.Gray{Y: 128}
 	canvas.Refresh(ui.statusDot)
 	ui.statusLabel.SetText("Disconnected")
+	ui.statsLabel.SetText("")
+	ui.prevStatsTime = time.Time{}
+	ui.autoSaveDone = false
 	ui.connectBtn.Enable()
 	ui.disconnectBtn.Disable()
 }
@@ -327,6 +368,12 @@ func (ui *mainUI) refreshStatus() {
 	ui.statusDot.FillColor = dotColor
 	canvas.Refresh(ui.statusDot)
 	ui.statusLabel.SetText(labelText)
+
+	// Auto-save config once on first successful connect.
+	if stats.State == vpnclient.StateConnected && !ui.autoSaveDone {
+		ui.autoSaveDone = true
+		go ui.autoSaveConfig()
+	}
 
 	// Update live stats row on the Connection tab.
 	if stats.State == vpnclient.StateConnected {

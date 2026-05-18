@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -210,6 +211,23 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 	cfg.UDP = cfg.UDP.WithDefaults()
 	cfg.Bridge = cfg.Bridge.WithDefaults()
 	return &cfg, cfg.Validate()
+}
+
+// SaveClientConfig writes cfg to a TOML file at path, creating parent directories as needed.
+func SaveClientConfig(path string, cfg *ClientConfig) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("config: mkdir: %w", err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("config: create %s: %w", path, err)
+	}
+	defer f.Close()
+	enc := toml.NewEncoder(f)
+	if err := enc.Encode(cfg); err != nil {
+		return fmt.Errorf("config: encode: %w", err)
+	}
+	return nil
 }
 
 // DefaultServerConfigPath returns the default path to the server config file.
