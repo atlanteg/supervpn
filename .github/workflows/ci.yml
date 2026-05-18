@@ -166,18 +166,23 @@ jobs:
         run: go mod download
 
       - name: Download tap-windows6 driver files
+        continue-on-error: true
         shell: pwsh
         run: |
-          # Install tap-windows via Chocolatey; the package places the signed
-          # driver files at "C:\Program Files\TAP-Windows\driver\".
-          choco install tap-windows -y --no-progress --ignore-checksums
-          $src = "C:\Program Files\TAP-Windows\driver"
-          if (Test-Path $src) {
-            Copy-Item "$src\*" pkg/tun/tap-driver/ -Force
-            Write-Host "Copied driver files:"
+          # Download the signed NSIS installer from OpenVPN GitHub releases and
+          # extract driver files using 7-Zip (always available on windows-latest).
+          # continue-on-error: true so a network hiccup never blocks the build —
+          # the binary just falls back to disk-based installation at runtime.
+          $url = "https://github.com/OpenVPN/tap-windows6/releases/download/9.26.0.0/tap-windows-9.26.0.0.exe"
+          Invoke-WebRequest -Uri $url -OutFile tap-windows.exe -UseBasicParsing
+          7z x tap-windows.exe -otap-extract -y | Out-Null
+          $files = Get-ChildItem -Recurse tap-extract -Include "OemVista.inf","tap0901.sys","tap0901.cat"
+          if ($files) {
+            $files | Copy-Item -Destination pkg/tun/tap-driver/ -Force
+            Write-Host "Driver files embedded:"
             Get-ChildItem pkg/tun/tap-driver/
           } else {
-            Write-Warning "tap-windows driver directory not found at $src — binary will not embed driver"
+            Write-Warning "Driver files not found in extracted installer — binary will fall back to disk installation"
           }
 
       - name: Build GUI client Walk (windows/amd64)
@@ -223,12 +228,15 @@ jobs:
         run: go mod download
 
       - name: Download tap-windows6 driver files
+        continue-on-error: true
         shell: pwsh
         run: |
-          choco install tap-windows -y --no-progress --ignore-checksums
-          $src = "C:\Program Files\TAP-Windows\driver"
-          if (Test-Path $src) {
-            Copy-Item "$src\*" pkg/tun/tap-driver/ -Force
+          $url = "https://github.com/OpenVPN/tap-windows6/releases/download/9.26.0.0/tap-windows-9.26.0.0.exe"
+          Invoke-WebRequest -Uri $url -OutFile tap-windows.exe -UseBasicParsing
+          7z x tap-windows.exe -otap-extract -y | Out-Null
+          $files = Get-ChildItem -Recurse tap-extract -Include "OemVista.inf","tap0901.sys","tap0901.cat"
+          if ($files) {
+            $files | Copy-Item -Destination pkg/tun/tap-driver/ -Force
           }
 
       - name: Build GUI client Fyne (windows/amd64)
