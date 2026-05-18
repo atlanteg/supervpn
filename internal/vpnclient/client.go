@@ -36,6 +36,7 @@ const (
 type SessionStats struct {
 	State         State
 	Transport     string
+	AdapterMode   string
 	Server        string
 	HubID         uint16
 	Login         string
@@ -66,21 +67,23 @@ type Client struct {
 	Iface  bridge.Interface
 	Framer bridge.Framer
 
-	mu        sync.RWMutex
-	stats     SessionStats
-	sessionFS *fecStats
-	logLines  []string
-	onChange  func()
-	cancelMu  sync.Mutex
-	cancel    context.CancelFunc
-	running   bool
+	mu          sync.RWMutex
+	stats       SessionStats
+	adapterMode string
+	sessionFS   *fecStats
+	logLines    []string
+	onChange    func()
+	cancelMu    sync.Mutex
+	cancel      context.CancelFunc
+	running     bool
 }
 
-func New(cfg config.ClientConfig, iface bridge.Interface, framer bridge.Framer) *Client {
+func New(cfg config.ClientConfig, iface bridge.Interface, framer bridge.Framer, adapterMode string) *Client {
 	return &Client{
-		Cfg:    cfg,
-		Iface:  iface,
-		Framer: framer,
+		Cfg:         cfg,
+		Iface:       iface,
+		Framer:      framer,
+		adapterMode: adapterMode,
 		stats: SessionStats{
 			State:     StateDisconnected,
 			StartTime: time.Now(),
@@ -97,6 +100,7 @@ func (c *Client) OnChange(fn func()) {
 func (c *Client) Stats() SessionStats {
 	c.mu.RLock()
 	s := c.stats
+	s.AdapterMode = c.adapterMode
 	fs := c.sessionFS
 	c.mu.RUnlock()
 	if fs != nil {

@@ -3,7 +3,9 @@
 package clientadapter
 
 import (
+	"fmt"
 	"log"
+	"strings"
 
 	"github.com/atlanteg/supervpn/internal/bridge"
 	"github.com/atlanteg/supervpn/internal/config"
@@ -15,6 +17,9 @@ func bridgeName(_, detectedNIC string) string { return detectedNIC }
 func openDirectFramer(_ config.BridgeConfig, tunName string) (bridge.Framer, string, error) {
 	f, err := pkgtun.Open(tunName)
 	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			err = fmt.Errorf("%w — на macOS нужен root: запустите с sudo", err)
+		}
 		return nil, "", err
 	}
 	return f, tunName, nil

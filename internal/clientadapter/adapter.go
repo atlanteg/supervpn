@@ -11,15 +11,20 @@ import (
 )
 
 // OpenAdapter opens the virtual adapter for this session.
-func OpenAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, error) {
+// The returned string describes the active mode, e.g. "bridge (en0)" or "direct (utun9)".
+func OpenAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, string, error) {
 	if cfg.Mode == "direct" {
 		log.Printf("adapter: mode=direct (forced via config)")
-		return openDirectAdapter(cfg)
+		iface, framer, err := openDirectAdapter(cfg)
+		if err != nil {
+			return iface, framer, "", err
+		}
+		return iface, framer, "direct (" + iface.Name + ")", nil
 	}
 
 	ifaces, err := bridge.DetectLinkLocal()
 	if err != nil {
-		return bridge.Interface{}, nil, fmt.Errorf("detect interfaces: %w", err)
+		return bridge.Interface{}, nil, "", fmt.Errorf("detect interfaces: %w", err)
 	}
 
 	bc := cfg.Bridge.WithDefaults()
@@ -51,28 +56,44 @@ func OpenAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, erro
 	if bc.NIC != "" {
 		for _, iface := range physical {
 			if iface.Name == bc.NIC {
-				return openBridgeAdapter(cfg, iface)
+				ri, rf, err := openBridgeAdapter(cfg, iface)
+				if err != nil {
+					return ri, rf, "", err
+				}
+				return ri, rf, "bridge (" + iface.Name + ")", nil
 			}
 		}
 		log.Printf("bridge: configured nic %q not found among 169.254 interfaces — falling back to direct mode", bc.NIC)
-		return openDirectAdapter(cfg)
+		iface, framer, err := openDirectAdapter(cfg)
+		if err != nil {
+			return iface, framer, "", err
+		}
+		return iface, framer, "direct (" + iface.Name + ")", nil
 	}
 
 	if cfg.Mode == "bridge" && len(physical) == 0 {
-		return bridge.Interface{}, nil, fmt.Errorf("adapter: mode=bridge but no 169.254.0.0/16 interface found")
+		return bridge.Interface{}, nil, "", fmt.Errorf("adapter: mode=bridge but no 169.254.0.0/16 interface found")
 	}
 	if len(physical) > 0 {
 		iface, framer, err := openBridgeAdapter(cfg, physical[0])
 		if err != nil {
 			if cfg.Mode == "bridge" {
-				return bridge.Interface{}, nil, err
+				return bridge.Interface{}, nil, "", err
 			}
 			log.Printf("bridge: failed to open bridge adapter: %v — falling back to direct mode", err)
-			return openDirectAdapter(cfg)
+			di, df, err := openDirectAdapter(cfg)
+			if err != nil {
+				return di, df, "", err
+			}
+			return di, df, "direct (" + di.Name + ")", nil
 		}
-		return iface, framer, nil
+		return iface, framer, "bridge (" + physical[0].Name + ")", nil
 	}
-	return openDirectAdapter(cfg)
+	iface, framer, err := openDirectAdapter(cfg)
+	if err != nil {
+		return iface, framer, "", err
+	}
+	return iface, framer, "direct (" + iface.Name + ")", nil
 }
 
 func openBridgeAdapter(cfg config.ClientConfig, detected bridge.Interface) (bridge.Interface, bridge.Framer, error) {

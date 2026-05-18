@@ -163,16 +163,16 @@ func main() {
 		go runClientStatusServer(ctx, cfg.StatusListen)
 	}
 
-	iface, framer, err := clientadapter.OpenAdapter(cfg)
+	iface, framer, adapterMode, err := clientadapter.OpenAdapter(cfg)
 	if err != nil {
 		log.Fatalf("tun: %v", err)
 	}
 	defer framer.Close()
 
-	log.Printf("supervpn-client %s: server=%s hub=%d login=%s",
-		version, cfg.Server, cfg.HubID, cfg.Login)
+	log.Printf("supervpn-client %s: server=%s hub=%d login=%s mode=%s",
+		version, cfg.Server, cfg.HubID, cfg.Login, adapterMode)
 
-	client := vpnclient.New(cfg, iface, framer)
+	client := vpnclient.New(cfg, iface, framer, adapterMode)
 	globalClient = client
 	client.Start(ctx)
 

@@ -220,7 +220,7 @@ func (ui *mainUI) onConnect() {
 	ui.disconnectBtn.Enable()
 
 	go func() {
-		iface, framer, err := clientadapter.OpenAdapter(cfg)
+		iface, framer, adapterMode, err := clientadapter.OpenAdapter(cfg)
 		if err != nil {
 			ui.statusLabel.SetText("Error: " + err.Error())
 			ui.statusDot.FillColor = color.RGBA{R: 200, A: 255}
@@ -240,7 +240,7 @@ func (ui *mainUI) onConnect() {
 			ui.app.Preferences().SetString("last_server", cfg.Server)
 		}
 
-		c := vpnclient.New(cfg, iface, framer)
+		c := vpnclient.New(cfg, iface, framer, adapterMode)
 		ui.client = c
 		c.OnChange(func() { ui.refreshStatus() })
 		c.Start(ctx)
@@ -279,6 +279,9 @@ func (ui *mainUI) refreshStatus() {
 	case vpnclient.StateConnected:
 		dotColor = color.RGBA{G: 180, A: 255}
 		labelText = "Connected — " + stats.Transport + " → " + stats.Server
+		if stats.AdapterMode != "" {
+			labelText += " | " + stats.AdapterMode
+		}
 	case vpnclient.StateConnecting:
 		dotColor = color.RGBA{R: 220, G: 180, A: 255}
 		labelText = "Connecting..."
