@@ -448,7 +448,8 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 	log.Printf("auth ok: %s@hub%d session=%d addr=%s mode=%s fec=K%d/R%d delay=%dms",
 		hello.Login, hello.HubID, sessionID, remoteAddr, mode, fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
 
-	okMsg := proto.AuthOK{SessionID: sessionID}
+	// Advertise the server's FEC K/R so the client can auto-adopt them.
+	okMsg := proto.AuthOK{SessionID: sessionID, FecK: uint8(fecCfg.K), FecR: uint8(fecCfg.R)}
 	p := append([]byte{proto.AuthMsgOK}, okMsg.Marshal()...)
 	hdr := make([]byte, proto.HeaderSize)
 	proto.Header{Type: proto.FrameAuth}.Marshal(hdr)

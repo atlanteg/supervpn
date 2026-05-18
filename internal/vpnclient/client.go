@@ -211,14 +211,28 @@ func (c *Client) run(ctx context.Context) {
 }
 
 func (c *Client) runSession(ctx context.Context) error {
-	tr, sessionID, sessionCipher, err := c.connectWithFallback(ctx)
+	tr, ar, err := c.connectWithFallback(ctx)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer tr.Close()
 
+	sessionID := ar.sessionID
+	sessionCipher := ar.cipher
+
 	fecCfg := c.Cfg.FEC.WithDefaults()
 	udpCfg := c.Cfg.UDP.WithDefaults()
+
+	// Auto-adopt server FEC parameters when the server advertises them.
+	// This eliminates the need for manual alignment between server and client configs.
+	if ar.serverK > 0 {
+		if int(ar.serverK) != fecCfg.K || int(ar.serverR) != fecCfg.R {
+			c.Logf("FEC: adopting server params K=%d/R=%d (config had K=%d/R=%d)",
+				ar.serverK, ar.serverR, fecCfg.K, fecCfg.R)
+		}
+		fecCfg.K = int(ar.serverK)
+		fecCfg.R = int(ar.serverR)
+	}
 
 	var tr2 transport.Transport
 	if tr.Mode() == "udp" {
@@ -419,7 +433,7 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 }
 
-func (c *Client) connectWithFallback(ctx context.Context) (transport.Transport, uint32, *crypto.Cipher, error) {
+func (c *Client) connectWithFallback(ctx context.Context) (transport.Transport, authResult, error) {
 	mode := c.Cfg.Transport
 	if mode == "" {
 		mode = "auto"
@@ -429,7 +443,7 @@ func (c *Client) connectWithFallback(ctx context.Context) (transport.Transport, 
 
 	if mode == "tcp" {
 		if tcpAddr == "" {
-			return nil, 0, nil, fmt.Errorf("transport=tcp but server_tcp is not configured (and cannot be derived from server)")
+			return nil, authResult{}, fmt.Errorf("transport=tcp but server_tcp is not configured (and cannot be derived from server)")
 		}
 		return c.connectTLS(ctx, tcpAddr)
 	}
@@ -437,7 +451,7 @@ func (c *Client) connectWithFallback(ctx context.Context) (transport.Transport, 
 	udpCfg := c.Cfg.UDP.WithDefaults()
 	for attempt := 1; attempt <= udpCfg.Attempts; attempt++ {
 		if ctx.Err() != nil {
-			return nil, 0, nil, ctx.Err()
+			return nil, authResult{}, ctx.Err()
 		}
 		c.Logf("transport: UDP attempt %d/%d (knock×%d → %s)",
 			attempt, udpCfg.Attempts, udpCfg.KnockCount, c.Cfg.Server)
@@ -449,28 +463,28 @@ func (c *Client) connectWithFallback(ctx context.Context) (transport.Transport, 
 		}
 
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		sid, cipher, probeErr := authenticate(probeCtx, udpTr, c.Cfg)
+		ar, probeErr := authenticate(probeCtx, udpTr, c.Cfg)
 		cancel()
 
 		if probeErr == nil {
 			c.Logf("transport: UDP connected (attempt %d/%d)", attempt, udpCfg.Attempts)
-			return udpTr, sid, cipher, nil
+			return udpTr, ar, nil
 		}
 		udpTr.Close()
 		c.Logf("transport: UDP attempt %d/%d failed: %v", attempt, udpCfg.Attempts, probeErr)
 	}
 
 	if mode == "udp" {
-		return nil, 0, nil, fmt.Errorf("UDP unreachable after %d attempts (transport=udp, no TCP fallback)", udpCfg.Attempts)
+		return nil, authResult{}, fmt.Errorf("UDP unreachable after %d attempts (transport=udp, no TCP fallback)", udpCfg.Attempts)
 	}
 
 	if tcpAddr == "" {
-		return nil, 0, nil, fmt.Errorf("UDP unreachable after %d attempts and server_tcp is not configured", udpCfg.Attempts)
+		return nil, authResult{}, fmt.Errorf("UDP unreachable after %d attempts and server_tcp is not configured", udpCfg.Attempts)
 	}
 	return c.connectTLS(ctx, tcpAddr)
 }
 
-func (c *Client) connectTLS(ctx context.Context, tcpAddr string) (transport.Transport, uint32, *crypto.Cipher, error) {
+func (c *Client) connectTLS(ctx context.Context, tcpAddr string) (transport.Transport, authResult, error) {
 	sni := c.Cfg.TLS.SNI
 	if sni == "" {
 		host, _, _ := net.SplitHostPort(tcpAddr)
@@ -483,21 +497,21 @@ func (c *Client) connectTLS(ctx context.Context, tcpAddr string) (transport.Tran
 	dialCancel()
 	if err != nil {
 		c.Logf("transport: TLS dial %s failed: %v", tcpAddr, err)
-		return nil, 0, nil, fmt.Errorf("TLS dial: %w", err)
+		return nil, authResult{}, fmt.Errorf("TLS dial: %w", err)
 	}
 	c.Logf("transport: TLS handshake ok, authenticating")
 
 	authCtx, authCancel := context.WithTimeout(ctx, 10*time.Second)
-	sid, cipher, err := authenticate(authCtx, tlsTr, c.Cfg)
+	ar, err := authenticate(authCtx, tlsTr, c.Cfg)
 	authCancel()
 	if err != nil {
 		tlsTr.Close()
 		c.Logf("transport: TLS auth failed: %v", err)
-		return nil, 0, nil, fmt.Errorf("TLS auth: %w", err)
+		return nil, authResult{}, fmt.Errorf("TLS auth: %w", err)
 	}
 
-	c.Logf("transport: TLS connected via %s session=%d", tcpAddr, sid)
-	return tlsTr, sid, cipher, nil
+	c.Logf("transport: TLS connected via %s session=%d", tcpAddr, ar.sessionID)
+	return tlsTr, ar, nil
 }
 
 func resolveTCPAddr(cfg config.ClientConfig) string {
@@ -514,7 +528,16 @@ func resolveTCPAddr(cfg config.ClientConfig) string {
 	return net.JoinHostPort(host, "443")
 }
 
-func authenticate(ctx context.Context, tr transport.Transport, cfg config.ClientConfig) (uint32, *crypto.Cipher, error) {
+// authResult bundles the values returned by authenticate so callers don't need
+// long positional return lists.
+type authResult struct {
+	sessionID uint32
+	cipher    *crypto.Cipher
+	serverK   uint8 // server's FEC K (0 = not advertised by old server)
+	serverR   uint8 // server's FEC R
+}
+
+func authenticate(ctx context.Context, tr transport.Transport, cfg config.ClientConfig) (authResult, error) {
 	pwHash := sha256.Sum256([]byte(cfg.Password))
 
 	hello := proto.AuthHello{
@@ -526,13 +549,13 @@ func authenticate(ctx context.Context, tr transport.Transport, cfg config.Client
 	hdr := make([]byte, proto.HeaderSize)
 	proto.Header{Type: proto.FrameAuth, HubID: cfg.HubID}.Marshal(hdr)
 	if err := tr.Send(transport.Frame{Data: append(hdr, payload...)}); err != nil {
-		return 0, nil, fmt.Errorf("send AuthHello: %w", err)
+		return authResult{}, fmt.Errorf("send AuthHello: %w", err)
 	}
 
 	for {
 		f, err := tr.Recv(ctx)
 		if err != nil {
-			return 0, nil, fmt.Errorf("waiting for auth response: %w", err)
+			return authResult{}, fmt.Errorf("waiting for auth response: %w", err)
 		}
 		respHdr, ok := proto.ParseHeader(f.Data)
 		if !ok || respHdr.Type != proto.FrameAuth {
@@ -546,23 +569,28 @@ func authenticate(ctx context.Context, tr transport.Transport, cfg config.Client
 		case proto.AuthMsgOK:
 			authOK, err := proto.ParseAuthOK(resp[1:])
 			if err != nil {
-				return 0, nil, fmt.Errorf("parse AuthOK: %w", err)
+				return authResult{}, fmt.Errorf("parse AuthOK: %w", err)
 			}
 			wireHex := wireHashHex(cfg.Password)
 			hubName := fmt.Sprintf("hub%d", cfg.HubID)
 			key, err := crypto.DeriveKey(wireHex, hubName, cfg.Login, "server")
 			if err != nil {
-				return 0, nil, fmt.Errorf("derive key: %w", err)
+				return authResult{}, fmt.Errorf("derive key: %w", err)
 			}
 			sessionCipher, err := crypto.NewCipher(key, authOK.SessionID)
 			if err != nil {
-				return 0, nil, fmt.Errorf("new cipher: %w", err)
+				return authResult{}, fmt.Errorf("new cipher: %w", err)
 			}
-			return authOK.SessionID, sessionCipher, nil
+			return authResult{
+				sessionID: authOK.SessionID,
+				cipher:    sessionCipher,
+				serverK:   authOK.FecK,
+				serverR:   authOK.FecR,
+			}, nil
 
 		case proto.AuthMsgError:
 			ae, _ := proto.ParseAuthError(resp[1:])
-			return 0, nil, fmt.Errorf("server rejected auth: %s", ae.Message)
+			return authResult{}, fmt.Errorf("server rejected auth: %s", ae.Message)
 		}
 	}
 }
@@ -639,11 +667,14 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 			stats.repairRecv.Add(1)
 			stats.bytesRx.Add(uint64(len(frame)))
 			blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
+			// Warn if repair-packet K/R differ from the pipe's configured values.
+			// This can happen if the server reloaded its config mid-session; the
+			// pipe handles it gracefully because blockK/blockR are passed through
+			// per packet — the warning is informational only, not fatal.
 			if !fecMismatchLogged && (int(blockK) != localK || int(blockR) != localR) {
-				logf("FEC MISMATCH: server K=%d/R=%d, client K=%d/R=%d — fix fec.k and fec.r in config to match the server",
+				logf("FEC: repair pkt K=%d/R=%d differs from session K=%d/R=%d (server config changed mid-session?)",
 					blockK, blockR, localK, localR)
 				fecMismatchLogged = true
-				return fmt.Errorf("FEC mismatch: server K=%d/R=%d vs client K=%d/R=%d", blockK, blockR, localK, localR)
 			}
 			delivered, err := pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
 			if err != nil {

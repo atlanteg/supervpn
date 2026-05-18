@@ -127,14 +127,23 @@ func ParseAuthHello(b []byte) (AuthHello, error) {
 }
 
 // AuthOK is sent by server on success.
-// Binary: [sub_type:1=0x02][session_id:4]
+// Binary: [sub_type:1=0x02][session_id:4][fec_k:1][fec_r:1]
+//
+// FecK and FecR carry the server's active FEC parameters so clients can adopt
+// them automatically without requiring manual config alignment. Both fields are
+// 0 when the server does not advertise FEC params (legacy / FEC disabled).
+// ParseAuthOK tolerates old 4-byte messages for backward compatibility.
 type AuthOK struct {
 	SessionID uint32
+	FecK      uint8 // server's FEC K (data pkts per block); 0 = not advertised
+	FecR      uint8 // server's FEC R (repair pkts per block); 0 = not advertised
 }
 
 func (a AuthOK) Marshal() []byte {
-	buf := make([]byte, 4)
+	buf := make([]byte, 6)
 	binary.BigEndian.PutUint32(buf, a.SessionID)
+	buf[4] = a.FecK
+	buf[5] = a.FecR
 	return buf
 }
 
@@ -143,7 +152,12 @@ func ParseAuthOK(b []byte) (AuthOK, error) {
 	if len(b) < 4 {
 		return AuthOK{}, fmt.Errorf("proto: AuthOK too short")
 	}
-	return AuthOK{SessionID: binary.BigEndian.Uint32(b[0:4])}, nil
+	ok := AuthOK{SessionID: binary.BigEndian.Uint32(b[0:4])}
+	if len(b) >= 6 {
+		ok.FecK = b[4]
+		ok.FecR = b[5]
+	}
+	return ok, nil
 }
 
 // AuthError is sent by server on failure.
