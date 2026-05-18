@@ -276,15 +276,34 @@ func main() {
 	var cfgPath string
 	flag.StringVar(&cfgPath, "config", "", "path to client config file (optional)")
 
+	// All flags use zero/empty as sentinel "not set" so they override the config
+	// file only when explicitly provided.  Integer flags use -1 as sentinel.
 	var (
-		serverFlag    = flag.String("server", "", "server UDP address host:port")
-		serverTCPFlag = flag.String("server-tcp", "", "server TCP/TLS address host:port (empty = derive from -server)")
-		hubIDFlag     = flag.Uint("hub", 1, "hub ID")
-		loginFlag     = flag.String("login", "", "login")
-		passwordFlag  = flag.String("password", "", "password")
-		transportFlag = flag.String("transport", "", "transport mode: auto (default), udp, tcp")
-		modeFlag      = flag.String("mode", "", "adapter mode: auto (default), direct, bridge")
-		bridgeNICFlag = flag.String("bridge-nic", "", "physical NIC name to bridge (e.g. \"Ethernet\")")
+		serverFlag        = flag.String("server", "", "server UDP address host:port")
+		serverTCPFlag     = flag.String("server-tcp", "", "server TCP/TLS address host:port")
+		hubIDFlag         = flag.Uint("hub", 0, "hub ID (default 1)")
+		loginFlag         = flag.String("login", "", "login")
+		passwordFlag      = flag.String("password", "", "password")
+		transportFlag     = flag.String("transport", "", "transport: auto|udp|tcp")
+		modeFlag          = flag.String("mode", "", "adapter mode: auto|direct|bridge")
+		tunNameFlag       = flag.String("tun-name", "", "TUN/TAP adapter name (direct mode)")
+		statusListenFlag  = flag.String("status-listen", "", "HTTP status API listen addr (e.g. 127.0.0.1:9191)")
+		timeoutFlag       = flag.String("timeout", "", "session timeout (e.g. 30s)")
+		updateMirrorsFlag = flag.String("update-mirrors", "", "comma-separated update mirror URLs")
+		// FEC
+		fecKFlag     = flag.Int("fec-k", -1, "FEC data packets per block")
+		fecRFlag     = flag.Int("fec-r", -1, "FEC repair packets per block")
+		fecDelayFlag = flag.Int("fec-delay", -1, "FEC repair delay ms")
+		// TLS
+		tlsSNIFlag = flag.String("tls-sni", "", "TLS SNI hostname")
+		// UDP
+		udpKnockCountFlag = flag.Int("udp-knock-count", -1, "UDP knock packet count")
+		udpKnockSizeFlag  = flag.Int("udp-knock-size", -1, "UDP knock packet size bytes")
+		udpAttemptsFlag   = flag.Int("udp-attempts", -1, "UDP auth attempt count before TCP fallback")
+		// Bridge
+		bridgeNICFlag    = flag.String("bridge-nic", "", "physical NIC name to bridge")
+		bridgeTAPFlag    = flag.String("bridge-tap", "", "TAP adapter name (Windows bridge mode)")
+		bridgeMethodFlag = flag.String("bridge-method", "", "bridge setup method: netbridge|hyperv")
 	)
 	flag.Parse()
 
@@ -295,26 +314,82 @@ func main() {
 			log.Fatalf("config: %v", err)
 		}
 		cfg = *loaded
-	} else {
-		cfg.Server = *serverFlag
-		cfg.HubID = uint16(*hubIDFlag)
-		cfg.Login = *loginFlag
-		cfg.Password = *passwordFlag
-		cfg.FEC = config.FECConfig{K: 1, R: 2, RepairDelay: 500}
 	}
-	// CLI flags override config file values.
+
+	// CLI flags override config file values (only when explicitly set).
+	if *serverFlag != "" {
+		cfg.Server = *serverFlag
+	}
+	if *serverTCPFlag != "" {
+		cfg.ServerTCP = *serverTCPFlag
+	}
+	if *hubIDFlag != 0 {
+		cfg.HubID = uint16(*hubIDFlag)
+	}
+	if cfg.HubID == 0 {
+		cfg.HubID = 1
+	}
+	if *loginFlag != "" {
+		cfg.Login = *loginFlag
+	}
+	if *passwordFlag != "" {
+		cfg.Password = *passwordFlag
+	}
 	if *transportFlag != "" {
 		cfg.Transport = *transportFlag
 	}
 	if *modeFlag != "" {
 		cfg.Mode = *modeFlag
 	}
+	if *tunNameFlag != "" {
+		cfg.TunName = *tunNameFlag
+	}
+	if *statusListenFlag != "" {
+		cfg.StatusListen = *statusListenFlag
+	}
+	if *timeoutFlag != "" {
+		cfg.Timeout = *timeoutFlag
+	}
+	if *updateMirrorsFlag != "" {
+		for _, u := range strings.Split(*updateMirrorsFlag, ",") {
+			if u = strings.TrimSpace(u); u != "" {
+				cfg.UpdateMirrors = append(cfg.UpdateMirrors, u)
+			}
+		}
+	}
+	if *fecKFlag >= 0 {
+		cfg.FEC.K = *fecKFlag
+	}
+	if *fecRFlag >= 0 {
+		cfg.FEC.R = *fecRFlag
+	}
+	if *fecDelayFlag >= 0 {
+		cfg.FEC.RepairDelay = *fecDelayFlag
+	}
+	if *tlsSNIFlag != "" {
+		cfg.TLS.SNI = *tlsSNIFlag
+	}
+	if *udpKnockCountFlag >= 0 {
+		cfg.UDP.KnockCount = *udpKnockCountFlag
+	}
+	if *udpKnockSizeFlag >= 0 {
+		cfg.UDP.KnockSize = *udpKnockSizeFlag
+	}
+	if *udpAttemptsFlag >= 0 {
+		cfg.UDP.Attempts = *udpAttemptsFlag
+	}
 	if *bridgeNICFlag != "" {
 		cfg.Bridge.NIC = *bridgeNICFlag
 	}
-	if *serverTCPFlag != "" {
-		cfg.ServerTCP = *serverTCPFlag
+	if *bridgeTAPFlag != "" {
+		cfg.Bridge.TapName = *bridgeTAPFlag
 	}
+	if *bridgeMethodFlag != "" {
+		cfg.Bridge.SetupMethod = *bridgeMethodFlag
+	}
+	cfg.FEC = cfg.FEC.WithDefaults()
+	cfg.UDP = cfg.UDP.WithDefaults()
+	cfg.Bridge = cfg.Bridge.WithDefaults()
 
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
