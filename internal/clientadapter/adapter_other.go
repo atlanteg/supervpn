@@ -1,6 +1,6 @@
-//go:build darwin
+//go:build !darwin && !windows
 
-package main
+package clientadapter
 
 import (
 	"log"
@@ -10,9 +10,7 @@ import (
 	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
-// bridgeName returns the physical NIC name for BPF binding on macOS.
-// BPF binds directly to the NIC, so there's no separate virtual adapter.
-func bridgeName(_, detectedNIC string) string { return detectedNIC }
+func bridgeName(tapName, _ string) string { return tapName }
 
 func openDirectFramer(_ config.BridgeConfig, tunName string) (bridge.Framer, string, error) {
 	f, err := pkgtun.Open(tunName)

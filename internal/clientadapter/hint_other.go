@@ -1,6 +1,6 @@
 //go:build !darwin && !windows
 
-package main
+package clientadapter
 
 import "github.com/atlanteg/supervpn/internal/config"
 

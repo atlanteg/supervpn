@@ -1,6 +1,6 @@
-//go:build !darwin && !windows
+//go:build darwin
 
-package main
+package clientadapter
 
 import (
 	"log"
@@ -10,9 +10,7 @@ import (
 	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
-// bridgeName returns the virtual TAP adapter name on Linux.
-// The TAP device is a separate virtual adapter that is then bridged to the NIC.
-func bridgeName(tapName, _ string) string { return tapName }
+func bridgeName(_, detectedNIC string) string { return detectedNIC }
 
 func openDirectFramer(_ config.BridgeConfig, tunName string) (bridge.Framer, string, error) {
 	f, err := pkgtun.Open(tunName)
