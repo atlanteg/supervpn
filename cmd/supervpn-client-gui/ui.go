@@ -14,7 +14,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
@@ -60,6 +59,10 @@ type mainUI struct {
 	prevStatsTime time.Time
 	autoSaveDone  bool // auto-saved once per connect session
 
+	// refreshCh is a 1-slot channel used to coalesce rapid OnChange signals
+	// so the UI goroutine is never flooded by high-frequency VPN events.
+	refreshCh chan struct{}
+
 	// advanced tab widgets
 	fecKEntry         *widget.Entry
 	fecREntry         *widget.Entry
@@ -80,8 +83,7 @@ type mainUI struct {
 	statusLabel *widget.Label
 
 	// log tab
-	logEntry   *widget.Entry
-	logBinding binding.String
+	logEntry *widget.Entry
 
 	connectBtn    *widget.Button
 	disconnectBtn *widget.Button
@@ -260,13 +262,12 @@ func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
 }
 
 func (ui *mainUI) buildLogTab() fyne.CanvasObject {
-	ui.logBinding = binding.NewString()
 	ui.logEntry = widget.NewMultiLineEntry()
-	ui.logEntry.Disable()
+	// Do NOT call Disable() — it renders text in grey. The entry is
+	// effectively read-only because the 1s ticker overwrites any edits.
 	ui.logEntry.Wrapping = fyne.TextWrapBreak
 
 	clearBtn := widget.NewButton("Clear", func() {
-		_ = ui.logBinding.Set("")
 		ui.logEntry.SetText("")
 	})
 
@@ -283,11 +284,15 @@ func (ui *mainUI) onConnect() {
 	go func() {
 		iface, framer, adapterMode, err := clientadapter.OpenAdapter(cfg)
 		if err != nil {
-			ui.statusLabel.SetText("Error: " + err.Error())
-			ui.statusDot.FillColor = color.RGBA{R: 200, A: 255}
-			canvas.Refresh(ui.statusDot)
-			ui.connectBtn.Enable()
-			ui.disconnectBtn.Disable()
+			// Button handlers run on the main goroutine; here we're in a
+			// background goroutine, so all widget/canvas mutations need fyne.Do.
+			fyne.Do(func() {
+				ui.statusLabel.SetText("Error: " + err.Error())
+				ui.statusDot.FillColor = color.RGBA{R: 200, A: 255}
+				canvas.Refresh(ui.statusDot)
+				ui.connectBtn.Enable()
+				ui.disconnectBtn.Disable()
+			})
 			return
 		}
 		ui.framer = framer
@@ -303,9 +308,47 @@ func (ui *mainUI) onConnect() {
 
 		c := vpnclient.New(cfg, iface, framer, adapterMode)
 		ui.client = c
-		c.OnChange(func() { ui.refreshStatus() })
+
+		// OnChange fires from VPN goroutines on every log line — potentially
+		// hundreds of times per second. Use a 1-slot channel to coalesce rapid
+		// signals so we never flood the UI thread.
+		ui.refreshCh = make(chan struct{}, 1)
+		c.OnChange(func() {
+			select {
+			case ui.refreshCh <- struct{}{}:
+			default: // already pending, drop duplicate
+			}
+		})
+
+		go ui.runRefreshLoop(ctx)
 		c.Start(ctx)
 	}()
+}
+
+// runRefreshLoop drives all periodic UI updates from a single goroutine so the
+// main thread is never called from multiple VPN goroutines simultaneously.
+//
+//   - State / stats bar: updated on every coalesced OnChange signal (fast path).
+//   - Log text:          updated on a 1-second ticker (expensive join + SetText).
+func (ui *mainUI) runRefreshLoop(ctx context.Context) {
+	logTicker := time.NewTicker(time.Second)
+	defer logTicker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ui.refreshCh:
+			ui.refreshStatus()
+		case <-logTicker.C:
+			c := ui.client
+			if c == nil {
+				return
+			}
+			text := strings.Join(c.Logs(), "\n")
+			// widget.Entry.SetText is goroutine-safe in Fyne 2.x.
+			ui.logEntry.SetText(text)
+		}
+	}
 }
 
 func (ui *mainUI) autoSaveConfig() {
@@ -374,8 +417,14 @@ func (ui *mainUI) refreshStatus() {
 		}
 	}
 
-	ui.statusDot.FillColor = dotColor
-	canvas.Refresh(ui.statusDot)
+	// canvas.Rectangle.FillColor is a plain struct field — mutating it from a
+	// goroutine while the renderer reads it is a data race. fyne.Do schedules
+	// the mutation on the main thread and blocks until it completes.
+	fyne.Do(func() {
+		ui.statusDot.FillColor = dotColor
+		canvas.Refresh(ui.statusDot)
+	})
+	// widget.Label.SetText / widget.Label.SetText are goroutine-safe in Fyne 2.x.
 	ui.statusLabel.SetText(labelText)
 
 	// Auto-save config once on first successful connect.
@@ -406,9 +455,8 @@ func (ui *mainUI) refreshStatus() {
 		ui.statsLabel.SetText("")
 		ui.prevStatsTime = time.Time{}
 	}
-
-	logs := c.Logs()
-	ui.logEntry.SetText(strings.Join(logs, "\n"))
+	// Log text is updated on a 1s ticker in runRefreshLoop — not here.
+	// Joining 500 lines + SetText on every OnChange event would flood the UI.
 }
 
 func (ui *mainUI) buildConfig() config.ClientConfig {
