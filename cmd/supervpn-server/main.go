@@ -859,13 +859,18 @@ func (s *Server) handleJoin(hdr proto.Header, sendReply func([]byte) error, remo
 // ── Update mirror ────────────────────────────────────────────────────────────
 
 // clientAssets lists every binary the server may serve as a mirror.
+// Must stay in sync with the release artifacts published by CI.
 var clientAssets = []string{
+	// CLI clients
 	"supervpn-client-windows-amd64.exe",
 	"supervpn-client-darwin-arm64",
 	"supervpn-client-darwin-amd64",
-	"supervpn-client-gui-windows-amd64.exe",
+	// GUI — macOS (universal app bundle zip + per-arch binaries)
 	"supervpn-client-gui-darwin-arm64",
 	"supervpn-client-gui-darwin-amd64",
+	// GUI — Windows: Win32/Walk (default) + Fyne/OpenGL variant
+	"supervpn-client-gui-windows-amd64.exe",
+	"supervpn-client-gui-windows-fyne-amd64.exe",
 }
 
 // updateDir returns the resolved directory for client assets.
