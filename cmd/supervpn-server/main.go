@@ -547,11 +547,23 @@ func (s *Server) handlePing(hdr proto.Header, sendReply func([]byte) error) {
 	s.mu.RLock()
 	sess, ok := s.sessions[hdr.SessionID]
 	s.mu.RUnlock()
-	if ok {
-		sess.mu.Lock()
-		sess.lastSeen = time.Now()
-		sess.mu.Unlock()
+
+	if !ok {
+		// Session not found — server likely restarted and lost in-memory state.
+		// Send an auth error so the client detects the stale session immediately
+		// and reconnects, instead of hanging "Connected" until keepalive timeout.
+		errHdr := make([]byte, proto.HeaderSize)
+		proto.Header{Type: proto.FrameAuth, SessionID: hdr.SessionID}.Marshal(errHdr)
+		ae := proto.AuthError{Message: "session expired"}
+		body := append([]byte{proto.AuthMsgError}, ae.Marshal()...)
+		_ = sendReply(append(errHdr, body...))
+		return
 	}
+
+	sess.mu.Lock()
+	sess.lastSeen = time.Now()
+	sess.mu.Unlock()
+
 	pong := make([]byte, proto.HeaderSize)
 	proto.Header{Type: proto.FramePong, SessionID: hdr.SessionID}.Marshal(pong)
 	_ = sendReply(pong)

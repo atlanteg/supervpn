@@ -712,6 +712,15 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 		case proto.FramePong:
 			lastPong.Store(time.Now().UnixNano())
 			logf("keepalive: pong received from server")
+
+		case proto.FrameAuth:
+			// Server sent an auth error mid-session — it restarted and lost the
+			// session.  Return immediately so the caller reconnects right away
+			// instead of waiting for the keepalive timeout.
+			if len(payload) > 0 && payload[0] == proto.AuthMsgError {
+				ae, _ := proto.ParseAuthError(payload[1:])
+				return fmt.Errorf("server rejected session: %s", ae.Message)
+			}
 		}
 	}
 }
