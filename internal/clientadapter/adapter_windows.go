@@ -13,7 +13,10 @@ import (
 func bridgeName(tapName, _ string) string { return tapName }
 
 func openDirectFramer(_ config.BridgeConfig, tunName string) (bridge.Framer, string, error) {
-	f, err := pkgtun.OpenWinTunL2(tunName)
+	// OpenWinTunL2Direct also assigns 169.254.x.y to the adapter so that
+	// link-local discovery tools (BMW ENET Remote Enet, ZGW Search, etc.)
+	// find it via GetAdaptersAddresses and route broadcasts through the VPN.
+	f, err := pkgtun.OpenWinTunL2Direct(tunName)
 	if err == nil {
 		log.Printf("direct: using WinTun L2 adapter %q", tunName)
 		return f, tunName, nil

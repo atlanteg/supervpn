@@ -20,6 +20,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
+	"log"
+	"os/exec"
 	"sync"
 
 	"github.com/atlanteg/supervpn/internal/bridge"
@@ -43,6 +46,25 @@ func OpenWinTunL2(name string) (bridge.Framer, error) {
 		return nil, err
 	}
 	return newWindowsTUNL2(raw), nil
+}
+
+// OpenWinTunL2Direct is the direct-mode variant: opens the WinTun adapter and
+// immediately assigns a 169.254.x.y address derived from the virtual MAC.
+// This makes the adapter visible to link-local discovery tools (BMW ENET etc.)
+// via GetAdaptersAddresses and installs the 169.254.0.0/16 route so that
+// 169.254.255.255 broadcasts are routed through the VPN interface.
+func OpenWinTunL2Direct(name string) (bridge.Framer, error) {
+	raw, err := openWinTUN(name)
+	if err != nil {
+		return nil, err
+	}
+	d := newWindowsTUNL2(raw)
+	if err := d.ConfigureIP(); err != nil {
+		// Non-fatal: log and continue — the adapter still works for pure L2,
+		// but link-local discovery tools may not find it automatically.
+		log.Printf("tun/windows: ConfigureIP warning: %v", err)
+	}
+	return d, nil
 }
 
 func newWindowsTUNL2(t *windowsTUN) *windowsTUNL2 {
@@ -183,6 +205,35 @@ func buildWinARPReply(ourMAC [6]byte, ourIP [4]byte, dstMAC [6]byte, dstIP [4]by
 	copy(p[18:24], dstMAC[:])
 	copy(p[24:28], dstIP[:])
 	return p
+}
+
+// ConfigureIP assigns a 169.254.x.y address (derived from the virtual MAC) to
+// the WinTun adapter via netsh so that link-local discovery tools — e.g. BMW
+// ENET Remote Enet / ZGW Search — can find the adapter via GetAdaptersAddresses
+// and route their 169.254.255.255 broadcasts through the VPN interface.
+//
+// Call this once after opening the adapter in direct mode.  The address is
+// stable for the session lifetime (derived from MAC bytes 4 and 5) and stored
+// in myIP so ARP replies work immediately without waiting for the first
+// outgoing packet.
+func (d *windowsTUNL2) ConfigureIP() error {
+	b2, b3 := d.mac[4], d.mac[5]
+	// Avoid .0 and .255 host parts which are reserved within the /16.
+	if b2 == 0 && b3 == 0 {
+		b2, b3 = 1, 1
+	}
+	if b2 == 255 && b3 == 255 {
+		b2, b3 = 254, 254
+	}
+	ip := fmt.Sprintf("169.254.%d.%d", b2, b3)
+	out, err := exec.Command("netsh", "interface", "ip", "set", "address",
+		"name="+d.tun.name, "static", ip, "255.255.0.0").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("netsh set address %s on %s: %v: %s", ip, d.tun.name, err, out)
+	}
+	d.myIP = [4]byte{169, 254, b2, b3}
+	log.Printf("tun/windows: %s: assigned %s/16 (link-local, BMW ENET discovery)", d.tun.name, ip)
+	return nil
 }
 
 func (d *windowsTUNL2) Close() error   { return d.tun.Close() }
