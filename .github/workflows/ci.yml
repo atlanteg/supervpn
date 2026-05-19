@@ -95,6 +95,16 @@ jobs:
             -o dist/supervpn-client-darwin-arm64 \
             ./cmd/supervpn-client
 
+      - name: Generate user guide PDF
+        run: |
+          pip install weasyprint --quiet
+          sudo apt-get install -y --no-install-recommends \
+            pandoc libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf2.0-0 2>/dev/null || true
+          pandoc README-user.md \
+            --pdf-engine=weasyprint \
+            --metadata title="superVPN — руководство пользователя" \
+            -o dist/README-user.pdf
+
       - uses: actions/upload-artifact@v4
         with:
           name: server-cli-binaries
@@ -299,7 +309,8 @@ jobs:
             supervpn-client-gui-windows-amd64.exe \
             supervpn-client-gui-windows-fyne-amd64.exe \
             supervpn-client-gui-darwin-amd64 \
-            supervpn-client-gui-darwin-arm64
+            supervpn-client-gui-darwin-arm64 \
+            README-user.pdf
 
       - name: Publish release to supervpn-releases
         env:
@@ -317,6 +328,7 @@ jobs:
             dist/supervpn-client-gui-darwin-amd64 \
             dist/supervpn-client-gui-darwin-arm64 \
             dist/superVPN-macos.zip \
+            dist/README-user.pdf \
             --repo atlanteg/supervpn-releases \
             --title "supervpn $VER" \
             --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
