@@ -29,7 +29,9 @@ func main() {
 	a := app.NewWithID("com.atlanteg.supervpn")
 
 	mirrors := loadSavedMirrors(a)
-	go update.CheckAndUpdate(version, update.AssetForClientGUI(), mirrors)
+	// Use the Fyne-specific asset so Fyne builds update to Fyne builds,
+	// not to the Win32/Walk variant.
+	go update.CheckAndUpdate(version, update.AssetForClientGUIFyne(), mirrors)
 
 	w := a.NewWindow("superVPN " + version + " by NBTboost creators © Atlanteg")
 	w.SetMaster()

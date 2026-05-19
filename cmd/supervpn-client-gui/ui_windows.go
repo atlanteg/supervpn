@@ -39,9 +39,10 @@ type winUI struct {
 	transportCombo    *walk.ComboBox
 	configCombo       *walk.ComboBox
 	configLabel       *walk.Label
-	connectBtn        *walk.PushButton
-	disconnectBtn     *walk.PushButton
-	statsLabel        *walk.Label
+	connectBtn             *walk.PushButton
+	disconnectBtn          *walk.PushButton
+	connectionStatusLabel  *walk.Label
+	statsLabel             *walk.Label
 
 	// Advanced tab
 	fecKEdit          *walk.LineEdit
@@ -121,6 +122,11 @@ func (ui *winUI) connectionPage() TabPage {
 		Content: ScrollView{
 			Layout: VBox{Spacing: 6},
 			Children: []Widget{
+				Label{
+					AssignTo: &ui.connectionStatusLabel,
+					Text:     "● Disconnected",
+					Font:     Font{Bold: true},
+				},
 				GroupBox{
 					Title:  "Server",
 					Layout: Grid{Columns: 2, Spacing: 4},
@@ -500,6 +506,7 @@ func (ui *winUI) onDisconnect() {
 		ui.framer = nil
 	}
 	_ = ui.statusBarItem.SetText("Disconnected")
+	_ = ui.connectionStatusLabel.SetText("● Disconnected")
 	_ = ui.statsLabel.SetText("")
 	ui.prevStatsTime = time.Time{}
 	ui.autoSaveDone = false
@@ -523,7 +530,7 @@ func (ui *winUI) runRefreshLoop(ctx context.Context) {
 		case <-logTicker.C:
 			c := ui.client
 			if c == nil {
-				return
+				continue
 			}
 			// Windows TextEdit uses \r\n line endings.
 			text := strings.Join(c.Logs(), "\r\n")
@@ -577,6 +584,7 @@ func (ui *winUI) doRefreshStatus() {
 	ui.form.Synchronize(func() {
 		_ = ui.statusBarItem.SetText(statusText)
 		_ = ui.statsLabel.SetText(statsText)
+		_ = ui.connectionStatusLabel.SetText("● " + statusText)
 	})
 
 	if stats.State == vpnclient.StateConnected && !ui.autoSaveDone {

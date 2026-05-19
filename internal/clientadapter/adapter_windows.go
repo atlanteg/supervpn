@@ -12,18 +12,18 @@ import (
 
 func bridgeName(tapName, _ string) string { return tapName }
 
-func openDirectFramer(bc config.BridgeConfig, _ string) (bridge.Framer, string, error) {
-	f, err := pkgtun.OpenWinTunL2(bc.TapName)
+func openDirectFramer(_ config.BridgeConfig, tunName string) (bridge.Framer, string, error) {
+	f, err := pkgtun.OpenWinTunL2(tunName)
 	if err == nil {
-		log.Printf("direct: using WinTun L2 adapter %q", bc.TapName)
-		return f, bc.TapName, nil
+		log.Printf("direct: using WinTun L2 adapter %q", tunName)
+		return f, tunName, nil
 	}
 	log.Printf("direct: WinTun unavailable (%v), falling back to tap-windows6", err)
-	ft, err2 := pkgtun.OpenTAP(bc.TapName)
+	ft, err2 := pkgtun.OpenTAP(tunName)
 	if err2 != nil {
 		return nil, "", err2
 	}
-	return ft, bc.TapName, nil
+	return ft, tunName, nil
 }
 
 func openPlatformBridge(bc config.BridgeConfig, detected bridge.Interface, adapterName string) (bridge.Framer, error) {

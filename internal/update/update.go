@@ -168,11 +168,25 @@ func AssetForClient() string {
 	}
 }
 
-// AssetForClientGUI returns the release asset filename for the GUI client on the current platform.
+// AssetForClientGUI returns the release asset filename for the Win32/Walk GUI build.
+// On Windows this is the default (Walk/GDI) variant; on macOS it is the arch-specific binary.
 func AssetForClientGUI() string {
 	switch {
 	case runtime.GOOS == "windows":
 		return "supervpn-client-gui-windows-amd64.exe"
+	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
+		return "supervpn-client-gui-darwin-arm64"
+	default:
+		return "supervpn-client-gui-darwin-amd64"
+	}
+}
+
+// AssetForClientGUIFyne returns the release asset filename for the Fyne GUI build.
+// On Windows this is the OpenGL/Fyne variant; on macOS same as AssetForClientGUI.
+func AssetForClientGUIFyne() string {
+	switch {
+	case runtime.GOOS == "windows":
+		return "supervpn-client-gui-windows-fyne-amd64.exe"
 	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
 		return "supervpn-client-gui-darwin-arm64"
 	default:

@@ -257,13 +257,16 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 
 	ui.statsLabel = widget.NewLabel("")
 
-	npcapURL, _ := url.Parse("https://npcap.com/dist/npcap-1.88.exe")
-	npcapRow := container.NewHBox(
-		widget.NewLabel("Packet capture (bridge mode):"),
-		widget.NewHyperlink("Install Npcap 1.88", npcapURL),
-	)
-
-	return container.NewVBox(form, configRow, ui.configPathLabel, btnRow, ui.statsLabel, npcapRow)
+	rows := []fyne.CanvasObject{form, configRow, ui.configPathLabel, btnRow, ui.statsLabel}
+	// Npcap is Windows-only (bridge mode on macOS uses the kernel TAP directly).
+	if runtime.GOOS == "windows" {
+		npcapURL, _ := url.Parse("https://npcap.com/dist/npcap-1.88.exe")
+		rows = append(rows, container.NewHBox(
+			widget.NewLabel("Packet capture (bridge mode):"),
+			widget.NewHyperlink("Install Npcap 1.88", npcapURL),
+		))
+	}
+	return container.NewVBox(rows...)
 }
 
 func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
@@ -402,7 +405,7 @@ func (ui *mainUI) runRefreshLoop(ctx context.Context) {
 		case <-logTicker.C:
 			c := ui.client
 			if c == nil {
-				return
+				continue
 			}
 			// Join log lines outside fyne.Do (pure string work, no Fyne API).
 			text := strings.Join(c.Logs(), "\n")
