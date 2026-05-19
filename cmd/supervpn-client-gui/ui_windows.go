@@ -80,6 +80,11 @@ type winUI struct {
 	prevStatsTime  time.Time
 	autoSaveDone   bool
 	lastLogVersion uint64 // last logVersion rendered to the log tab
+
+	// suppressConfigReload is set to true while addConfigToCombo manipulates
+	// the combo programmatically, preventing onConfigSelected from re-loading
+	// the config file and overwriting the user's current field values.
+	suppressConfigReload bool
 }
 
 func (ui *winUI) runApp() {
@@ -327,7 +332,7 @@ func (ui *winUI) onAddServer() {
 }
 
 func (ui *winUI) onConfigSelected() {
-	if ui.configCombo == nil {
+	if ui.configCombo == nil || ui.suppressConfigReload {
 		return
 	}
 	idx := ui.configCombo.CurrentIndex()
@@ -391,6 +396,12 @@ func (ui *winUI) onSaveConfig() {
 }
 
 func (ui *winUI) addConfigToCombo(path string) {
+	// Suppress onConfigSelected while we manipulate the combo programmatically.
+	// The caller is responsible for populating the fields if needed (e.g.
+	// onBrowseConfig calls populateFromConfig directly before calling us).
+	ui.suppressConfigReload = true
+	defer func() { ui.suppressConfigReload = false }()
+
 	name := filepath.Base(path)
 	if _, exists := ui.configFilePaths[name]; !exists {
 		ui.configFilePaths[name] = path
