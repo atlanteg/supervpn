@@ -72,6 +72,7 @@ type Client struct {
 	adapterMode string
 	sessionFS   *fecStats
 	logLines    []string
+	logVersion  uint64 // monotonically incremented on every Logf
 	onChange    func()
 	cancelMu    sync.Mutex
 	cancel      context.CancelFunc
@@ -122,14 +123,27 @@ func (c *Client) Logs() []string {
 	return out
 }
 
+// LogVersion returns a counter that is incremented on every Logf call.
+// UI components can poll this to skip a repaint when nothing has been logged.
+func (c *Client) LogVersion() uint64 {
+	c.mu.RLock()
+	v := c.logVersion
+	c.mu.RUnlock()
+	return v
+}
+
 func (c *Client) Logf(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	log.Print(msg)
 	c.mu.Lock()
 	c.logLines = append(c.logLines, msg)
 	if len(c.logLines) > maxLogLines {
-		c.logLines = c.logLines[len(c.logLines)-maxLogLines:]
+		// Copy to a new slice so the old backing array is eligible for GC.
+		trimmed := make([]string, maxLogLines)
+		copy(trimmed, c.logLines[len(c.logLines)-maxLogLines:])
+		c.logLines = trimmed
 	}
+	c.logVersion++
 	fn := c.onChange
 	c.mu.Unlock()
 	if fn != nil {

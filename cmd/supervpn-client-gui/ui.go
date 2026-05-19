@@ -58,7 +58,8 @@ type mainUI struct {
 
 	// refreshCh is a 1-slot channel used to coalesce rapid OnChange signals
 	// so the UI goroutine is never flooded by high-frequency VPN events.
-	refreshCh chan struct{}
+	refreshCh      chan struct{}
+	lastLogVersion uint64 // last logVersion rendered to the log tab
 
 	// advanced tab widgets
 	fecKEntry         *widget.Entry
@@ -391,13 +392,19 @@ func (ui *mainUI) onConnect() {
 	}()
 }
 
+// maxLogDisplay is the number of lines shown in the log tab.
+// Capping it well below maxLogLines (500) keeps fyne.Do/SetText fast
+// and prevents the renderer from stalling during long-running sessions.
+const maxLogDisplay = 150
+
 // runRefreshLoop drives all periodic UI updates from a single goroutine so the
 // main thread is never called from multiple VPN goroutines simultaneously.
 //
 //   - State / stats bar: updated on every coalesced OnChange signal (fast path).
-//   - Log text:          updated on a 1-second ticker (expensive join + SetText).
+//   - Log text:          updated on a 5-second ticker, skipped when nothing
+//     has been logged since the last update (guarded by logVersion).
 func (ui *mainUI) runRefreshLoop(ctx context.Context) {
-	logTicker := time.NewTicker(time.Second)
+	logTicker := time.NewTicker(5 * time.Second)
 	defer logTicker.Stop()
 	for {
 		select {
@@ -410,8 +417,17 @@ func (ui *mainUI) runRefreshLoop(ctx context.Context) {
 			if c == nil {
 				continue
 			}
-			// Join log lines outside fyne.Do (pure string work, no Fyne API).
-			text := strings.Join(c.Logs(), "\n")
+			ver := c.LogVersion()
+			if ver == ui.lastLogVersion {
+				continue // nothing new — skip the expensive SetText
+			}
+			ui.lastLogVersion = ver
+			logs := c.Logs()
+			// Display only the most recent lines to keep SetText fast.
+			if len(logs) > maxLogDisplay {
+				logs = logs[len(logs)-maxLogDisplay:]
+			}
+			text := strings.Join(logs, "\n")
 			fyne.Do(func() { ui.logEntry.SetText(text) })
 		}
 	}
@@ -556,6 +572,7 @@ func (ui *mainUI) onDisconnect() {
 	ui.statsLabel.SetText("")
 	ui.prevStatsTime = time.Time{}
 	ui.autoSaveDone = false
+	ui.lastLogVersion = 0
 	ui.connectBtn.Enable()
 	ui.disconnectBtn.Disable()
 }

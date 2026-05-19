@@ -74,11 +74,12 @@ type winUI struct {
 	configFilePaths   map[string]string // filename → full path
 	configPath        string
 
-	refreshCh     chan struct{}
-	prevBytesRx   uint64
-	prevBytesTx   uint64
-	prevStatsTime time.Time
-	autoSaveDone  bool
+	refreshCh      chan struct{}
+	prevBytesRx    uint64
+	prevBytesTx    uint64
+	prevStatsTime  time.Time
+	autoSaveDone   bool
+	lastLogVersion uint64 // last logVersion rendered to the log tab
 }
 
 func (ui *winUI) runApp() {
@@ -551,6 +552,7 @@ func (ui *winUI) onDisconnect() {
 	_ = ui.statsLabel.SetText("")
 	ui.prevStatsTime = time.Time{}
 	ui.autoSaveDone = false
+	ui.lastLogVersion = 0
 	ui.connectBtn.SetEnabled(true)
 	ui.disconnectBtn.SetEnabled(false)
 }
@@ -559,8 +561,16 @@ func (ui *winUI) onDisconnect() {
 
 // runRefreshLoop drives all periodic UI updates from a single goroutine.
 // walk.Synchronize (equivalent of fyne.Do) is used for all widget mutations.
+// maxLogDisplay is the number of lines shown in the log tab.
+// Keeping it well below maxLogLines (500) speeds up TextEdit redraws
+// and reduces the work done in Synchronize every few seconds.
+const maxLogDisplay = 150
+
 func (ui *winUI) runRefreshLoop(ctx context.Context) {
-	logTicker := time.NewTicker(time.Second)
+	// 5-second tick: logs update at most every 5 s, and only when new lines
+	// have been added (guarded by logVersion).  This keeps the Win32 message
+	// queue clear during long-running sessions.
+	logTicker := time.NewTicker(5 * time.Second)
 	defer logTicker.Stop()
 	for {
 		select {
@@ -573,8 +583,18 @@ func (ui *winUI) runRefreshLoop(ctx context.Context) {
 			if c == nil {
 				continue
 			}
+			ver := c.LogVersion()
+			if ver == ui.lastLogVersion {
+				continue // nothing new — skip the expensive SetText
+			}
+			ui.lastLogVersion = ver
+			logs := c.Logs()
+			// Display only the most recent lines to keep SetText fast.
+			if len(logs) > maxLogDisplay {
+				logs = logs[len(logs)-maxLogDisplay:]
+			}
 			// Windows TextEdit uses \r\n line endings.
-			text := strings.Join(c.Logs(), "\r\n")
+			text := strings.Join(logs, "\r\n")
 			ui.form.Synchronize(func() { _ = ui.logEdit.SetText(text) })
 		}
 	}
