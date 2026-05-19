@@ -8,6 +8,7 @@ package tun
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wintun"
@@ -30,6 +31,10 @@ func openPlatform(name string) (*windowsTUNL2, error) {
 }
 
 func openWinTUN(name string) (*windowsTUN, error) {
+	if err := ensureWintunDLL(); err != nil {
+		// Non-fatal: log and continue — the DLL may already be on the system.
+		log.Printf("tun/windows: wintun.dll setup: %v", err)
+	}
 	adapter, err := wintun.CreateAdapter(name, "supervpn", nil)
 	if err != nil {
 		adapter, err = wintun.OpenAdapter(name)

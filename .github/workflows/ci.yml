@@ -175,24 +175,49 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Download tap-windows6 driver files
+      - name: Download wintun.dll + tap-windows6 driver files
         continue-on-error: true
         shell: pwsh
         run: |
-          # Download the signed NSIS installer from OpenVPN GitHub releases and
-          # extract driver files using 7-Zip (always available on windows-latest).
-          # continue-on-error: true so a network hiccup never blocks the build —
-          # the binary just falls back to disk-based installation at runtime.
-          $url = "https://github.com/OpenVPN/tap-windows6/releases/download/9.26.0.0/tap-windows-9.26.0.0.exe"
-          Invoke-WebRequest -Uri $url -OutFile tap-windows.exe -UseBasicParsing
-          7z x tap-windows.exe -otap-extract -y | Out-Null
-          $files = Get-ChildItem -Recurse tap-extract -Include "OemVista.inf","tap0901.sys","tap0901.cat"
-          if ($files) {
-            $files | Copy-Item -Destination pkg/tun/tap-driver/ -Force
-            Write-Host "Driver files embedded:"
-            Get-ChildItem pkg/tun/tap-driver/
-          } else {
-            Write-Warning "Driver files not found in extracted installer — binary will fall back to disk installation"
+          # ── wintun.dll (amd64) ────────────────────────────────────────────────
+          try {
+            Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" `
+              -OutFile wintun.zip -UseBasicParsing
+            Expand-Archive wintun.zip -DestinationPath wintun-pkg -Force
+            $dll = "wintun-pkg\wintun\bin\amd64\wintun.dll"
+            if (Test-Path $dll) {
+              Copy-Item $dll -Destination "pkg\tun\wintun-dll\wintun.dll" -Force
+              Write-Host "wintun.dll embedded: $((Get-Item $dll).Length) bytes"
+            } else {
+              Write-Warning "wintun.dll not at expected path — listing zip contents:"
+              Get-ChildItem wintun-pkg -Recurse -Filter "*.dll"
+            }
+          } catch { Write-Warning "wintun.dll download failed: $_" }
+
+          # ── tap-windows6 driver files ─────────────────────────────────────────
+          $tapOk = $false
+          $tapUrls = @(
+            "https://github.com/OpenVPN/tap-windows6/releases/download/9.26.0.0/tap-windows-9.26.0.0.exe",
+            "https://github.com/OpenVPN/tap-windows6/releases/download/9.24.6.0/tap-windows-9.24.6.exe"
+          )
+          foreach ($url in $tapUrls) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile tap-windows.exe -UseBasicParsing
+              7z x tap-windows.exe -otap-extract -y | Out-Null
+              $files = Get-ChildItem -Recurse tap-extract `
+                -Include "OemVista.inf","tap0901.sys","tap0901.cat"
+              if ($files.Count -ge 3) {
+                $files | Copy-Item -Destination pkg\tun\tap-driver\ -Force
+                Write-Host "TAP driver files embedded:"
+                Get-ChildItem pkg\tun\tap-driver\
+                $tapOk = $true
+                break
+              }
+              Write-Warning "Only $($files.Count) driver files found in $url"
+            } catch { Write-Warning "TAP download from $url failed: $_" }
+          }
+          if (-not $tapOk) {
+            Write-Warning "TAP driver not embedded — binary falls back to disk install"
           }
 
       - name: Build GUI client Walk (windows/amd64)
@@ -237,16 +262,49 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Download tap-windows6 driver files
+      - name: Download wintun.dll + tap-windows6 driver files
         continue-on-error: true
         shell: pwsh
         run: |
-          $url = "https://github.com/OpenVPN/tap-windows6/releases/download/9.26.0.0/tap-windows-9.26.0.0.exe"
-          Invoke-WebRequest -Uri $url -OutFile tap-windows.exe -UseBasicParsing
-          7z x tap-windows.exe -otap-extract -y | Out-Null
-          $files = Get-ChildItem -Recurse tap-extract -Include "OemVista.inf","tap0901.sys","tap0901.cat"
-          if ($files) {
-            $files | Copy-Item -Destination pkg/tun/tap-driver/ -Force
+          # ── wintun.dll (amd64) ────────────────────────────────────────────────
+          try {
+            Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" `
+              -OutFile wintun.zip -UseBasicParsing
+            Expand-Archive wintun.zip -DestinationPath wintun-pkg -Force
+            $dll = "wintun-pkg\wintun\bin\amd64\wintun.dll"
+            if (Test-Path $dll) {
+              Copy-Item $dll -Destination "pkg\tun\wintun-dll\wintun.dll" -Force
+              Write-Host "wintun.dll embedded: $((Get-Item $dll).Length) bytes"
+            } else {
+              Write-Warning "wintun.dll not at expected path — listing zip contents:"
+              Get-ChildItem wintun-pkg -Recurse -Filter "*.dll"
+            }
+          } catch { Write-Warning "wintun.dll download failed: $_" }
+
+          # ── tap-windows6 driver files ─────────────────────────────────────────
+          $tapOk = $false
+          $tapUrls = @(
+            "https://github.com/OpenVPN/tap-windows6/releases/download/9.26.0.0/tap-windows-9.26.0.0.exe",
+            "https://github.com/OpenVPN/tap-windows6/releases/download/9.24.6.0/tap-windows-9.24.6.exe"
+          )
+          foreach ($url in $tapUrls) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile tap-windows.exe -UseBasicParsing
+              7z x tap-windows.exe -otap-extract -y | Out-Null
+              $files = Get-ChildItem -Recurse tap-extract `
+                -Include "OemVista.inf","tap0901.sys","tap0901.cat"
+              if ($files.Count -ge 3) {
+                $files | Copy-Item -Destination pkg\tun\tap-driver\ -Force
+                Write-Host "TAP driver files embedded:"
+                Get-ChildItem pkg\tun\tap-driver\
+                $tapOk = $true
+                break
+              }
+              Write-Warning "Only $($files.Count) driver files found in $url"
+            } catch { Write-Warning "TAP download from $url failed: $_" }
+          }
+          if (-not $tapOk) {
+            Write-Warning "TAP driver not embedded — binary falls back to disk install"
           }
 
       - name: Build GUI client Fyne (windows/amd64)
