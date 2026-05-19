@@ -127,23 +127,25 @@ func ParseAuthHello(b []byte) (AuthHello, error) {
 }
 
 // AuthOK is sent by server on success.
-// Binary: [sub_type:1=0x02][session_id:4][fec_k:1][fec_r:1]
+// Binary: [sub_type:1=0x02][session_id:4][fec_k:1][fec_r:1][fec_repair_delay_ms:2]
 //
-// FecK and FecR carry the server's active FEC parameters so clients can adopt
-// them automatically without requiring manual config alignment. Both fields are
-// 0 when the server does not advertise FEC params (legacy / FEC disabled).
-// ParseAuthOK tolerates old 4-byte messages for backward compatibility.
+// FecK, FecR and FecRepairDelay carry the server's active FEC parameters so
+// clients can adopt them automatically without manual config alignment.
+// All three fields are 0 when the server does not advertise FEC params.
+// ParseAuthOK tolerates old shorter messages for backward compatibility.
 type AuthOK struct {
-	SessionID uint32
-	FecK      uint8 // server's FEC K (data pkts per block); 0 = not advertised
-	FecR      uint8 // server's FEC R (repair pkts per block); 0 = not advertised
+	SessionID      uint32
+	FecK           uint8  // server's FEC K (data pkts per block); 0 = not advertised
+	FecR           uint8  // server's FEC R (repair pkts per block); 0 = not advertised
+	FecRepairDelay uint16 // server's repair_delay in ms; 0 = not advertised
 }
 
 func (a AuthOK) Marshal() []byte {
-	buf := make([]byte, 6)
-	binary.BigEndian.PutUint32(buf, a.SessionID)
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint32(buf[0:4], a.SessionID)
 	buf[4] = a.FecK
 	buf[5] = a.FecR
+	binary.BigEndian.PutUint16(buf[6:8], a.FecRepairDelay)
 	return buf
 }
 
@@ -156,6 +158,9 @@ func ParseAuthOK(b []byte) (AuthOK, error) {
 	if len(b) >= 6 {
 		ok.FecK = b[4]
 		ok.FecR = b[5]
+	}
+	if len(b) >= 8 {
+		ok.FecRepairDelay = binary.BigEndian.Uint16(b[6:8])
 	}
 	return ok, nil
 }

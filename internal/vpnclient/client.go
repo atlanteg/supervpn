@@ -247,6 +247,13 @@ func (c *Client) runSession(ctx context.Context) error {
 		fecCfg.K = int(ar.serverK)
 		fecCfg.R = int(ar.serverR)
 	}
+	if ar.serverRepairDelay > 0 {
+		if int(ar.serverRepairDelay) != fecCfg.RepairDelay {
+			c.Logf("FEC: adopting server repair_delay=%dms (config had %dms)",
+				ar.serverRepairDelay, fecCfg.RepairDelay)
+		}
+		fecCfg.RepairDelay = int(ar.serverRepairDelay)
+	}
 
 	var tr2 transport.Transport
 	if tr.Mode() == "udp" {
@@ -545,10 +552,11 @@ func resolveTCPAddr(cfg config.ClientConfig) string {
 // authResult bundles the values returned by authenticate so callers don't need
 // long positional return lists.
 type authResult struct {
-	sessionID uint32
-	cipher    *crypto.Cipher
-	serverK   uint8 // server's FEC K (0 = not advertised by old server)
-	serverR   uint8 // server's FEC R
+	sessionID        uint32
+	cipher           *crypto.Cipher
+	serverK          uint8  // server's FEC K (0 = not advertised by old server)
+	serverR          uint8  // server's FEC R
+	serverRepairDelay uint16 // server's repair_delay ms (0 = not advertised)
 }
 
 func authenticate(ctx context.Context, tr transport.Transport, cfg config.ClientConfig) (authResult, error) {
@@ -596,10 +604,11 @@ func authenticate(ctx context.Context, tr transport.Transport, cfg config.Client
 				return authResult{}, fmt.Errorf("new cipher: %w", err)
 			}
 			return authResult{
-				sessionID: authOK.SessionID,
-				cipher:    sessionCipher,
-				serverK:   authOK.FecK,
-				serverR:   authOK.FecR,
+				sessionID:         authOK.SessionID,
+				cipher:            sessionCipher,
+				serverK:           authOK.FecK,
+				serverR:           authOK.FecR,
+				serverRepairDelay: authOK.FecRepairDelay,
 			}, nil
 
 		case proto.AuthMsgError:
