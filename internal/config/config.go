@@ -149,7 +149,7 @@ func (u UDPConfig) WithDefaults() UDPConfig {
 type FECConfig struct {
 	K           int `toml:"k"`            // data packets per block (default 1)
 	R           int `toml:"r"`            // repair packets per block (default 2)
-	RepairDelay int `toml:"repair_delay"` // ms to delay repair packets after data (default 500)
+	RepairDelay int `toml:"repair_delay"` // ms to delay repair packets after data (default 50)
 }
 
 func (f FECConfig) WithDefaults() FECConfig {
@@ -160,7 +160,7 @@ func (f FECConfig) WithDefaults() FECConfig {
 		f.R = 2
 	}
 	if f.RepairDelay == 0 {
-		f.RepairDelay = 500
+		f.RepairDelay = 50
 	}
 	return f
 }

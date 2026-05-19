@@ -188,7 +188,7 @@ func (d *Decoder) expire() {
 			continue
 		}
 		// Keep recently-active blocks long enough for delayed repair packets to
-		// arrive (default repairDelay=500ms); blockKeepAge provides 4× margin.
+		// arrive (default repairDelay=50ms); blockKeepAge provides 4× margin.
 		if now.Sub(b.lastActivity) > blockKeepAge {
 			delete(d.blocks, id)
 		}
