@@ -344,6 +344,7 @@ func (ui *winUI) onConfigSelected() {
 	}
 	ui.populateFromConfig(cfg)
 	ui.configPath = path
+	ui.saveLastConfigPath(path)
 	_ = ui.configLabel.SetText(path)
 }
 
@@ -363,6 +364,7 @@ func (ui *winUI) onBrowseConfig() {
 	}
 	ui.populateFromConfig(cfg)
 	ui.configPath = path
+	ui.saveLastConfigPath(path)
 	ui.addConfigToCombo(path)
 	_ = ui.configLabel.SetText(path)
 }
@@ -382,6 +384,7 @@ func (ui *winUI) onSaveConfig() {
 		return
 	}
 	ui.configPath = path
+	ui.saveLastConfigPath(path)
 	ui.addConfigToCombo(path)
 	_ = ui.configLabel.SetText(path)
 }
@@ -445,9 +448,47 @@ func (ui *winUI) initConfigSelect() {
 		ui.configFilePaths[e.displayName] = e.path
 		ui.configNames = append(ui.configNames, e.displayName)
 	}
+
+	// If the previously-used config is not in any search dir, add it to the list.
+	lastUsed := ui.readLastConfigPath()
+	if lastUsed != "" {
+		alreadyFound := false
+		for _, e := range found {
+			if e.path == lastUsed {
+				alreadyFound = true
+				break
+			}
+		}
+		if !alreadyFound {
+			if _, err := os.Stat(lastUsed); err == nil {
+				name := filepath.Base(lastUsed)
+				if _, exists := ui.configFilePaths[name]; exists {
+					name = filepath.Base(filepath.Dir(lastUsed)) + "/" + name
+				}
+				ui.configFilePaths[name] = lastUsed
+				ui.configNames = append(ui.configNames, name)
+				found = append(found, struct{ displayName, path string }{name, lastUsed})
+			}
+		}
+	}
+
 	_ = ui.configCombo.SetModel(ui.configNames)
-	if len(ui.configNames) == 1 {
-		_ = ui.configCombo.SetCurrentIndex(0)
+
+	// Prefer the last-used config; fall back to auto-selecting when there's exactly one.
+	autoIdx := -1
+	if lastUsed != "" {
+		for i, name := range ui.configNames {
+			if ui.configFilePaths[name] == lastUsed {
+				autoIdx = i
+				break
+			}
+		}
+	}
+	if autoIdx < 0 && len(ui.configNames) == 1 {
+		autoIdx = 0
+	}
+	if autoIdx >= 0 {
+		_ = ui.configCombo.SetCurrentIndex(autoIdx)
 		ui.onConfigSelected()
 	}
 }
@@ -608,6 +649,7 @@ func (ui *winUI) autoSaveConfig() {
 	}
 	if err := config.SaveClientConfig(path, &cfg); err == nil {
 		log.Printf("config auto-saved to %s", path)
+		ui.saveLastConfigPath(path)
 		ui.form.Synchronize(func() {
 			ui.configPath = path
 			_ = ui.configLabel.SetText(path)
@@ -772,4 +814,37 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	}
 	_ = ui.statusListenEdit.SetText(cfg.StatusListen)
 	_ = ui.timeoutEdit.SetText(cfg.Timeout)
+}
+
+// ── last-used config persistence ──────────────────────────────────────────────
+
+func lastConfigFile() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "superVPN", ".last_config")
+}
+
+// saveLastConfigPath records path so the next launch can restore it.
+func (ui *winUI) saveLastConfigPath(path string) {
+	f := lastConfigFile()
+	if f == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(f), 0755)
+	_ = os.WriteFile(f, []byte(path), 0600)
+}
+
+// readLastConfigPath returns the path saved by the previous session, or "".
+func (ui *winUI) readLastConfigPath() string {
+	f := lastConfigFile()
+	if f == "" {
+		return ""
+	}
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }

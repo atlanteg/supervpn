@@ -177,6 +177,7 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 		}
 		ui.populateFromConfig(cfg)
 		ui.configPath = path
+		ui.saveLastConfigPref(path)
 		ui.configPathLabel.SetText(filepath.Base(path))
 	})
 	ui.configSelect.PlaceHolder = "— select config —"
@@ -194,6 +195,7 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 			}
 			ui.populateFromConfig(cfg)
 			ui.configPath = path
+			ui.saveLastConfigPref(path)
 			// Add the browsed file to the dropdown if not already there.
 			name := filepath.Base(path)
 			if _, exists := ui.configFilePaths[name]; !exists {
@@ -227,6 +229,7 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 				return
 			}
 
+			ui.saveLastConfigPref(path)
 			fyne.Do(func() {
 				ui.configPath = path
 				name := filepath.Base(path)
@@ -428,7 +431,7 @@ func (ui *mainUI) autoSaveConfig() {
 		path = filepath.Join(dir, "superVPN", "client.toml")
 	}
 	if err := config.SaveClientConfig(path, &cfg); err == nil {
-		// configPathLabel mutation must also be on the main thread.
+		ui.saveLastConfigPref(path)
 		fyne.Do(func() {
 			ui.configPath = path
 			ui.configPathLabel.SetText(path)
@@ -491,11 +494,47 @@ func (ui *mainUI) initConfigSelect() {
 		ui.configFilePaths[e.displayName] = e.path
 		names = append(names, e.displayName)
 	}
+
+	// If the previously-used config isn't in any search dir, add it to the list.
+	lastUsed := ui.app.Preferences().String("last_config")
+	if lastUsed != "" {
+		alreadyFound := false
+		for _, e := range found {
+			if e.path == lastUsed {
+				alreadyFound = true
+				break
+			}
+		}
+		if !alreadyFound {
+			if _, err := os.Stat(lastUsed); err == nil {
+				name := filepath.Base(lastUsed)
+				if _, exists := ui.configFilePaths[name]; exists {
+					name = filepath.Base(filepath.Dir(lastUsed)) + "/" + name
+				}
+				ui.configFilePaths[name] = lastUsed
+				names = append(names, name)
+			}
+		}
+	}
+
 	ui.configSelect.Options = names
 	ui.configSelect.Refresh()
 
-	if len(names) == 1 {
-		ui.configSelect.SetSelected(names[0])
+	// Prefer the last-used config; fall back to auto-selecting when there's exactly one.
+	autoSelect := ""
+	if lastUsed != "" {
+		for name, path := range ui.configFilePaths {
+			if path == lastUsed {
+				autoSelect = name
+				break
+			}
+		}
+	}
+	if autoSelect == "" && len(names) == 1 {
+		autoSelect = names[0]
+	}
+	if autoSelect != "" {
+		ui.configSelect.SetSelected(autoSelect)
 	}
 }
 
@@ -721,4 +760,10 @@ func (ui *mainUI) populateFromConfig(cfg *config.ClientConfig) {
 	}
 	ui.statusListenEntry.SetText(cfg.StatusListen)
 	ui.timeoutEntry.SetText(cfg.Timeout)
+}
+
+// saveLastConfigPref persists path so the next launch can restore it.
+// Uses Fyne's cross-platform preferences store (plist on macOS, registry on Windows).
+func (ui *mainUI) saveLastConfigPref(path string) {
+	ui.app.Preferences().SetString("last_config", path)
 }
