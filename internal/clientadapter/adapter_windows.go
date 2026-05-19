@@ -13,20 +13,21 @@ import (
 func bridgeName(tapName, _ string) string { return tapName }
 
 func openDirectFramer(_ config.BridgeConfig, tunName string) (bridge.Framer, string, error) {
-	// OpenWinTunL2Direct also assigns 169.254.x.y to the adapter so that
-	// link-local discovery tools (BMW ENET Remote Enet, ZGW Search, etc.)
-	// find it via GetAdaptersAddresses and route broadcasts through the VPN.
-	f, err := pkgtun.OpenWinTunL2Direct(tunName)
+	// TAP first: tap-windows6 registers as IF_TYPE_ETHERNET_CSMACD (6), which is
+	// required by BMW ENET discovery tools (Remote Enet, ZGW Search) that filter
+	// GetAdaptersAddresses results by IfType == 6 and skip WinTun (type 53).
+	ft, err := pkgtun.OpenTAP(tunName)
 	if err == nil {
-		log.Printf("direct: using WinTun L2 adapter %q", tunName)
-		return f, tunName, nil
+		log.Printf("direct: using TAP adapter %q (IF_TYPE_ETHERNET_CSMACD, BMW ENET compatible)", tunName)
+		return ft, tunName, nil
 	}
-	log.Printf("direct: WinTun unavailable (%v), falling back to tap-windows6", err)
-	ft, err2 := pkgtun.OpenTAP(tunName)
+	log.Printf("direct: TAP unavailable (%v), falling back to WinTun L2", err)
+	f, err2 := pkgtun.OpenWinTunL2Direct(tunName)
 	if err2 != nil {
 		return nil, "", err2
 	}
-	return ft, tunName, nil
+	log.Printf("direct: using WinTun L2 adapter %q", tunName)
+	return f, tunName, nil
 }
 
 func openPlatformBridge(bc config.BridgeConfig, detected bridge.Interface, adapterName string) (bridge.Framer, error) {

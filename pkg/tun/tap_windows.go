@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,7 +94,45 @@ func OpenTAP(name string) (bridge.Framer, error) {
 		return nil, fmt.Errorf("tap/windows: set media status: %w", err)
 	}
 
-	return &windowsTAP{handle: h, name: name}, nil
+	tap := &windowsTAP{handle: h, name: name}
+	configureTAPDirectIP(name, guid)
+	return tap, nil
+}
+
+// tapLinkLocalIP derives a stable 169.254.x.y address from an adapter GUID.
+// Uses bytes 4-5 of the first GUID group so the address survives reboots.
+func tapLinkLocalIP(guid string) string {
+	g := strings.Trim(guid, "{}")
+	parts := strings.Split(g, "-")
+	if len(parts) == 0 || len(parts[0]) < 8 {
+		return "169.254.1.1"
+	}
+	b2, e2 := strconv.ParseUint(parts[0][4:6], 16, 8)
+	b3, e3 := strconv.ParseUint(parts[0][6:8], 16, 8)
+	if e2 != nil || e3 != nil {
+		return "169.254.1.1"
+	}
+	if b2 == 0 && b3 == 0 {
+		b2, b3 = 1, 1
+	}
+	if b2 == 255 && b3 == 255 {
+		b2, b3 = 254, 254
+	}
+	return fmt.Sprintf("169.254.%d.%d", b2, b3)
+}
+
+// configureTAPDirectIP assigns a 169.254.x.y address to the TAP adapter so that
+// BMW ENET / ZGW Search discovery tools find it via GetAdaptersAddresses.
+// Non-fatal: a warning is logged on failure so the VPN still connects.
+func configureTAPDirectIP(name, guid string) {
+	ip := tapLinkLocalIP(guid)
+	out, err := exec.Command("netsh", "interface", "ip", "set", "address",
+		"name="+name, "static", ip, "255.255.0.0").CombinedOutput()
+	if err != nil {
+		log.Printf("tap/windows: %s: link-local IP warning: %v: %s", name, err, strings.TrimSpace(string(out)))
+		return
+	}
+	log.Printf("tap/windows: %s: assigned %s/16 (link-local, BMW ENET discovery)", name, ip)
 }
 
 // tapGUIDByName scans the registry network-adapter class for tap0901 entries and
