@@ -745,7 +745,9 @@ func (ui *winUI) doRefreshStatus() {
 		dotColor = dotRed
 	}
 
-	var cfgToSave *config.ClientConfig
+	// Walk's Synchronize is async (PostMessage) — the closure runs later on the
+	// UI thread.  buildConfig() must read widgets there, so we launch the save
+	// goroutine from inside the closure, not after it returns.
 	ui.form.Synchronize(func() {
 		_ = ui.statusBarItem.SetText(statusText)
 		_ = ui.statsLabel.SetText(statsText)
@@ -754,14 +756,10 @@ func (ui *winUI) doRefreshStatus() {
 
 		if stats.State == vpnclient.StateConnected && !ui.autoSaveDone {
 			ui.autoSaveDone = true
-			c := ui.buildConfig()
-			cfgToSave = &c
+			cfg := ui.buildConfig()
+			go ui.autoSaveConfig(cfg)
 		}
 	})
-
-	if cfgToSave != nil {
-		go ui.autoSaveConfig(*cfgToSave)
-	}
 }
 
 func (ui *winUI) autoSaveConfig(cfg config.ClientConfig) {
