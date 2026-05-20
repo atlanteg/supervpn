@@ -308,10 +308,25 @@ func (s *Server) handlePacket(ctx context.Context, pkt []byte, sendReply func([]
 		if secondary {
 			s.handleJoin(hdr, sendReply, remoteAddr, closeConn)
 		}
+	case proto.FrameListHubs:
+		s.handleListHubs(sendReply)
 	case proto.FramePing:
 		s.handlePing(hdr, sendReply)
 	}
 	return 0
+}
+
+// handleListHubs responds to a pre-auth hub discovery request with the list of
+// configured hub IDs and names.  No credentials are required.
+func (s *Server) handleListHubs(sendReply func([]byte) error) {
+	var infos []proto.HubInfo
+	for _, hcfg := range s.cfg.Hubs {
+		infos = append(infos, proto.HubInfo{ID: hcfg.ID, Name: hcfg.Name})
+	}
+	payload := proto.MarshalHubList(infos)
+	hdr := make([]byte, proto.HeaderSize)
+	proto.Header{Type: proto.FrameListHubs}.Marshal(hdr)
+	_ = sendReply(append(hdr, payload...))
 }
 
 func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func([]byte) error, remoteAddr, mode string, closeConn func()) uint32 {

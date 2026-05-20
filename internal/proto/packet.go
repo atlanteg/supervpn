@@ -18,9 +18,10 @@ const (
 	FrameData   FrameType = 0x01 // encrypted L2 Ethernet frame
 	FrameRepair FrameType = 0x02 // FEC repair symbol
 	FrameJoin   FrameType = 0x03 // register secondary path (no payload; SessionID identifies session)
-	FrameAuth   FrameType = 0x10 // handshake/auth
-	FramePing   FrameType = 0x20
-	FramePong   FrameType = 0x21
+	FrameAuth     FrameType = 0x10 // handshake/auth
+	FrameListHubs FrameType = 0x11 // pre-auth hub discovery (no credentials required)
+	FramePing     FrameType = 0x20
+	FramePong     FrameType = 0x21
 )
 
 const (
@@ -192,4 +193,56 @@ func ParseAuthError(b []byte) (AuthError, error) {
 		return AuthError{}, fmt.Errorf("proto: AuthError truncated (msg_len=%d)", msgLen)
 	}
 	return AuthError{Message: string(b[1 : 1+msgLen])}, nil
+}
+
+// HubInfo is one entry in a FrameListHubs response.
+type HubInfo struct {
+	ID   uint16
+	Name string
+}
+
+// MarshalHubList encodes a hub list for a FrameListHubs response payload.
+// Binary: [count:1][{id:2, name_len:1, name:N}...]
+func MarshalHubList(hubs []HubInfo) []byte {
+	n := len(hubs)
+	if n > 255 {
+		n = 255
+	}
+	buf := []byte{byte(n)}
+	for _, h := range hubs[:n] {
+		name := []byte(h.Name)
+		if len(name) > 255 {
+			name = name[:255]
+		}
+		entry := make([]byte, 3+len(name))
+		binary.BigEndian.PutUint16(entry[0:2], h.ID)
+		entry[2] = byte(len(name))
+		copy(entry[3:], name)
+		buf = append(buf, entry...)
+	}
+	return buf
+}
+
+// ParseHubList decodes a FrameListHubs response payload.
+func ParseHubList(b []byte) ([]HubInfo, error) {
+	if len(b) < 1 {
+		return nil, fmt.Errorf("proto: hub list empty")
+	}
+	count := int(b[0])
+	b = b[1:]
+	hubs := make([]HubInfo, 0, count)
+	for i := 0; i < count; i++ {
+		if len(b) < 3 {
+			return nil, fmt.Errorf("proto: hub list truncated at entry %d", i)
+		}
+		id := binary.BigEndian.Uint16(b[0:2])
+		nameLen := int(b[2])
+		b = b[3:]
+		if len(b) < nameLen {
+			return nil, fmt.Errorf("proto: hub name truncated at entry %d", i)
+		}
+		hubs = append(hubs, HubInfo{ID: id, Name: string(b[:nameLen])})
+		b = b[nameLen:]
+	}
+	return hubs, nil
 }

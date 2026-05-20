@@ -22,6 +22,7 @@ import (
 
 	"github.com/atlanteg/supervpn/internal/clientadapter"
 	"github.com/atlanteg/supervpn/internal/config"
+	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
 )
 
@@ -34,7 +35,8 @@ type winUI struct {
 	serverEdit        *walk.LineEdit
 	loginEdit         *walk.LineEdit
 	passwordEdit      *walk.LineEdit
-	hubEdit           *walk.LineEdit
+	hubCombo          *walk.ComboBox
+	hubInfos          []proto.HubInfo // last fetched from server; nil = not yet fetched
 	modeCombo         *walk.ComboBox
 	transportCombo    *walk.ComboBox
 	configCombo       *walk.ComboBox
@@ -148,6 +150,7 @@ func (ui *winUI) connectionPage() TabPage {
 								idx := ui.serverPresetCombo.CurrentIndex()
 								if idx >= 0 && idx < len(predefinedServers) {
 									_ = ui.serverEdit.SetText(predefinedServers[idx].addr)
+									go ui.fetchAndPopulateHubs()
 								}
 							},
 						},
@@ -156,8 +159,9 @@ func (ui *winUI) connectionPage() TabPage {
 							Layout: HBox{MarginsZero: true, Spacing: 3},
 							Children: []Widget{
 								LineEdit{
-									AssignTo:      &ui.serverEdit,
-									StretchFactor: 3,
+									AssignTo:          &ui.serverEdit,
+									StretchFactor:     3,
+									OnEditingFinished: func() { go ui.fetchAndPopulateHubs() },
 								},
 								PushButton{
 									Text:      "Add",
@@ -170,8 +174,21 @@ func (ui *winUI) connectionPage() TabPage {
 						LineEdit{AssignTo: &ui.loginEdit},
 						Label{Text: "Password:"},
 						LineEdit{AssignTo: &ui.passwordEdit, PasswordMode: true},
-						Label{Text: "Hub ID:"},
-						LineEdit{AssignTo: &ui.hubEdit, Text: "1"},
+						Label{Text: "Hub:"},
+						Composite{
+							Layout: HBox{MarginsZero: true, Spacing: 3},
+							Children: []Widget{
+								ComboBox{
+									AssignTo:      &ui.hubCombo,
+									StretchFactor: 3,
+								},
+								PushButton{
+									Text:    "↻",
+									MaxSize: Size{Width: 30},
+									OnClicked: func() { go ui.fetchAndPopulateHubs() },
+								},
+							},
+						},
 						Label{Text: "Mode:"},
 						ComboBox{
 							AssignTo:     &ui.modeCombo,
@@ -700,10 +717,7 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 		}
 	}
 
-	hubID := uint16(1)
-	if n, err := strconv.Atoi(ui.hubEdit.Text()); err == nil && n > 0 {
-		hubID = uint16(n)
-	}
+	hubID := parseHubID(ui.hubCombo.Text())
 	fecK := 4
 	if n, err := strconv.Atoi(ui.fecKEdit.Text()); err == nil && n > 0 {
 		fecK = n
@@ -786,7 +800,7 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	_ = ui.serverEdit.SetText(cfg.Server)
 	_ = ui.loginEdit.SetText(cfg.Login)
 	_ = ui.passwordEdit.SetText(cfg.Password)
-	_ = ui.hubEdit.SetText(strconv.Itoa(int(cfg.HubID)))
+	_ = ui.hubCombo.SetText(strconv.Itoa(int(cfg.HubID)))
 
 	modeItems := []string{"auto", "direct", "bridge"}
 	mode := cfg.Mode
@@ -845,6 +859,64 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	}
 	_ = ui.statusListenEdit.SetText(cfg.StatusListen)
 	_ = ui.timeoutEdit.SetText(cfg.Timeout)
+}
+
+// ── hub discovery ─────────────────────────────────────────────────────────────
+
+// fetchAndPopulateHubs contacts the server and fills hubCombo with the hub list.
+// Must be called in a goroutine — it blocks on network I/O.
+func (ui *winUI) fetchAndPopulateHubs() {
+	addr := ui.serverEdit.Text()
+	if addr == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	hubs, err := vpnclient.FetchHubs(ctx, addr)
+	if err != nil {
+		// Non-fatal: server may be old or unreachable — leave combo as-is.
+		log.Printf("hub discovery: %v", err)
+		return
+	}
+
+	// Build display strings "ID - Name" and remember the raw list.
+	items := make([]string, len(hubs))
+	for i, h := range hubs {
+		items[i] = fmt.Sprintf("%d - %s", h.ID, h.Name)
+	}
+
+	ui.form.Synchronize(func() {
+		ui.hubInfos = hubs
+		current := ui.hubCombo.Text()
+		_ = ui.hubCombo.SetModel(items)
+		// Keep selection if the current text still refers to a known hub.
+		currentID := parseHubID(current)
+		for i, h := range hubs {
+			if h.ID == currentID {
+				_ = ui.hubCombo.SetCurrentIndex(i)
+				return
+			}
+		}
+		// Default to first hub if nothing matched.
+		if len(items) > 0 {
+			_ = ui.hubCombo.SetCurrentIndex(0)
+		}
+	})
+}
+
+// parseHubID extracts a numeric hub ID from the combo text.
+// Accepts "7 - den", "7", or any prefix that parses as an integer.
+func parseHubID(text string) uint16 {
+	text = strings.TrimSpace(text)
+	if idx := strings.Index(text, " - "); idx >= 0 {
+		text = strings.TrimSpace(text[:idx])
+	}
+	n, err := strconv.Atoi(text)
+	if err != nil || n <= 0 {
+		return 1
+	}
+	return uint16(n)
 }
 
 // ── last-used config persistence ──────────────────────────────────────────────
