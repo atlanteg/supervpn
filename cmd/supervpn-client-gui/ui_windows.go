@@ -68,6 +68,10 @@ type winUI struct {
 	// Npcap install button (connection tab)
 	npcapBtn *walk.PushButton
 
+	// Test tab
+	testResultEdit *walk.TextEdit
+	testBtn        *walk.PushButton
+
 	// VPN state
 	client        *vpnclient.Client
 	framer        interface{ Close() error }
@@ -120,6 +124,7 @@ func (ui *winUI) runApp() {
 				Pages: []TabPage{
 					ui.connectionPage(),
 					ui.advancedPage(),
+					ui.testPage(),
 					ui.logPage(),
 				},
 			},
@@ -897,6 +902,65 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	}
 	_ = ui.statusListenEdit.SetText(cfg.StatusListen)
 	_ = ui.timeoutEdit.SetText(cfg.Timeout)
+}
+
+// ── connectivity test tab ─────────────────────────────────────────────────────
+
+func (ui *winUI) testPage() TabPage {
+	return TabPage{
+		Title: "Test",
+		Content: ScrollView{
+			Layout: VBox{Spacing: 6},
+			Children: []Widget{
+				PushButton{
+					AssignTo:  &ui.testBtn,
+					Text:      "▶  Test All Servers",
+					OnClicked: func() { go ui.onRunConnTest() },
+				},
+				TextEdit{
+					AssignTo: &ui.testResultEdit,
+					ReadOnly: true,
+					Font:     Font{Family: "Courier New", PointSize: 9},
+					Text: "Press \"Test All Servers\" to check UDP and TCP\r\n" +
+						"reachability for each preset server.\r\n\r\n" +
+						"UDP  — sent via port 5555 (main VPN port)\r\n" +
+						"TCP  — dial port 443 (TLS fallback port)\r\n",
+				},
+			},
+		},
+	}
+}
+
+func (ui *winUI) onRunConnTest() {
+	ui.form.Synchronize(func() {
+		ui.testBtn.SetEnabled(false)
+		_ = ui.testBtn.SetText("Testing…")
+		_ = ui.testResultEdit.SetText("Testing all servers…\r\n\r\n")
+	})
+
+	results := make([]ServerTestResult, 0, len(predefinedServers))
+	ch := TestAllServers()
+	for r := range ch {
+		results = append(results, r)
+		// Stream partial results as they arrive.
+		ui.form.Synchronize(func() {
+			_ = ui.testResultEdit.SetText(ui.formatTestResults(results))
+		})
+	}
+
+	ui.form.Synchronize(func() {
+		_ = ui.testBtn.SetText("▶  Test All Servers")
+		ui.testBtn.SetEnabled(true)
+	})
+}
+
+func (ui *winUI) formatTestResults(results []ServerTestResult) string {
+	out := fmt.Sprintf("%-6s  %-24s  %-14s  %s\r\n", "Name", "Address", "UDP :5555", "TCP :443")
+	out += strings.Repeat("─", 62) + "\r\n"
+	for _, r := range results {
+		out += fmt.Sprintf("%-6s  %-24s  %-14s  %s\r\n", r.Name, r.Addr, r.UDP, r.TCP)
+	}
+	return out
 }
 
 // ── Npcap install ─────────────────────────────────────────────────────────────

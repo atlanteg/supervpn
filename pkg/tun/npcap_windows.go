@@ -238,12 +238,9 @@ func runEmbeddedNpcapInstaller(name string) error {
 	if err := os.WriteFile(dst, data, 0o755); err != nil {
 		return fmt.Errorf("npcap: write installer: %w", err)
 	}
-	// /S — NSIS silent flag.  Free-license builds may still show a brief UAC
-	// prompt for driver signing; OEM builds are fully silent.
-	out, err := exec.Command(dst, "/S",
-		"/loopback_support=yes",
-		"/winpcap_mode=yes",
-	).CombinedOutput()
+	// Run the installer normally (no /S flag — silent install is OEM-only).
+	// The user will see the standard Npcap setup wizard.
+	out, err := exec.Command(dst).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("npcap installer: %v: %s", err, out)
 	}

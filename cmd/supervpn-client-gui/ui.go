@@ -85,6 +85,10 @@ type mainUI struct {
 	// log tab
 	logEntry *widget.Entry
 
+	// test tab
+	testEntry *widget.Entry
+	testBtn   *widget.Button
+
 	connectBtn    *widget.Button
 	disconnectBtn *widget.Button
 }
@@ -103,6 +107,7 @@ func (ui *mainUI) build() fyne.CanvasObject {
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Connection", ui.buildConnectionTab()),
 		container.NewTabItem("Advanced", ui.buildAdvancedTab()),
+		container.NewTabItem("Test", ui.buildTestTab()),
 		container.NewTabItem("Log", ui.buildLogTab()),
 	)
 
@@ -347,6 +352,48 @@ func (ui *mainUI) buildLogTab() fyne.CanvasObject {
 
 	scroll := container.NewScroll(ui.logEntry)
 	return container.NewBorder(nil, clearBtn, nil, nil, scroll)
+}
+
+func (ui *mainUI) buildTestTab() fyne.CanvasObject {
+	ui.testEntry = widget.NewMultiLineEntry()
+	ui.testEntry.Wrapping = fyne.TextWrapBreak
+	ui.testEntry.SetPlaceHolder("Press ▶ Test All Servers to check UDP/TCP reachability for each preset server.")
+
+	ui.testBtn = widget.NewButton("▶ Test All Servers", ui.onRunConnTest)
+
+	scroll := container.NewScroll(ui.testEntry)
+	return container.NewBorder(nil, ui.testBtn, nil, nil, scroll)
+}
+
+func (ui *mainUI) onRunConnTest() {
+	ui.testBtn.SetText("Testing…")
+	ui.testBtn.Disable()
+	fyne.Do(func() { ui.testEntry.SetText("Running connectivity tests…\n") })
+
+	go func() {
+		var results []ServerTestResult
+
+		for r := range TestAllServers() {
+			results = append(results, r)
+			text := formatTestResults(results)
+			fyne.Do(func() { ui.testEntry.SetText(text) })
+		}
+
+		fyne.Do(func() {
+			ui.testBtn.SetText("▶ Test All Servers")
+			ui.testBtn.Enable()
+		})
+	}()
+}
+
+func formatTestResults(rows []ServerTestResult) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%-20s  %-26s  %-14s  %s\n", "Server", "Address", "UDP", "TCP"))
+	sb.WriteString(strings.Repeat("─", 78) + "\n")
+	for _, r := range rows {
+		sb.WriteString(fmt.Sprintf("%-20s  %-26s  %-14s  %s\n", r.Name, r.Addr, r.UDP, r.TCP))
+	}
+	return sb.String()
 }
 
 func (ui *mainUI) onConnect() {
