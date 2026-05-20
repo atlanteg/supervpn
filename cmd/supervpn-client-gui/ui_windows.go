@@ -7,12 +7,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"image"
 	"image/color"
-	_ "image/png" // register PNG decoder for tray icon loading
 	"log"
 	"math"
 	"os"
@@ -1210,24 +1208,13 @@ func (ui *winUI) setupTray() {
 	})
 }
 
-// loadTrayIcon tries to return a Walk icon for the system tray.
-// Priority: icon.png next to the exe (decoded via image.Image) → exe embedded icon.
+// loadTrayIcon returns a Walk icon for the system tray and window chrome.
+// The icon is always loaded from the exe's embedded resource (ID 1, set by
+// go-winres simply during the build). This is the only reliable path on
+// Windows — loading from a PNG or from the exe file as a whole produces a
+// small or wrong result depending on Walk version.
 func (ui *winUI) loadTrayIcon() *walk.Icon {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil
-	}
-	// Try icon.png placed next to the executable (user-supplied, any size).
-	pngData, err := os.ReadFile(filepath.Join(filepath.Dir(exe), "icon.png"))
-	if err == nil {
-		if img, _, err := image.Decode(bytes.NewReader(pngData)); err == nil {
-			if ico, err := walk.NewIconFromImage(img); err == nil {
-				return ico
-			}
-		}
-	}
-	// Fall back to whatever icon is embedded in the exe itself (.syso resource).
-	if ico, err := walk.NewIconFromFile(exe); err == nil {
+	if ico, err := walk.NewIconFromResourceId(1); err == nil {
 		return ico
 	}
 	return nil
