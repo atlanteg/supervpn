@@ -433,7 +433,7 @@ jobs:
             dist/supervpn-client-gui-darwin-arm64 \
             dist/superVPN-macos.zip \
             dist/README-user.pdf \
-            --repo atlanteg/supervpn-releases \
+            --repo atlantegsrb/supervpn-releases \
             --title "supervpn $VER" \
             --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
             --latest
@@ -444,7 +444,7 @@ jobs:
         run: |
           # Clone the releases repo, update the two guide files, commit and push.
           git clone --depth=1 \
-            "https://x-access-token:${GH_TOKEN}@github.com/atlanteg/supervpn-releases.git" \
+            "https://x-access-token:${GH_TOKEN}@github.com/atlantegsrb/supervpn-releases.git" \
             releases-repo
           cp README-user.md releases-repo/README-user.md
           cp dist/README-user.pdf releases-repo/README-user.pdf
