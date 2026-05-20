@@ -227,6 +227,24 @@ jobs:
             Write-Host "Npcap installer embedded: $((Get-Item 'pkg\tun\npcap-installer\npcap-1.88.exe').Length) bytes"
           } catch { Write-Warning "Npcap installer download failed: $_" }
 
+      - name: Embed app icon into rsrc_windows.syso
+        shell: pwsh
+        run: |
+          # If the user hasn't committed icon.png yet, generate a placeholder.
+          if (-not (Test-Path "cmd\supervpn-client-gui\icon.png")) {
+            Write-Host "icon.png not found — generating green-circle placeholder"
+            go run cmd\supervpn-client-gui\gen_icon.go
+          } else {
+            Write-Host "Using committed icon.png: $((Get-Item 'cmd\supervpn-client-gui\icon.png').Length) bytes"
+          }
+          # go-winres reads winres/winres.json and regenerates rsrc_windows.syso
+          # with the app icon + manifest in one step (no separate ICO conversion needed).
+          go install github.com/tc-hib/go-winres@latest
+          Push-Location cmd\supervpn-client-gui
+          go-winres make
+          Pop-Location
+          Write-Host "rsrc_windows.syso regenerated: $((Get-Item 'cmd\supervpn-client-gui\rsrc_windows.syso').Length) bytes"
+
       - name: Build GUI client Walk (windows/amd64)
         shell: pwsh
         run: |
@@ -321,6 +339,17 @@ jobs:
               -OutFile "pkg\tun\npcap-installer\npcap-1.88.exe" -UseBasicParsing
             Write-Host "Npcap installer embedded: $((Get-Item 'pkg\tun\npcap-installer\npcap-1.88.exe').Length) bytes"
           } catch { Write-Warning "Npcap installer download failed: $_" }
+
+      - name: Embed app icon into rsrc_windows.syso
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "cmd\supervpn-client-gui\icon.png")) {
+            go run cmd\supervpn-client-gui\gen_icon.go
+          }
+          go install github.com/tc-hib/go-winres@latest
+          Push-Location cmd\supervpn-client-gui
+          go-winres make
+          Pop-Location
 
       - name: Build GUI client Fyne (windows/amd64)
         shell: msys2 {0}
