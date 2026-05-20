@@ -7,8 +7,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	_ "image/png" // register PNG decoder for tray icon loading
 	"log"
 	"os"
 	"os/exec"
@@ -72,6 +75,12 @@ type winUI struct {
 	testResultEdit *walk.TextEdit
 	testBtn        *walk.PushButton
 
+	// Advanced tab – behavior
+	minimizeToTrayCheck *walk.CheckBox
+
+	// System tray icon (created after window init)
+	notifyIcon *walk.NotifyIcon
+
 	// VPN state
 	client        *vpnclient.Client
 	framer        interface{ Close() error }
@@ -134,6 +143,7 @@ func (ui *winUI) runApp() {
 		return
 	}
 
+	ui.setupTray()
 	ui.initConfigSelect()
 	ui.updateNpcapButton()
 	ui.form.Run()
@@ -327,6 +337,16 @@ func (ui *winUI) advancedPage() TabPage {
 						LineEdit{AssignTo: &ui.statusListenEdit},
 						Label{Text: "Session timeout:"},
 						LineEdit{AssignTo: &ui.timeoutEdit},
+					},
+				},
+				GroupBox{
+					Title:  "Behavior",
+					Layout: VBox{Spacing: 4},
+					Children: []Widget{
+						CheckBox{
+							AssignTo: &ui.minimizeToTrayCheck,
+							Text:     "Minimize to tray on close / minimize",
+						},
 					},
 				},
 			},
@@ -828,8 +848,9 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 			TapName:     strings.TrimSpace(ui.bridgeTAPEdit.Text()),
 			SetupMethod: bridgeMethod,
 		},
-		StatusListen: strings.TrimSpace(ui.statusListenEdit.Text()),
-		Timeout:      strings.TrimSpace(ui.timeoutEdit.Text()),
+		StatusListen:   strings.TrimSpace(ui.statusListenEdit.Text()),
+		Timeout:        strings.TrimSpace(ui.timeoutEdit.Text()),
+		MinimizeToTray: ui.minimizeToTrayCheck.Checked(),
 	}
 	cfg.FEC = cfg.FEC.WithDefaults()
 	cfg.UDP = cfg.UDP.WithDefaults()
@@ -902,6 +923,7 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	}
 	_ = ui.statusListenEdit.SetText(cfg.StatusListen)
 	_ = ui.timeoutEdit.SetText(cfg.Timeout)
+	_ = ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)
 }
 
 // ── connectivity test tab ─────────────────────────────────────────────────────
@@ -1092,4 +1114,92 @@ func (ui *winUI) readLastConfigPath() string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// ── system tray ───────────────────────────────────────────────────────────────
+
+// setupTray creates the system-tray icon and wires close/minimize intercepts.
+// The icon is loaded from icon.png next to the exe when present; otherwise the
+// icon already embedded in the exe via rsrc_windows.syso is used as fallback.
+func (ui *winUI) setupTray() {
+	ni, err := walk.NewNotifyIcon(ui.form)
+	if err != nil {
+		log.Printf("tray: %v", err)
+		return
+	}
+	ui.notifyIcon = ni
+
+	if ico := ui.loadTrayIcon(); ico != nil {
+		_ = ni.SetIcon(ico)
+	}
+	_ = ni.SetToolTip("superVPN")
+	_ = ni.SetVisible(true)
+
+	showWindow := func() {
+		ui.form.SetVisible(true)
+		if ui.form.WindowState() == walk.WindowMinimized {
+			_ = ui.form.SetWindowState(walk.WindowNormal)
+		}
+		_ = ui.form.BringToTop()
+	}
+
+	ni.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
+		if button == walk.LeftButton {
+			showWindow()
+		}
+	})
+
+	showAction := walk.NewAction()
+	_ = showAction.SetText("Show")
+	showAction.Triggered().Attach(showWindow)
+
+	quitAction := walk.NewAction()
+	_ = quitAction.SetText("Quit")
+	quitAction.Triggered().Attach(func() { walk.App().Exit(0) })
+
+	if ctxMenu, err := walk.NewMenu(); err == nil {
+		_ = ctxMenu.Actions().Add(showAction)
+		_ = ctxMenu.Actions().Add(quitAction)
+		_ = ni.SetContextMenu(ctxMenu)
+	}
+
+	// X button → hide to tray instead of quit when minimize_to_tray is set.
+	ui.form.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		if ui.minimizeToTrayCheck != nil && ui.minimizeToTrayCheck.Checked() {
+			*canceled = true
+			ui.form.SetVisible(false)
+		}
+	})
+
+	// Minimize button → hide to tray when minimize_to_tray is set.
+	ui.form.SizeChanged().Attach(func() {
+		if ui.minimizeToTrayCheck != nil && ui.minimizeToTrayCheck.Checked() {
+			if ui.form.WindowState() == walk.WindowMinimized {
+				ui.form.SetVisible(false)
+			}
+		}
+	})
+}
+
+// loadTrayIcon tries to return a Walk icon for the system tray.
+// Priority: icon.png next to the exe (decoded via image.Image) → exe embedded icon.
+func (ui *winUI) loadTrayIcon() *walk.Icon {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	// Try icon.png placed next to the executable (user-supplied, any size).
+	pngData, err := os.ReadFile(filepath.Join(filepath.Dir(exe), "icon.png"))
+	if err == nil {
+		if img, _, err := image.Decode(bytes.NewReader(pngData)); err == nil {
+			if ico, err := walk.NewIconFromImage(img); err == nil {
+				return ico
+			}
+		}
+	}
+	// Fall back to whatever icon is embedded in the exe itself (.syso resource).
+	if ico, err := walk.NewIconFromFile(exe); err == nil {
+		return ico
+	}
+	return nil
 }

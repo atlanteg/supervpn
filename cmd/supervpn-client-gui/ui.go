@@ -89,6 +89,9 @@ type mainUI struct {
 	testEntry *widget.Entry
 	testBtn   *widget.Button
 
+	// advanced tab – behavior
+	minimizeToTrayCheck *widget.Check
+
 	connectBtn    *widget.Button
 	disconnectBtn *widget.Button
 }
@@ -337,6 +340,10 @@ func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
 		widget.NewFormItem("Status Listen", ui.statusListenEntry),
 		widget.NewFormItem("Timeout", ui.timeoutEntry),
 	)
+
+	ui.minimizeToTrayCheck = widget.NewCheck("Minimize to tray on close / minimize", nil)
+	items = append(items, widget.NewFormItem("Behavior", ui.minimizeToTrayCheck))
+
 	return widget.NewForm(items...)
 }
 
@@ -493,19 +500,32 @@ func (ui *mainUI) runRefreshLoop(ctx context.Context) {
 }
 
 func (ui *mainUI) autoSaveConfig() {
-	// buildConfig reads widget fields — must run on the main thread.
-	var cfg config.ClientConfig
-	fyne.Do(func() { cfg = ui.buildConfig() })
-
-	path := ui.configPath
-	if path == "" {
-		dir, err := os.UserConfigDir()
-		if err != nil {
-			return
-		}
-		path = filepath.Join(dir, "superVPN", "client.toml")
+	// buildConfig and configPath must be read on the main goroutine.
+	// Use a buffered channel so this goroutine blocks until fyne.Do runs,
+	// regardless of whether fyne.Do is synchronous or fire-and-forget.
+	type snap struct {
+		cfg  config.ClientConfig
+		path string
 	}
-	if err := config.SaveClientConfig(path, &cfg); err == nil {
+	ch := make(chan snap, 1)
+	fyne.Do(func() { ch <- snap{cfg: ui.buildConfig(), path: ui.configPath} })
+	s := <-ch
+
+	path := s.path
+	if path == "" {
+		// Save next to the executable — same as the Walk GUI, easy to find
+		// and portable when running from a USB stick or a shared folder.
+		if exe, err := os.Executable(); err == nil {
+			path = filepath.Join(filepath.Dir(exe), "client.toml")
+		} else {
+			dir, err2 := os.UserConfigDir()
+			if err2 != nil {
+				return
+			}
+			path = filepath.Join(dir, "superVPN", "client.toml")
+		}
+	}
+	if err := config.SaveClientConfig(path, &s.cfg); err == nil {
 		ui.saveLastConfigPref(path)
 		fyne.Do(func() {
 			ui.configPath = path
@@ -778,8 +798,9 @@ func (ui *mainUI) buildConfig() config.ClientConfig {
 			TapName:     strings.TrimSpace(ui.bridgeTAPEntry.Text),
 			SetupMethod: ui.bridgeMethodEntry.Selected,
 		},
-		StatusListen: strings.TrimSpace(ui.statusListenEntry.Text),
-		Timeout:      strings.TrimSpace(ui.timeoutEntry.Text),
+		StatusListen:   strings.TrimSpace(ui.statusListenEntry.Text),
+		Timeout:        strings.TrimSpace(ui.timeoutEntry.Text),
+		MinimizeToTray: ui.minimizeToTrayCheck.Checked,
 	}
 
 	cfg.FEC = cfg.FEC.WithDefaults()
@@ -836,6 +857,7 @@ func (ui *mainUI) populateFromConfig(cfg *config.ClientConfig) {
 	}
 	ui.statusListenEntry.SetText(cfg.StatusListen)
 	ui.timeoutEntry.SetText(cfg.Timeout)
+	ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)
 }
 
 // saveLastConfigPref persists path so the next launch can restore it.

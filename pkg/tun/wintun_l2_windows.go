@@ -226,8 +226,10 @@ func (d *windowsTUNL2) ConfigureIP() error {
 		b2, b3 = 254, 254
 	}
 	ip := fmt.Sprintf("169.254.%d.%d", b2, b3)
-	out, err := exec.Command("netsh", "interface", "ip", "set", "address",
-		"name="+d.tun.name, "static", ip, "255.255.0.0").CombinedOutput()
+	netshCmd := exec.Command("netsh", "interface", "ip", "set", "address",
+		"name="+d.tun.name, "static", ip, "255.255.0.0")
+	hideWindow(netshCmd)
+	out, err := netshCmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("netsh set address %s on %s: %v: %s", ip, d.tun.name, err, out)
 	}

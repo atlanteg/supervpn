@@ -76,6 +76,10 @@ type ClientConfig struct {
 	// Timeout is expressed as a string (e.g. "30s") and parsed manually to
 	// avoid TOML's lack of native time.Duration support.
 	Timeout string `toml:"timeout"`
+	// MinimizeToTray makes the window hide to the system tray instead of
+	// closing or minimizing to the taskbar when the user clicks the close
+	// or minimize button.  False by default.
+	MinimizeToTray bool `toml:"minimize_to_tray"`
 }
 
 // BridgeConfig controls how the client bridges traffic in bridge mode (when a

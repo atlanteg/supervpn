@@ -126,8 +126,10 @@ func tapLinkLocalIP(guid string) string {
 // Non-fatal: a warning is logged on failure so the VPN still connects.
 func configureTAPDirectIP(name, guid string) {
 	ip := tapLinkLocalIP(guid)
-	out, err := exec.Command("netsh", "interface", "ip", "set", "address",
-		"name="+name, "static", ip, "255.255.0.0").CombinedOutput()
+	cmd := exec.Command("netsh", "interface", "ip", "set", "address",
+		"name="+name, "static", ip, "255.255.0.0")
+	hideWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("tap/windows: %s: link-local IP warning: %v: %s", name, err, strings.TrimSpace(string(out)))
 		return
@@ -291,7 +293,9 @@ func installTAPDriverFromDisk() error {
 // runPnpUtil stages and installs an INF driver package using the built-in
 // pnputil.exe (available since Windows Vista, no additional tools required).
 func runPnpUtil(inf string) error {
-	out, err := exec.Command("pnputil.exe", "/add-driver", inf, "/install").CombinedOutput()
+	cmd := exec.Command("pnputil.exe", "/add-driver", inf, "/install")
+	hideWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	msg := strings.TrimSpace(string(out))
 	if err != nil {
 		return fmt.Errorf("pnputil /add-driver: %v: %s", err, msg)
@@ -302,11 +306,13 @@ func runPnpUtil(inf string) error {
 
 // renameTAPAdapter renames a network adapter using PowerShell Rename-NetAdapter.
 func renameTAPAdapter(oldName, newName string) error {
-	out, err := exec.Command(
+	cmd := exec.Command(
 		"powershell", "-NoProfile", "-NonInteractive", "-Command",
 		fmt.Sprintf("Rename-NetAdapter -Name %s -NewName %s",
 			tapPSQuote(oldName), tapPSQuote(newName)),
-	).CombinedOutput()
+	)
+	hideWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("Rename-NetAdapter: %v: %s", err, strings.TrimSpace(string(out)))
 	}

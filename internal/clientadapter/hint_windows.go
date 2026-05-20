@@ -285,6 +285,7 @@ func powershell(script string) (string, error) {
 	cmd := exec.Command(
 		"powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-",
 	)
+	hideWindow(cmd)
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
