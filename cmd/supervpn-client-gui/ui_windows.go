@@ -11,8 +11,10 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/png" // register PNG decoder for tray icon loading
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,10 +48,11 @@ type winUI struct {
 	transportCombo    *walk.ComboBox
 	configCombo       *walk.ComboBox
 	configLabel       *walk.Label
-	connectBtn             *walk.PushButton
-	disconnectBtn          *walk.PushButton
-	connectionStatusLabel  *walk.Label
-	statsLabel             *walk.Label
+	connectBtn            *walk.PushButton
+	disconnectBtn         *walk.PushButton
+	statusDotView         *walk.ImageView  // colored circle indicator
+	connectionStatusLabel *walk.Label
+	statsLabel            *walk.Label
 
 	// Advanced tab
 	fecKEdit          *walk.LineEdit
@@ -145,6 +148,7 @@ func (ui *winUI) runApp() {
 	}
 
 	ui.setupTray()
+	ui.setStatusDot(dotGray) // initial disconnected state
 	ui.initConfigSelect()
 	ui.updateNpcapButton()
 	ui.form.Run()
@@ -156,10 +160,20 @@ func (ui *winUI) connectionPage() TabPage {
 		Content: ScrollView{
 			Layout: VBox{Spacing: 6},
 			Children: []Widget{
-				Label{
-					AssignTo: &ui.connectionStatusLabel,
-					Text:     "● Disconnected",
-					Font:     Font{Bold: true},
+				Composite{
+					Layout: HBox{Spacing: 6, MarginsZero: true},
+					Children: []Widget{
+						ImageView{
+							AssignTo: &ui.statusDotView,
+							MaxSize:  Size{Width: 16, Height: 16},
+							MinSize:  Size{Width: 16, Height: 16},
+						},
+						Label{
+							AssignTo: &ui.connectionStatusLabel,
+							Text:     "Disconnected",
+							Font:     Font{Bold: true},
+						},
+					},
 				},
 				GroupBox{
 					Title:  "Server",
@@ -624,7 +638,8 @@ func (ui *winUI) onDisconnect() {
 		ui.framer = nil
 	}
 	_ = ui.statusBarItem.SetText("Disconnected")
-	_ = ui.connectionStatusLabel.SetText("● Disconnected")
+	_ = ui.connectionStatusLabel.SetText("Disconnected")
+	ui.setStatusDot(dotGray)
 	_ = ui.statsLabel.SetText("")
 	ui.prevStatsTime = time.Time{}
 	ui.autoSaveDone = false
@@ -722,11 +737,22 @@ func (ui *winUI) doRefreshStatus() {
 	// happen on the UI thread before the goroutine is launched.  Calling
 	// Synchronize a second time from the goroutine is fire-and-forget in Walk
 	// (PostMessage), so cfg would still be zero by the time Save runs.
+	var dotColor dotKind
+	switch stats.State {
+	case vpnclient.StateConnected:
+		dotColor = dotGreen
+	case vpnclient.StateConnecting:
+		dotColor = dotYellow
+	default:
+		dotColor = dotRed
+	}
+
 	var cfgToSave *config.ClientConfig
 	ui.form.Synchronize(func() {
 		_ = ui.statusBarItem.SetText(statusText)
 		_ = ui.statsLabel.SetText(statsText)
-		_ = ui.connectionStatusLabel.SetText("● " + statusText)
+		_ = ui.connectionStatusLabel.SetText(statusText)
+		ui.setStatusDot(dotColor)
 
 		if stats.State == vpnclient.StateConnected && !ui.autoSaveDone {
 			ui.autoSaveDone = true
@@ -1204,4 +1230,58 @@ func (ui *winUI) loadTrayIcon() *walk.Icon {
 		return ico
 	}
 	return nil
+}
+
+// ── status dot ────────────────────────────────────────────────────────────────
+
+type dotKind int
+
+const (
+	dotGray   dotKind = iota // disconnected
+	dotGreen                 // connected
+	dotYellow                // connecting
+	dotRed                   // error / reconnecting
+)
+
+var dotColors = map[dotKind]color.NRGBA{
+	dotGray:   {R: 140, G: 140, B: 140, A: 255},
+	dotGreen:  {R: 60, G: 185, B: 80, A: 255},
+	dotYellow: {R: 220, G: 180, B: 0, A: 255},
+	dotRed:    {R: 210, G: 50, B: 50, A: 255},
+}
+
+// setStatusDot updates the status indicator image view with a filled circle
+// of the colour matching kind.  Must be called on the UI goroutine.
+func (ui *winUI) setStatusDot(kind dotKind) {
+	if ui.statusDotView == nil {
+		return
+	}
+	bmp, err := makeDotBitmap(dotColors[kind])
+	if err != nil {
+		return
+	}
+	_ = ui.statusDotView.SetImage(bmp)
+}
+
+// makeDotBitmap returns a 16×16 anti-aliased filled circle bitmap.
+func makeDotBitmap(col color.NRGBA) (*walk.Bitmap, error) {
+	const size = 16
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	cx, cy := float64(size-1)/2.0, float64(size-1)/2.0
+	radius := cx - 1.0 // 1 px inset so the edge anti-aliases cleanly
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			dx := float64(x) - cx
+			dy := float64(y) - cy
+			dist := math.Sqrt(dx*dx + dy*dy)
+			if dist <= radius {
+				img.SetNRGBA(x, y, col)
+			} else if dist <= radius+1.0 {
+				// Soft edge: blend with transparent background.
+				alpha := uint8((radius + 1.0 - dist) * float64(col.A))
+				img.SetNRGBA(x, y, color.NRGBA{col.R, col.G, col.B, alpha})
+			}
+		}
+	}
+	return walk.NewBitmapFromImage(img)
 }
