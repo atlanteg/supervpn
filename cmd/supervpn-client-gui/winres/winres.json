@@ -1,14 +1,14 @@
 {
   "RT_MANIFEST": {
     "#1": {
-      "#1033": {
+      "1033": {
         "embed": "../app.manifest"
       }
     }
   },
   "RT_GROUP_ICON": {
     "APP": {
-      "#1033": {
+      "1033": {
         "embed": "../icon.ico"
       }
     }
