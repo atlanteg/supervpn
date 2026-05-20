@@ -24,6 +24,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
+	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
 type winUI struct {
@@ -63,6 +64,9 @@ type winUI struct {
 
 	// Log tab
 	logEdit *walk.TextEdit
+
+	// Npcap install button (connection tab)
+	npcapBtn *walk.PushButton
 
 	// VPN state
 	client        *vpnclient.Client
@@ -126,6 +130,7 @@ func (ui *winUI) runApp() {
 	}
 
 	ui.initConfigSelect()
+	ui.updateNpcapButton()
 	ui.form.Run()
 }
 
@@ -230,10 +235,22 @@ func (ui *winUI) connectionPage() TabPage {
 					},
 				},
 				Label{AssignTo: &ui.statsLabel, Text: ""},
-				LinkLabel{
-					Text: `Packet capture (bridge mode): install <a href="https://npcap.com/dist/npcap-1.88.exe">Npcap 1.88</a>`,
-					OnLinkActivated: func(link *walk.LinkLabelLink) {
-						exec.Command("rundll32", "url.dll,FileProtocolHandler", link.URL()).Start()
+				Composite{
+					Layout: HBox{MarginsZero: true, Spacing: 6},
+					Children: []Widget{
+						LinkLabel{
+							StretchFactor: 1,
+							Text:          `Bridge mode packet capture: <a href="https://npcap.com/dist/npcap-1.88.exe">Npcap 1.88</a>`,
+							OnLinkActivated: func(link *walk.LinkLabelLink) {
+								exec.Command("rundll32", "url.dll,FileProtocolHandler", link.URL()).Start()
+							},
+						},
+						PushButton{
+							AssignTo:  &ui.npcapBtn,
+							Text:      "Install Npcap",
+							MaxSize:   Size{Width: 100},
+							OnClicked: func() { go ui.onInstallNpcap() },
+						},
 					},
 				},
 			},
@@ -880,6 +897,39 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	}
 	_ = ui.statusListenEdit.SetText(cfg.StatusListen)
 	_ = ui.timeoutEdit.SetText(cfg.Timeout)
+}
+
+// ── Npcap install ─────────────────────────────────────────────────────────────
+
+// updateNpcapButton sets the Install Npcap button state based on whether Npcap
+// is already installed.  Safe to call from any thread.
+func (ui *winUI) updateNpcapButton() {
+	installed := pkgtun.NpcapInstalled()
+	ui.form.Synchronize(func() {
+		if installed {
+			_ = ui.npcapBtn.SetText("Npcap ✓")
+			ui.npcapBtn.SetEnabled(false)
+		} else {
+			_ = ui.npcapBtn.SetText("Install Npcap")
+			ui.npcapBtn.SetEnabled(true)
+		}
+	})
+}
+
+// onInstallNpcap runs in a goroutine: disables the button, runs the installer,
+// then refreshes the button state to reflect the result.
+func (ui *winUI) onInstallNpcap() {
+	ui.form.Synchronize(func() {
+		_ = ui.npcapBtn.SetText("Installing…")
+		ui.npcapBtn.SetEnabled(false)
+	})
+	err := pkgtun.InstallNpcap()
+	if err != nil {
+		log.Printf("npcap install: %v", err)
+	}
+	// Re-check installation state regardless of error (installer may have
+	// succeeded even if it returned a non-zero exit code on some systems).
+	ui.updateNpcapButton()
 }
 
 // ── hub discovery ─────────────────────────────────────────────────────────────

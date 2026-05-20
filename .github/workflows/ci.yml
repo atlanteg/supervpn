@@ -175,7 +175,7 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Download wintun.dll + tap-windows6 driver files
+      - name: Download wintun.dll + tap-windows6 driver files + Npcap installer
         continue-on-error: true
         shell: pwsh
         run: |
@@ -219,6 +219,13 @@ jobs:
           if (-not $tapOk) {
             Write-Warning "TAP driver not embedded — binary falls back to disk install"
           }
+
+          # ── Npcap installer ───────────────────────────────────────────────────
+          try {
+            Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.88.exe" `
+              -OutFile "pkg\tun\npcap-installer\npcap-1.88.exe" -UseBasicParsing
+            Write-Host "Npcap installer embedded: $((Get-Item 'pkg\tun\npcap-installer\npcap-1.88.exe').Length) bytes"
+          } catch { Write-Warning "Npcap installer download failed: $_" }
 
       - name: Build GUI client Walk (windows/amd64)
         shell: pwsh
@@ -262,7 +269,7 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Download wintun.dll + tap-windows6 driver files
+      - name: Download wintun.dll + tap-windows6 driver files + Npcap installer
         continue-on-error: true
         shell: pwsh
         run: |
@@ -306,6 +313,13 @@ jobs:
           if (-not $tapOk) {
             Write-Warning "TAP driver not embedded — binary falls back to disk install"
           }
+
+          # ── Npcap installer ───────────────────────────────────────────────────
+          try {
+            Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.88.exe" `
+              -OutFile "pkg\tun\npcap-installer\npcap-1.88.exe" -UseBasicParsing
+            Write-Host "Npcap installer embedded: $((Get-Item 'pkg\tun\npcap-installer\npcap-1.88.exe').Length) bytes"
+          } catch { Write-Warning "Npcap installer download failed: $_" }
 
       - name: Build GUI client Fyne (windows/amd64)
         shell: msys2 {0}

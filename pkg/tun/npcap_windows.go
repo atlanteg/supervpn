@@ -6,12 +6,17 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // pcapPkthdr matches struct pcap_pkthdr layout (timeval + caplen + len).
@@ -187,3 +192,61 @@ func (f *npcapFramer) Close() error {
 }
 
 func (f *npcapFramer) IfName() string { return f.ifName }
+
+// ── Npcap install helpers ─────────────────────────────────────────────────────
+
+// NpcapInstalled reports whether Npcap (or legacy WinPcap) is installed.
+func NpcapInstalled() bool {
+	for _, path := range []string{`SOFTWARE\Npcap`, `SOFTWARE\WinPcap`} {
+		k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.READ)
+		if err == nil {
+			k.Close()
+			return true
+		}
+	}
+	return false
+}
+
+// InstallNpcap runs the embedded Npcap installer silently (/S).
+// If no installer is embedded (local dev build), opens the download page in the
+// browser and returns an error so the caller knows to wait for manual install.
+func InstallNpcap() error {
+	entries, _ := npcapInstallerFS.ReadDir("npcap-installer")
+	for _, e := range entries {
+		if strings.HasSuffix(strings.ToLower(e.Name()), ".exe") {
+			return runEmbeddedNpcapInstaller(e.Name())
+		}
+	}
+	log.Printf("npcap: no embedded installer — opening download page")
+	exec.Command("rundll32", "url.dll,FileProtocolHandler",
+		"https://npcap.com/dist/npcap-1.88.exe").Start()
+	return fmt.Errorf("npcap installer not embedded; download started in browser")
+}
+
+func runEmbeddedNpcapInstaller(name string) error {
+	data, err := npcapInstallerFS.ReadFile("npcap-installer/" + name)
+	if err != nil {
+		return fmt.Errorf("npcap: read embedded installer: %w", err)
+	}
+	tmp, err := os.MkdirTemp("", "npcap-*")
+	if err != nil {
+		return fmt.Errorf("npcap: temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	dst := filepath.Join(tmp, name)
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		return fmt.Errorf("npcap: write installer: %w", err)
+	}
+	// /S — NSIS silent flag.  Free-license builds may still show a brief UAC
+	// prompt for driver signing; OEM builds are fully silent.
+	out, err := exec.Command(dst, "/S",
+		"/loopback_support=yes",
+		"/winpcap_mode=yes",
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("npcap installer: %v: %s", err, out)
+	}
+	log.Printf("npcap: installed from embedded installer")
+	return nil
+}
