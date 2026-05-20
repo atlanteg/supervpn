@@ -196,11 +196,35 @@ func (f *npcapFramer) IfName() string { return f.ifName }
 // ── Npcap install helpers ─────────────────────────────────────────────────────
 
 // NpcapInstalled reports whether Npcap (or legacy WinPcap) is installed.
+// Three independent checks are used so that any installation layout is caught:
+//
+//  1. Registry SOFTWARE\Npcap or SOFTWARE\WinPcap (standard installer key).
+//  2. Service entry in SYSTEM\CurrentControlSet\Services (npcap or npf).
+//  3. wpcap.dll on disk — Npcap puts it in System32\Npcap\, WinPcap in System32\.
 func NpcapInstalled() bool {
-	for _, path := range []string{`SOFTWARE\Npcap`, `SOFTWARE\WinPcap`} {
-		k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.READ)
-		if err == nil {
+	// 1. Installer registry key.
+	for _, p := range []string{`SOFTWARE\Npcap`, `SOFTWARE\WinPcap`} {
+		if k, err := registry.OpenKey(registry.LOCAL_MACHINE, p, registry.READ); err == nil {
 			k.Close()
+			return true
+		}
+	}
+	// 2. Windows service key (present even without the SOFTWARE key on some installs).
+	for _, p := range []string{
+		`SYSTEM\CurrentControlSet\Services\npcap`,
+		`SYSTEM\CurrentControlSet\Services\npf`,
+	} {
+		if k, err := registry.OpenKey(registry.LOCAL_MACHINE, p, registry.READ); err == nil {
+			k.Close()
+			return true
+		}
+	}
+	// 3. DLL on disk (most reliable — the DLL must exist for capture to work).
+	for _, dll := range []string{
+		`C:\Windows\System32\Npcap\wpcap.dll`,
+		`C:\Windows\System32\wpcap.dll`,
+	} {
+		if _, err := os.Stat(dll); err == nil {
 			return true
 		}
 	}
