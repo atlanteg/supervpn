@@ -87,6 +87,11 @@ type winUI struct {
 	// the combo programmatically, preventing onConfigSelected from re-loading
 	// the config file and overwriting the user's current field values.
 	suppressConfigReload bool
+
+	// pendingHubID holds the hub ID from the last loaded config so that
+	// fetchAndPopulateHubs can select it after the hub list arrives.
+	// Walk's ComboBox.SetText on an empty model does not persist the value.
+	pendingHubID uint16
 }
 
 func (ui *winUI) runApp() {
@@ -814,7 +819,9 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	_ = ui.serverEdit.SetText(cfg.Server)
 	_ = ui.loginEdit.SetText(cfg.Login)
 	_ = ui.passwordEdit.SetText(cfg.Password)
+	ui.pendingHubID = cfg.HubID
 	_ = ui.hubCombo.SetText(strconv.Itoa(int(cfg.HubID)))
+	go ui.fetchAndPopulateHubs()
 
 	modeItems := []string{"auto", "direct", "bridge"}
 	mode := cfg.Mode
@@ -902,13 +909,19 @@ func (ui *winUI) fetchAndPopulateHubs() {
 
 	ui.form.Synchronize(func() {
 		ui.hubInfos = hubs
-		current := ui.hubCombo.Text()
 		_ = ui.hubCombo.SetModel(items)
-		// Keep selection if the current text still refers to a known hub.
-		currentID := parseHubID(current)
+
+		// pendingHubID is set when a config is loaded; it takes priority over
+		// whatever text the combo currently shows (which may be empty because
+		// SetText on an empty-model ComboBox does not persist in Walk).
+		targetID := ui.pendingHubID
+		if targetID == 0 {
+			targetID = parseHubID(ui.hubCombo.Text())
+		}
 		for i, h := range hubs {
-			if h.ID == currentID {
+			if h.ID == targetID {
 				_ = ui.hubCombo.SetCurrentIndex(i)
+				ui.pendingHubID = 0
 				return
 			}
 		}
@@ -916,6 +929,7 @@ func (ui *winUI) fetchAndPopulateHubs() {
 		if len(items) > 0 {
 			_ = ui.hubCombo.SetCurrentIndex(0)
 		}
+		ui.pendingHubID = 0
 	})
 }
 
