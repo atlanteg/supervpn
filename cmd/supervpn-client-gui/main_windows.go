@@ -13,6 +13,11 @@ import (
 )
 
 func main() {
+	// Request administrator privileges — required for WinTun/TAP adapter
+	// creation, pnputil driver install, netsh IP assignment, and Npcap capture.
+	// If not elevated, relaunches via UAC and exits this instance.
+	ensureAdmin()
+
 	if lf := openLogFile(); lf != nil {
 		defer lf.Close()
 		log.SetOutput(io.MultiWriter(os.Stderr, lf))
