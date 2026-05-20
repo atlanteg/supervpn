@@ -1158,6 +1158,7 @@ func (ui *winUI) setupTray() {
 
 	if ico := ui.loadTrayIcon(); ico != nil {
 		_ = ni.SetIcon(ico)
+		_ = ui.form.SetIcon(ico) // title bar + taskbar button
 	}
 	_ = ni.SetToolTip("superVPN — left-click to show")
 	_ = ni.SetVisible(true)
