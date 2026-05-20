@@ -8,12 +8,9 @@
   },
   "RT_GROUP_ICON": {
     "APP": {
-      "#1033": [
-        {
-          "embed": "../icon.png",
-          "sizes": [256, 64, 48, 32, 16]
-        }
-      ]
+      "#1033": {
+        "embed": "../icon.ico"
+      }
     }
   }
 }

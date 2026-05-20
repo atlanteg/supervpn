@@ -230,15 +230,17 @@ jobs:
       - name: Embed app icon into rsrc_windows.syso
         shell: pwsh
         run: |
-          # If the user hasn't committed icon.png yet, generate a placeholder.
-          if (-not (Test-Path "cmd\supervpn-client-gui\icon.png")) {
-            Write-Host "icon.png not found — generating green-circle placeholder"
-            go run cmd\supervpn-client-gui\gen_icon.go
+          # Prefer icon.ico (already in repo); fall back to icon.png; last resort: generated placeholder.
+          if (Test-Path "cmd\supervpn-client-gui\icon.ico") {
+            Write-Host "Using icon.ico: $((Get-Item 'cmd\supervpn-client-gui\icon.ico').Length) bytes"
+          } elseif (Test-Path "cmd\supervpn-client-gui\icon.png") {
+            Write-Host "Using icon.png: $((Get-Item 'cmd\supervpn-client-gui\icon.png').Length) bytes"
           } else {
-            Write-Host "Using committed icon.png: $((Get-Item 'cmd\supervpn-client-gui\icon.png').Length) bytes"
+            Write-Host "No icon found — generating green-circle placeholder"
+            go run cmd\supervpn-client-gui\gen_icon.go
           }
           # go-winres reads winres/winres.json and regenerates rsrc_windows.syso
-          # with the app icon + manifest in one step (no separate ICO conversion needed).
+          # with the app icon + manifest in one step — no separate ICO conversion needed.
           go install github.com/tc-hib/go-winres@latest
           Push-Location cmd\supervpn-client-gui
           go-winres make
