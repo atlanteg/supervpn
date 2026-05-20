@@ -670,30 +670,42 @@ func (ui *winUI) doRefreshStatus() {
 		)
 	}
 
+	// Capture config for auto-save inside the Synchronize block so widget reads
+	// happen on the UI thread before the goroutine is launched.  Calling
+	// Synchronize a second time from the goroutine is fire-and-forget in Walk
+	// (PostMessage), so cfg would still be zero by the time Save runs.
+	var cfgToSave *config.ClientConfig
 	ui.form.Synchronize(func() {
 		_ = ui.statusBarItem.SetText(statusText)
 		_ = ui.statsLabel.SetText(statsText)
 		_ = ui.connectionStatusLabel.SetText("● " + statusText)
+
+		if stats.State == vpnclient.StateConnected && !ui.autoSaveDone {
+			ui.autoSaveDone = true
+			c := ui.buildConfig()
+			cfgToSave = &c
+		}
 	})
 
-	if stats.State == vpnclient.StateConnected && !ui.autoSaveDone {
-		ui.autoSaveDone = true
-		go ui.autoSaveConfig()
+	if cfgToSave != nil {
+		go ui.autoSaveConfig(*cfgToSave)
 	}
 }
 
-func (ui *winUI) autoSaveConfig() {
-	// Read widget values on the UI thread.
-	var cfg config.ClientConfig
-	ui.form.Synchronize(func() { cfg = ui.buildConfig() })
-
+func (ui *winUI) autoSaveConfig(cfg config.ClientConfig) {
 	path := ui.configPath
 	if path == "" {
-		dir, err := os.UserConfigDir()
-		if err != nil {
-			return
+		// Save next to the executable, not in AppData — easier to find and
+		// carry with the binary when running from a USB stick or share.
+		if exe, err := os.Executable(); err == nil {
+			path = filepath.Join(filepath.Dir(exe), "client.toml")
+		} else {
+			dir, err2 := os.UserConfigDir()
+			if err2 != nil {
+				return
+			}
+			path = filepath.Join(dir, "superVPN", "client.toml")
 		}
-		path = filepath.Join(dir, "superVPN", "client.toml")
 	}
 	if err := config.SaveClientConfig(path, &cfg); err == nil {
 		log.Printf("config auto-saved to %s", path)
@@ -703,6 +715,8 @@ func (ui *winUI) autoSaveConfig() {
 			_ = ui.configLabel.SetText(path)
 			ui.addConfigToCombo(path)
 		})
+	} else {
+		log.Printf("config auto-save failed: %v", err)
 	}
 }
 
