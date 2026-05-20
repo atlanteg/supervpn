@@ -22,6 +22,7 @@ import (
 
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
+	"github.com/lxn/win"
 
 	"github.com/atlanteg/supervpn/internal/clientadapter"
 	"github.com/atlanteg/supervpn/internal/config"
@@ -923,7 +924,7 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	}
 	_ = ui.statusListenEdit.SetText(cfg.StatusListen)
 	_ = ui.timeoutEdit.SetText(cfg.Timeout)
-	_ = ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)
+	ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)
 }
 
 // ── connectivity test tab ─────────────────────────────────────────────────────
@@ -1132,15 +1133,15 @@ func (ui *winUI) setupTray() {
 	if ico := ui.loadTrayIcon(); ico != nil {
 		_ = ni.SetIcon(ico)
 	}
-	_ = ni.SetToolTip("superVPN")
+	_ = ni.SetToolTip("superVPN — left-click to show")
 	_ = ni.SetVisible(true)
 
 	showWindow := func() {
 		ui.form.SetVisible(true)
-		if ui.form.WindowState() == walk.WindowMinimized {
-			_ = ui.form.SetWindowState(walk.WindowNormal)
-		}
-		_ = ui.form.BringToTop()
+		// Restore from minimised state; Walk's FormBase in this version does
+		// not expose WindowState/SetWindowState, so we use Win32 directly.
+		win.ShowWindow(ui.form.Handle(), win.SW_RESTORE)
+		win.SetForegroundWindow(ui.form.Handle())
 	}
 
 	ni.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
@@ -1149,6 +1150,7 @@ func (ui *winUI) setupTray() {
 		}
 	})
 
+	// ni.ContextMenu() returns the icon's own *walk.Menu — add actions to it.
 	showAction := walk.NewAction()
 	_ = showAction.SetText("Show")
 	showAction.Triggered().Attach(showWindow)
@@ -1157,11 +1159,9 @@ func (ui *winUI) setupTray() {
 	_ = quitAction.SetText("Quit")
 	quitAction.Triggered().Attach(func() { walk.App().Exit(0) })
 
-	if ctxMenu, err := walk.NewMenu(); err == nil {
-		_ = ctxMenu.Actions().Add(showAction)
-		_ = ctxMenu.Actions().Add(quitAction)
-		_ = ni.SetContextMenu(ctxMenu)
-	}
+	_ = ni.ContextMenu().Actions().Add(showAction)
+	_ = ni.ContextMenu().Actions().Add(walk.NewSeparatorAction())
+	_ = ni.ContextMenu().Actions().Add(quitAction)
 
 	// X button → hide to tray instead of quit when minimize_to_tray is set.
 	ui.form.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
@@ -1172,9 +1172,11 @@ func (ui *winUI) setupTray() {
 	})
 
 	// Minimize button → hide to tray when minimize_to_tray is set.
+	// win.IsIconic is the Win32 way; Walk's FormBase does not expose
+	// WindowState() in this release.
 	ui.form.SizeChanged().Attach(func() {
 		if ui.minimizeToTrayCheck != nil && ui.minimizeToTrayCheck.Checked() {
-			if ui.form.WindowState() == walk.WindowMinimized {
+			if win.IsIconic(ui.form.Handle()) {
 				ui.form.SetVisible(false)
 			}
 		}
