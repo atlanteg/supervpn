@@ -23,6 +23,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/clientadapter"
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
+	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
 
@@ -55,6 +56,7 @@ type mainUI struct {
 	prevBytesTx   uint64
 	prevStatsTime time.Time
 	autoSaveDone  bool // auto-saved once per connect session
+	npcapBtn      *widget.Button // Windows-only: Install Npcap
 
 	// refreshCh is a 1-slot channel used to coalesce rapid OnChange signals
 	// so the UI goroutine is never flooded by high-frequency VPN events.
@@ -265,9 +267,19 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 	// Npcap is Windows-only (bridge mode on macOS uses the kernel TAP directly).
 	if runtime.GOOS == "windows" {
 		npcapURL, _ := url.Parse("https://npcap.com/dist/npcap-1.88.exe")
+		ui.npcapBtn = widget.NewButton("Install Npcap", func() {
+			ui.npcapBtn.SetText("Installing…")
+			ui.npcapBtn.Disable()
+			go func() {
+				pkgtun.InstallNpcap()
+				ui.updateNpcapBtn()
+			}()
+		})
+		ui.updateNpcapBtn()
 		rows = append(rows, container.NewHBox(
-			widget.NewLabel("Packet capture (bridge mode):"),
-			widget.NewHyperlink("Install Npcap 1.88", npcapURL),
+			widget.NewLabel("Bridge mode packet capture:"),
+			widget.NewHyperlink("Npcap 1.88", npcapURL),
+			ui.npcapBtn,
 		))
 	}
 	return container.NewVBox(rows...)
@@ -783,4 +795,20 @@ func (ui *mainUI) populateFromConfig(cfg *config.ClientConfig) {
 // Uses Fyne's cross-platform preferences store (plist on macOS, registry on Windows).
 func (ui *mainUI) saveLastConfigPref(path string) {
 	ui.app.Preferences().SetString("last_config", path)
+}
+
+// updateNpcapBtn sets the Install Npcap button state based on whether Npcap
+// is already installed.  Safe to call from any goroutine — Fyne widgets are
+// thread-safe.  No-op when npcapBtn is nil (non-Windows build or not yet created).
+func (ui *mainUI) updateNpcapBtn() {
+	if ui.npcapBtn == nil {
+		return
+	}
+	if pkgtun.NpcapInstalled() {
+		ui.npcapBtn.SetText("Npcap ✓")
+		ui.npcapBtn.Disable()
+	} else {
+		ui.npcapBtn.SetText("Install Npcap")
+		ui.npcapBtn.Enable()
+	}
 }
