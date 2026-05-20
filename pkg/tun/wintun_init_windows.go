@@ -15,15 +15,15 @@ import (
 // ensureWintunDLL makes wintun.dll available to the Windows DLL loader before
 // any wintun.CreateAdapter / wintun.OpenAdapter call.
 //
-// Strategy (two-stage):
-//  1. Try to write the DLL next to the running executable — wintun's internal
-//     LoadLibraryEx uses LOAD_LIBRARY_SEARCH_APPLICATION_DIR, so it will find
-//     the file there automatically.
-//  2. If the exe directory is not writable (e.g. Program Files), extract to
-//     %TEMP%\supervpn-wintun\ and pre-load the DLL by its full path.
-//     The Windows loader caches loaded modules by base-name; a subsequent
-//     LoadLibraryEx("wintun.dll", SEARCH_APP_DIR|SEARCH_SYS32) from the
-//     wintun package finds the already-loaded module and returns its handle.
+// The DLL is never written next to the executable (that would clutter the user's
+// program folder).  Instead it is stored in %LOCALAPPDATA%\superVPN\ — a per-user,
+// persistent, out-of-the-way location.  %TEMP%\supervpn-wintun\ is used as a
+// fallback when LOCALAPPDATA is unavailable (unlikely in practice).
+//
+// After writing, the DLL is pre-loaded by its full path.  The Windows loader
+// caches loaded modules by base-name, so wintun's internal
+// LoadLibraryEx("wintun.dll", SEARCH_APP_DIR|SEARCH_SYS32) reuses the cached
+// handle without needing the file to be in the exe's directory.
 func ensureWintunDLL() error {
 	data, err := readEmbeddedWintunDLL()
 	if err != nil {
@@ -34,36 +34,51 @@ func ensureWintunDLL() error {
 		return nil
 	}
 
-	// Stage 1: next to the executable (preferred — found by SEARCH_APPLICATION_DIR).
-	if exe, err := os.Executable(); err == nil {
-		dest := filepath.Join(filepath.Dir(exe), "wintun.dll")
-		if _, err := os.Stat(dest); err == nil {
-			return nil // already present
-		}
-		if err := os.WriteFile(dest, data, 0644); err == nil {
-			log.Printf("tun/windows: wintun.dll extracted to %s", dest)
-			return nil
-		}
+	dllPath, err := wintunDLLPath(data)
+	if err != nil {
+		return err
 	}
 
-	// Stage 2: temp directory + pre-load by full path.
-	tmpDir := filepath.Join(os.TempDir(), "supervpn-wintun")
-	if err := os.MkdirAll(tmpDir, 0755); err != nil {
-		return fmt.Errorf("tun/windows: mkdir for wintun.dll: %w", err)
-	}
-	tmpDLL := filepath.Join(tmpDir, "wintun.dll")
-	if _, err := os.Stat(tmpDLL); err != nil {
-		if err := os.WriteFile(tmpDLL, data, 0644); err != nil {
-			return fmt.Errorf("tun/windows: extract wintun.dll to temp: %w", err)
-		}
-	}
 	// Pre-load by full path so the Windows loader registers "wintun.dll" in
 	// the process module list — wintun's lazy loader reuses the cached handle.
-	if _, err := windows.LoadLibraryEx(tmpDLL, 0, 0); err != nil {
-		return fmt.Errorf("tun/windows: pre-load wintun.dll from %s: %w", tmpDLL, err)
+	if _, err := windows.LoadLibraryEx(dllPath, 0, 0); err != nil {
+		return fmt.Errorf("tun/windows: pre-load wintun.dll from %s: %w", dllPath, err)
 	}
-	log.Printf("tun/windows: wintun.dll pre-loaded from %s", tmpDLL)
+	log.Printf("tun/windows: wintun.dll ready at %s", dllPath)
 	return nil
+}
+
+// wintunDLLPath returns (and if necessary creates) the path where wintun.dll
+// should be stored.  Prefers %LOCALAPPDATA%\superVPN\ over the temp directory.
+func wintunDLLPath(data []byte) (string, error) {
+	for _, dir := range wintunCandidateDirs() {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			continue
+		}
+		dest := filepath.Join(dir, "wintun.dll")
+		// Skip extraction when the file is already present.
+		if _, err := os.Stat(dest); err == nil {
+			return dest, nil
+		}
+		if err := os.WriteFile(dest, data, 0644); err != nil {
+			continue
+		}
+		return dest, nil
+	}
+	return "", fmt.Errorf("tun/windows: could not extract wintun.dll to any candidate directory")
+}
+
+// wintunCandidateDirs returns directories in preference order where wintun.dll
+// may be stored — all invisible from the user's program folder.
+func wintunCandidateDirs() []string {
+	var dirs []string
+	// %LOCALAPPDATA%\superVPN — persistent, per-user, standard Windows location.
+	if local, err := os.UserCacheDir(); err == nil {
+		dirs = append(dirs, filepath.Join(local, "superVPN"))
+	}
+	// %TEMP%\supervpn-wintun — always writable fallback.
+	dirs = append(dirs, filepath.Join(os.TempDir(), "supervpn-wintun"))
+	return dirs
 }
 
 func readEmbeddedWintunDLL() ([]byte, error) {
