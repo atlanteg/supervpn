@@ -471,6 +471,9 @@ func (ui *winUI) onSaveConfig() {
 		return
 	}
 	path := dlg.FilePath
+	if !strings.HasSuffix(strings.ToLower(path), ".toml") {
+		path += ".toml"
+	}
 	cfg := ui.buildConfig()
 	if err := config.SaveClientConfig(path, &cfg); err != nil {
 		walk.MsgBox(ui.form, "Error", "Cannot save config: "+err.Error(), walk.MsgBoxIconError)

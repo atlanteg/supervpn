@@ -232,6 +232,9 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 			}
 			defer f.Close()
 			path := f.URI().Path()
+			if !strings.HasSuffix(strings.ToLower(path), ".toml") {
+				path += ".toml"
+			}
 
 			// Write directly to the handle the dialog gave us.
 			// Closing f and re-opening with os.Create causes an empty file on
