@@ -6,7 +6,7 @@ Four binaries: **server** (Linux), **CLI client**, and **GUI client** (Windows/m
 
 ## Download
 
-Latest release: [atlantegsrb/supervpn-releases](https://github.com/atlantegsrb/supervpn-releases/releases/latest)
+Latest release: [atlanteg/supervpn-releases](https://github.com/atlanteg/supervpn-releases/releases/latest)
 
 | File | Platform | Description |
 |---|---|---|
@@ -215,7 +215,7 @@ keepalive: ping #4 sent, last pong 9s ago | FEC data=1247 repair=62 recovered=3 
 
 ### 3. GUI client — Windows
 
-1. Download `supervpn-client-gui-windows-amd64.exe` from the [releases page](https://github.com/atlantegsrb/supervpn-releases/releases/latest).
+1. Download `supervpn-client-gui-windows-amd64.exe` from the [releases page](https://github.com/atlanteg/supervpn-releases/releases/latest).
 2. Run it — the window opens without a console.
 3. If Windows SmartScreen blocks it, click "More info" → "Run anyway".
 
@@ -225,7 +225,7 @@ keepalive: ping #4 sent, last pong 9s ago | FEC data=1247 repair=62 recovered=3 
 
 ### 4. GUI client — macOS
 
-1. Download `superVPN-macos.zip` from the [releases page](https://github.com/atlantegsrb/supervpn-releases/releases/latest).
+1. Download `superVPN-macos.zip` from the [releases page](https://github.com/atlanteg/supervpn-releases/releases/latest).
 2. Unzip — you get `superVPN.app`.
 3. Remove Gatekeeper quarantine (required, otherwise macOS blocks the app):
    ```bash
@@ -529,7 +529,7 @@ Every push to `main` triggers four parallel GitHub Actions jobs:
 | `build-gui-windows` | windows-latest | `supervpn-client-gui-windows-amd64.exe` (Walk, no CGO, TAP driver embedded) |
 | `build-gui-windows-fyne` | windows-latest (MSYS2/MinGW) | `supervpn-client-gui-windows-fyne-amd64.exe` (Fyne, CGO) |
 
-After all jobs pass, a `release` job publishes a new GitHub release (tagged `b{N}`) to [atlantegsrb/supervpn-releases](https://github.com/atlantegsrb/supervpn-releases). The release includes individual binaries and a `supervpn-dist.zip` with everything combined.
+After all jobs pass, a `release` job publishes a new GitHub release (tagged `b{N}`) to [atlanteg/supervpn-releases](https://github.com/atlanteg/supervpn-releases). The release includes individual binaries and a `supervpn-dist.zip` with everything combined.
 
 ---
 
