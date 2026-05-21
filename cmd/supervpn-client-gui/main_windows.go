@@ -32,6 +32,7 @@ func main() {
 		}
 	}()
 
+	update.CleanupOldFiles()
 	go update.CheckAndUpdate(version, update.AssetForClientGUI(), nil)
 
 	ui := &winUI{}

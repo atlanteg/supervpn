@@ -207,6 +207,27 @@ func FetchAsset(tag, asset, destPath string) error {
 	return downloadAndReplace(c, githubDLBase+tag+"/"+asset, destPath)
 }
 
+// CleanupOldFiles removes any *.old files sitting next to the running
+// executable — leftovers from a previous Windows self-update where the old
+// binary is renamed to .old before the new one is placed.  Safe to call on
+// every startup; silently skips files it cannot remove (e.g. still locked).
+func CleanupOldFiles() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return
+	}
+	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(exe), "*.old"))
+	for _, f := range matches {
+		if err := os.Remove(f); err == nil {
+			log.Printf("update: removed stale backup %s", filepath.Base(f))
+		}
+	}
+}
+
 func parseVersion(v string) (int, error) {
 	return strconv.Atoi(strings.TrimPrefix(v, "b"))
 }

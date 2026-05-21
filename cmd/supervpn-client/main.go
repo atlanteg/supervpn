@@ -27,6 +27,7 @@ var version = "dev"
 var globalClient *vpnclient.Client
 
 func main() {
+	update.CleanupOldFiles()
 	killStaleClient()
 	if err := os.WriteFile(pidFilePath(), []byte(strconv.Itoa(os.Getpid())), 0644); err == nil {
 		defer os.Remove(pidFilePath())

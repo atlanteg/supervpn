@@ -35,6 +35,7 @@ func main() {
 		a.SetIcon(ico)
 	}
 
+	update.CleanupOldFiles()
 	mirrors := loadSavedMirrors(a)
 	// Use the Fyne-specific asset so Fyne builds update to Fyne builds,
 	// not to the Win32/Walk variant.
