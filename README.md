@@ -6,7 +6,7 @@ Four binaries: **server** (Linux), **CLI client**, and **GUI client** (Windows/m
 
 ## Download
 
-Latest release: [atlanteg/supervpn-releases](https://github.com/atlanteg/supervpn-releases/releases/latest)
+Latest release: [atlantegsrb/supervpn-releases](https://github.com/atlantegsrb/supervpn-releases/releases/latest)
 
 | File | Platform | Description |
 |---|---|---|
@@ -215,7 +215,7 @@ keepalive: ping #4 sent, last pong 9s ago | FEC data=1247 repair=62 recovered=3 
 
 ### 3. GUI client — Windows
 
-1. Download `supervpn-client-gui-windows-amd64.exe` from the [releases page](https://github.com/atlanteg/supervpn-releases/releases/latest).
+1. Download `supervpn-client-gui-windows-amd64.exe` from the [releases page](https://github.com/atlantegsrb/supervpn-releases/releases/latest).
 2. Run it — the window opens without a console.
 3. If Windows SmartScreen blocks it, click "More info" → "Run anyway".
 
@@ -225,7 +225,7 @@ keepalive: ping #4 sent, last pong 9s ago | FEC data=1247 repair=62 recovered=3 
 
 ### 4. GUI client — macOS
 
-1. Download `superVPN-macos.zip` from the [releases page](https://github.com/atlanteg/supervpn-releases/releases/latest).
+1. Download `superVPN-macos.zip` from the [releases page](https://github.com/atlantegsrb/supervpn-releases/releases/latest).
 2. Unzip — you get `superVPN.app`.
 3. Remove Gatekeeper quarantine (required, otherwise macOS blocks the app):
    ```bash
@@ -255,10 +255,14 @@ alias supervpn='sudo /Applications/superVPN.app/Contents/MacOS/superVPN'
 
 - **Config file dropdown** — auto-discovers all `.toml` files from the executable directory, `UserConfigDir/superVPN/`, and the home directory. Select one to load it instantly.
 - **Auto-save on connect** — the current settings are saved to the config file on each successful connection.
+- **Auto-connect on startup** — `auto_connect = true` in the config (Advanced → Behavior checkbox) makes the GUI connect automatically without pressing Connect.
 - **Live stats on the Connection tab** — bytes/s up and down, FEC counters, connection state.
+- **Status dot indicator** — color-coded circle in the window header: grey = disconnected, yellow = connecting, green = connected, red = error/reconnecting.
+- **Minimize to tray** — `minimize_to_tray = true` (Advanced → Behavior) hides the window to the system tray on close/minimize; left-click the tray icon to restore.
 - **Predefined server list** — a dropdown of named servers with aliases, editable from the config file.
-- **Npcap download link** — displayed in the GUI when Npcap is needed for bridge/capture mode but is not installed.
+- **Npcap button** — shows `Npcap ✓` (greyed out) when installed, or `Install Npcap` (active) when missing. Clicking launches the bundled Npcap installer.
 - **TAP driver auto-install** — the tap-windows6 driver is embedded in the Windows executable and installed automatically on first use via `pnputil`. Requires Administrator.
+- **WinTun** — embedded in the executable, extracted to `%LOCALAPPDATA%\superVPN\` on first use (not placed next to the exe).
 - **Adapter mode in status bar** — shows whether the session is using bridge or direct mode.
 
 ---
@@ -325,6 +329,8 @@ Any ≤ R losses in a block are recovered without retransmit. Streaming delivery
 | `udp.knock_count` | int | 3 | Knock packets before auth |
 | `udp.knock_size` | int | 16 | Knock packet size (bytes) |
 | `udp.attempts` | int | 3 | UDP auth attempts before TLS fallback |
+| `minimize_to_tray` | bool | false | Hide window to system tray on close/minimize (GUI only) |
+| `auto_connect` | bool | false | Connect automatically on GUI startup (GUI only) |
 
 **CLI flags** override the config file — all parameters are available as both `.toml` keys and command-line flags:
 
@@ -523,7 +529,7 @@ Every push to `main` triggers four parallel GitHub Actions jobs:
 | `build-gui-windows` | windows-latest | `supervpn-client-gui-windows-amd64.exe` (Walk, no CGO, TAP driver embedded) |
 | `build-gui-windows-fyne` | windows-latest (MSYS2/MinGW) | `supervpn-client-gui-windows-fyne-amd64.exe` (Fyne, CGO) |
 
-After all jobs pass, a `release` job publishes a new GitHub release (tagged `b{N}`) to [atlanteg/supervpn-releases](https://github.com/atlanteg/supervpn-releases). The release includes individual binaries and a `supervpn-dist.zip` with everything combined.
+After all jobs pass, a `release` job publishes a new GitHub release (tagged `b{N}`) to [atlantegsrb/supervpn-releases](https://github.com/atlantegsrb/supervpn-releases). The release includes individual binaries and a `supervpn-dist.zip` with everything combined.
 
 ---
 
