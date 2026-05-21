@@ -91,6 +91,7 @@ type mainUI struct {
 
 	// advanced tab – behavior
 	minimizeToTrayCheck *widget.Check
+	autoConnectCheck    *widget.Check
 
 	connectBtn    *widget.Button
 	disconnectBtn *widget.Button
@@ -343,6 +344,9 @@ func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
 
 	ui.minimizeToTrayCheck = widget.NewCheck("Minimize to tray on close / minimize", nil)
 	items = append(items, widget.NewFormItem("Behavior", ui.minimizeToTrayCheck))
+
+	ui.autoConnectCheck = widget.NewCheck("Auto-connect on startup", nil)
+	items = append(items, widget.NewFormItem("", ui.autoConnectCheck))
 
 	return widget.NewForm(items...)
 }
@@ -801,6 +805,7 @@ func (ui *mainUI) buildConfig() config.ClientConfig {
 		StatusListen:   strings.TrimSpace(ui.statusListenEntry.Text),
 		Timeout:        strings.TrimSpace(ui.timeoutEntry.Text),
 		MinimizeToTray: ui.minimizeToTrayCheck.Checked,
+		AutoConnect:    ui.autoConnectCheck.Checked,
 	}
 
 	cfg.FEC = cfg.FEC.WithDefaults()
@@ -858,6 +863,7 @@ func (ui *mainUI) populateFromConfig(cfg *config.ClientConfig) {
 	ui.statusListenEntry.SetText(cfg.StatusListen)
 	ui.timeoutEntry.SetText(cfg.Timeout)
 	ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)
+	ui.autoConnectCheck.SetChecked(cfg.AutoConnect)
 }
 
 // saveLastConfigPref persists path so the next launch can restore it.

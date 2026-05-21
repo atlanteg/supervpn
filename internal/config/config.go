@@ -80,6 +80,9 @@ type ClientConfig struct {
 	// closing or minimizing to the taskbar when the user clicks the close
 	// or minimize button.  False by default.
 	MinimizeToTray bool `toml:"minimize_to_tray"`
+	// AutoConnect, when true, makes the GUI initiate a VPN connection
+	// automatically after the saved config is loaded on startup.
+	AutoConnect bool `toml:"auto_connect"`
 }
 
 // BridgeConfig controls how the client bridges traffic in bridge mode (when a

@@ -73,6 +73,10 @@ func main() {
 
 	ui.initConfigSelect()
 
+	if ui.autoConnectCheck != nil && ui.autoConnectCheck.Checked {
+		go ui.onConnect()
+	}
+
 	w.ShowAndRun()
 }
 

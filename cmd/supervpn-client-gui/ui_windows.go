@@ -79,6 +79,7 @@ type winUI struct {
 
 	// Advanced tab – behavior
 	minimizeToTrayCheck *walk.CheckBox
+	autoConnectCheck    *walk.CheckBox
 
 	// System tray icon (created after window init)
 	notifyIcon *walk.NotifyIcon
@@ -149,6 +150,11 @@ func (ui *winUI) runApp() {
 	ui.setStatusDot(dotGray) // initial disconnected state
 	ui.initConfigSelect()
 	ui.updateNpcapButton()
+	// Auto-connect: post to the message queue so onConnect runs after the
+	// message loop starts (Synchronize uses PostMessage, safe before Run).
+	if ui.autoConnectCheck != nil && ui.autoConnectCheck.Checked() {
+		ui.form.Synchronize(ui.onConnect)
+	}
 	ui.form.Run()
 }
 
@@ -359,6 +365,10 @@ func (ui *winUI) advancedPage() TabPage {
 						CheckBox{
 							AssignTo: &ui.minimizeToTrayCheck,
 							Text:     "Minimize to tray on close / minimize",
+						},
+						CheckBox{
+							AssignTo: &ui.autoConnectCheck,
+							Text:     "Auto-connect on startup",
 						},
 					},
 				},
@@ -874,6 +884,7 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 		StatusListen:   strings.TrimSpace(ui.statusListenEdit.Text()),
 		Timeout:        strings.TrimSpace(ui.timeoutEdit.Text()),
 		MinimizeToTray: ui.minimizeToTrayCheck.Checked(),
+		AutoConnect:    ui.autoConnectCheck.Checked(),
 	}
 	cfg.FEC = cfg.FEC.WithDefaults()
 	cfg.UDP = cfg.UDP.WithDefaults()
@@ -947,6 +958,7 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	_ = ui.statusListenEdit.SetText(cfg.StatusListen)
 	_ = ui.timeoutEdit.SetText(cfg.Timeout)
 	ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)
+	ui.autoConnectCheck.SetChecked(cfg.AutoConnect)
 }
 
 // ── connectivity test tab ─────────────────────────────────────────────────────
