@@ -146,6 +146,7 @@ func (ui *winUI) runApp() {
 		return
 	}
 
+	ui.centerWindow()
 	ui.setupTray()
 	ui.setStatusDot(dotGray) // initial disconnected state
 	ui.initConfigSelect()
@@ -360,16 +361,17 @@ func (ui *winUI) advancedPage() TabPage {
 				},
 				GroupBox{
 					Title:  "Behavior",
-					Layout: VBox{Spacing: 4},
+					Layout: HBox{Spacing: 16},
 					Children: []Widget{
-						CheckBox{
-							AssignTo: &ui.minimizeToTrayCheck,
-							Text:     "Minimize to tray on close / minimize",
-						},
 						CheckBox{
 							AssignTo: &ui.autoConnectCheck,
 							Text:     "Auto-connect on startup",
 						},
+						CheckBox{
+							AssignTo: &ui.minimizeToTrayCheck,
+							Text:     "Minimize to tray on close / minimize",
+						},
+						HSpacer{},
 					},
 				},
 			},
@@ -1152,6 +1154,22 @@ func (ui *winUI) readLastConfigPath() string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// centerWindow moves the main window to the center of the primary monitor.
+func (ui *winUI) centerWindow() {
+	sw := int(win.GetSystemMetrics(win.SM_CXSCREEN))
+	sh := int(win.GetSystemMetrics(win.SM_CYSCREEN))
+	b := ui.form.BoundsPixels()
+	x := (sw - b.Width) / 2
+	y := (sh - b.Height) / 2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	_ = ui.form.SetBoundsPixels(walk.Rectangle{X: x, Y: y, Width: b.Width, Height: b.Height})
 }
 
 // ── system tray ───────────────────────────────────────────────────────────────
