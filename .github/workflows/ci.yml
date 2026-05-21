@@ -8,11 +8,13 @@ on:
     branches: [main]
 
 jobs:
-  # ── Compute version once; all other jobs inherit it via needs.setup.outputs ──
+  # ── Compute version + detect what needs rebuilding ────────────────────────
   setup:
     runs-on: ubuntu-latest
     outputs:
-      ver: ${{ steps.ver.outputs.ver }}
+      ver:                ${{ steps.ver.outputs.ver }}
+      rebuild_server_cli: ${{ steps.changes.outputs.server_cli }}
+      rebuild_gui:        ${{ steps.changes.outputs.gui }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,6 +28,41 @@ jobs:
           echo "::notice title=supervpn version::$VER (commit $(git rev-parse --short HEAD))"
           echo "# supervpn $VER" >> "$GITHUB_STEP_SUMMARY"
           echo "commit: \`$(git rev-parse --short HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Detect what needs rebuilding
+        id: changes
+        run: |
+          # On the very first push (no parent) or if the base is unreachable — rebuild all.
+          BASE="${{ github.event.before }}"
+          if [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "server_cli=true" >> "$GITHUB_OUTPUT"
+            echo "gui=true"        >> "$GITHUB_OUTPUT"
+            echo "Reason: first push or base commit unavailable — full rebuild"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "${{ github.sha }}")
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          server_cli=false
+          gui=false
+
+          # Server / CLI / docs trigger server_cli job
+          if echo "$CHANGED" | grep -qE \
+            '^(cmd/supervpn-server/|cmd/supervpn-client/|internal/|pkg/|go\.(mod|sum)|README-user\.md)'; then
+            server_cli=true
+          fi
+
+          # GUI (Walk + macOS Fyne) trigger gui jobs
+          if echo "$CHANGED" | grep -qE \
+            '^(cmd/supervpn-client-gui/|internal/|pkg/|go\.(mod|sum))'; then
+            gui=true
+          fi
+
+          echo "server_cli=$server_cli" >> "$GITHUB_OUTPUT"
+          echo "gui=$gui"               >> "$GITHUB_OUTPUT"
+          echo "server_cli=$server_cli  gui=$gui" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set run title
         env:
@@ -44,6 +81,7 @@ jobs:
   # ── Server + CLI clients (CGo-free, linux runner) ─────────────────────────
   build-server-cli:
     needs: [setup]
+    if: needs.setup.outputs.rebuild_server_cli == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -115,6 +153,7 @@ jobs:
   # Cross-compile amd64 from Apple Silicon using -arch x86_64 clang flags.
   build-gui-macos:
     needs: [setup]
+    if: needs.setup.outputs.rebuild_gui == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -164,6 +203,7 @@ jobs:
   # the tap0901 driver via pnputil without any external tools.
   build-gui-windows:
     needs: [setup]
+    if: needs.setup.outputs.rebuild_gui == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -265,7 +305,11 @@ jobs:
 
   # ── Publish release (push to main only, waits for all builds) ─────────────
   release:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Run even when some build jobs were skipped (not cancelled/failed).
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      !failure() && !cancelled()
     needs: [setup, build-server-cli, build-gui-macos, build-gui-windows]
     runs-on: ubuntu-latest
     steps:
@@ -273,23 +317,74 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      # Download artifacts from jobs that actually ran.
+      - if: needs.build-server-cli.result == 'success'
+        uses: actions/download-artifact@v4
         with:
           name: server-cli-binaries
           path: dist/
 
-      - uses: actions/download-artifact@v4
+      - if: needs.build-gui-macos.result == 'success'
+        uses: actions/download-artifact@v4
         with:
           name: gui-macos-binaries
           path: dist/
 
-      - uses: actions/download-artifact@v4
+      - if: needs.build-gui-windows.result == 'success'
+        uses: actions/download-artifact@v4
         with:
           name: gui-windows-amd64
           path: dist/
 
+      # For skipped jobs, pull the corresponding files from the previous release
+      # so every release always contains the full set of binaries.
+      - name: Fill missing binaries from previous release
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          mkdir -p dist
+          PREV=$(gh release list --repo atlantegsrb/supervpn-releases \
+            --limit 2 --json tagName --jq '.[1].tagName' 2>/dev/null || echo "")
+          if [ -z "$PREV" ]; then
+            echo "No previous release found — skipping fill step"
+            exit 0
+          fi
+          echo "Previous release: $PREV"
+
+          fill() {
+            local pattern="$1"
+            gh release download "$PREV" \
+              --repo atlantegsrb/supervpn-releases \
+              --pattern "$pattern" \
+              --dir dist/ --clobber 2>/dev/null \
+              && echo "  filled: $pattern" || echo "  not found in prev: $pattern"
+          }
+
+          if [ "${{ needs.build-server-cli.result }}" = "skipped" ]; then
+            echo "Filling server/CLI artifacts from $PREV..."
+            fill "supervpn-server"
+            fill "supervpn-client-windows-amd64.exe"
+            fill "supervpn-client-darwin-amd64"
+            fill "supervpn-client-darwin-arm64"
+            fill "README-user.pdf"
+          fi
+
+          if [ "${{ needs.build-gui-macos.result }}" = "skipped" ]; then
+            echo "Filling macOS GUI artifacts from $PREV..."
+            fill "supervpn-client-gui-darwin-amd64"
+            fill "supervpn-client-gui-darwin-arm64"
+            fill "superVPN-macos.zip"
+          fi
+
+          if [ "${{ needs.build-gui-windows.result }}" = "skipped" ]; then
+            echo "Filling Windows GUI artifact from $PREV..."
+            fill "supervpn-client-gui-windows-amd64.exe"
+          fi
+
       - name: Fix permissions on unix executables
-        run: chmod +x dist/supervpn-server dist/supervpn-client-darwin-* dist/supervpn-client-gui-darwin-*
+        run: |
+          chmod +x dist/supervpn-server dist/supervpn-client-darwin-* \
+            dist/supervpn-client-gui-darwin-* 2>/dev/null || true
 
       - name: Package zip (all binaries)
         run: |
@@ -329,7 +424,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Clone the releases repo, update the two guide files, commit and push.
           git clone --depth=1 \
             "https://x-access-token:${GH_TOKEN}@github.com/atlantegsrb/supervpn-releases.git" \
             releases-repo
@@ -339,7 +433,6 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add README-user.md README-user.pdf
-          # Only commit when something actually changed.
           if ! git diff --cached --quiet; then
             VER="${{ needs.setup.outputs.ver }}"
             git commit -m "docs: sync user guide $VER"
