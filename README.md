@@ -14,8 +14,7 @@ Latest release: [atlanteg/supervpn-releases](https://github.com/atlanteg/supervp
 | `supervpn-client-windows-amd64.exe` | Windows amd64 | CLI client |
 | `supervpn-client-darwin-arm64` | macOS Apple Silicon | CLI client |
 | `supervpn-client-darwin-amd64` | macOS Intel | CLI client |
-| `supervpn-client-gui-windows-amd64.exe` | Windows amd64 | GUI client (Walk/Win32 — works on RDP, Hyper-V, no GPU needed) |
-| `supervpn-client-gui-windows-fyne-amd64.exe` | Windows amd64 | GUI client (Fyne/OpenGL — requires real GPU) |
+| `supervpn-client-gui-windows-amd64.exe` | Windows amd64 | GUI client (Win32/GDI — works on RDP, Hyper-V, no GPU needed) |
 | `superVPN-macos.zip` | macOS universal | GUI client (.app bundle, arm64 + amd64) |
 
 ---
@@ -79,7 +78,7 @@ supervpn is a custom L2 VPN system. It combines the roles of SoftEther VPN Bridg
 cmd/
   supervpn-server/     — server entrypoint
   supervpn-client/     — CLI client entrypoint
-  supervpn-client-gui/ — GUI client entrypoint (Walk on Windows, Fyne on macOS and Windows-Fyne)
+  supervpn-client-gui/ — GUI client entrypoint (Walk/Win32 on Windows, Fyne on macOS)
 internal/
   crypto/              — AES-128-GCM, ReplayWindow (verbatim from myvpn — do not modify)
   proto/               — wire frame format
@@ -219,9 +218,7 @@ keepalive: ping #4 sent, last pong 9s ago | FEC data=1247 repair=62 recovered=3 
 2. Run it — the window opens without a console.
 3. If Windows SmartScreen blocks it, click "More info" → "Run anyway".
 
-**Walk variant** (default, `supervpn-client-gui-windows-amd64.exe`): Pure Win32/GDI, no OpenGL. Works on RDP, Hyper-V, and any VM without a GPU. The TAP driver is embedded in the executable and auto-installed on first use via `pnputil` (requires Administrator).
-
-**Fyne variant** (`supervpn-client-gui-windows-fyne-amd64.exe`): OpenGL rendering. Requires a real GPU. Falls back to a software renderer if no GPU is available.
+Pure Win32/GDI, no OpenGL. Works on RDP, Hyper-V, and any VM without a GPU. The TAP driver is embedded in the executable and auto-installed on first use via `pnputil` (requires Administrator).
 
 ### 4. GUI client — macOS
 
@@ -468,10 +465,10 @@ go build ./cmd/supervpn-server
 # CLI client (native platform)
 go build ./cmd/supervpn-client
 
-# GUI client — Walk variant (Windows default, pure Win32/GDI, no CGO)
+# GUI client — Windows (Walk/Win32, no CGO)
 GOOS=windows GOARCH=amd64 go build ./cmd/supervpn-client-gui
 
-# GUI client — Fyne variant (macOS + Windows-Fyne, requires CGO)
+# GUI client — macOS (Fyne, requires CGO)
 go build -tags fyne ./cmd/supervpn-client-gui
 ```
 
@@ -491,15 +488,10 @@ GOOS=darwin GOARCH=arm64 go build -o supervpn-client-arm64 ./cmd/supervpn-client
 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -tags fyne \
   -o supervpn-client-gui-arm64 ./cmd/supervpn-client-gui
 
-# GUI client for Windows Walk (no CGO)
+# GUI client for Windows (Walk/Win32, no CGO)
 GOOS=windows GOARCH=amd64 go build \
   -ldflags="-H windowsgui" \
   -o supervpn-client-gui.exe ./cmd/supervpn-client-gui
-
-# GUI client for Windows Fyne (requires MinGW-w64)
-CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build -tags fyne \
-  -ldflags="-H windowsgui" \
-  -o supervpn-client-gui-fyne.exe ./cmd/supervpn-client-gui
 ```
 
 Makefile targets:
@@ -526,8 +518,7 @@ Every push to `main` triggers four parallel GitHub Actions jobs:
 |---|---|---|
 | `build-server-cli` | ubuntu-latest | `supervpn-server`, CLI clients for Windows/macOS (no CGO) |
 | `build-gui-macos` | macos-latest | GUI clients for darwin/arm64 and darwin/amd64; `superVPN.app` universal bundle + zip |
-| `build-gui-windows` | windows-latest | `supervpn-client-gui-windows-amd64.exe` (Walk, no CGO, TAP driver embedded) |
-| `build-gui-windows-fyne` | windows-latest (MSYS2/MinGW) | `supervpn-client-gui-windows-fyne-amd64.exe` (Fyne, CGO) |
+| `build-gui-windows` | windows-latest | `supervpn-client-gui-windows-amd64.exe` (Walk/Win32, no CGO, TAP driver embedded) |
 
 After all jobs pass, a `release` job publishes a new GitHub release (tagged `b{N}`) to [atlanteg/supervpn-releases](https://github.com/atlanteg/supervpn-releases). The release includes individual binaries and a `supervpn-dist.zip` with everything combined.
 

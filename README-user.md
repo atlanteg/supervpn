@@ -6,13 +6,11 @@
 
 | Система | Файл |
 |---|---|
-| Windows (любая, в т.ч. RDP / виртуальная машина) | `supervpn-client-gui-windows-amd64.exe` |
-| Windows (с видеокартой, не RDP) | `supervpn-client-gui-windows-fyne-amd64.exe` |
+| Windows | `supervpn-client-gui-windows-amd64.exe` |
 | macOS Apple Silicon (M1/M2/M3) | `supervpn-client-gui-darwin-arm64` |
 | macOS Intel | `supervpn-client-gui-darwin-amd64` |
 | macOS (оба в одном, .app) | `superVPN-macos.zip` |
 
-> **Если не знаете какой выбрать на Windows** — берите `windows-amd64.exe` (первый вариант). Он работает везде.
 
 ---
 

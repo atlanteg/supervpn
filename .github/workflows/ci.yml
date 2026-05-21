@@ -263,119 +263,10 @@ jobs:
           name: gui-windows-amd64
           path: dist/
 
-  # ── GUI client — Windows/Fyne (OpenGL via MSYS2, falls back to SW renderer) ─
-  # Build the Fyne variant with -tags fyne for users who prefer it on systems
-  # with a real GPU (not RDP / Hyper-V).
-  build-gui-windows-fyne:
-    needs: [setup]
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-
-      - name: Setup MSYS2 (MinGW-w64 + OpenGL)
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-mesa
-          path-type: inherit
-          release: false
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Download wintun.dll + tap-windows6 driver files + Npcap installer
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          # ── wintun.dll (amd64) ────────────────────────────────────────────────
-          try {
-            Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" `
-              -OutFile wintun.zip -UseBasicParsing
-            Expand-Archive wintun.zip -DestinationPath wintun-pkg -Force
-            $dll = "wintun-pkg\wintun\bin\amd64\wintun.dll"
-            if (Test-Path $dll) {
-              Copy-Item $dll -Destination "pkg\tun\wintun-dll\wintun.dll" -Force
-              Write-Host "wintun.dll embedded: $((Get-Item $dll).Length) bytes"
-            } else {
-              Write-Warning "wintun.dll not at expected path — listing zip contents:"
-              Get-ChildItem wintun-pkg -Recurse -Filter "*.dll"
-            }
-          } catch { Write-Warning "wintun.dll download failed: $_" }
-
-          # ── tap-windows6 driver files ─────────────────────────────────────────
-          $tapOk = $false
-          $tapUrls = @(
-            "https://github.com/OpenVPN/tap-windows6/releases/download/9.26.0.0/tap-windows-9.26.0.0.exe",
-            "https://github.com/OpenVPN/tap-windows6/releases/download/9.24.6.0/tap-windows-9.24.6.exe"
-          )
-          foreach ($url in $tapUrls) {
-            try {
-              Invoke-WebRequest -Uri $url -OutFile tap-windows.exe -UseBasicParsing
-              7z x tap-windows.exe -otap-extract -y | Out-Null
-              $files = Get-ChildItem -Recurse tap-extract `
-                -Include "OemVista.inf","tap0901.sys","tap0901.cat"
-              if ($files.Count -ge 3) {
-                $files | Copy-Item -Destination pkg\tun\tap-driver\ -Force
-                Write-Host "TAP driver files embedded:"
-                Get-ChildItem pkg\tun\tap-driver\
-                $tapOk = $true
-                break
-              }
-              Write-Warning "Only $($files.Count) driver files found in $url"
-            } catch { Write-Warning "TAP download from $url failed: $_" }
-          }
-          if (-not $tapOk) {
-            Write-Warning "TAP driver not embedded — binary falls back to disk install"
-          }
-
-          # ── Npcap installer ───────────────────────────────────────────────────
-          try {
-            Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.88.exe" `
-              -OutFile "pkg\tun\npcap-installer\npcap-1.88.exe" -UseBasicParsing
-            Write-Host "Npcap installer embedded: $((Get-Item 'pkg\tun\npcap-installer\npcap-1.88.exe').Length) bytes"
-          } catch { Write-Warning "Npcap installer download failed: $_" }
-
-      - name: Embed app icon into rsrc_windows_amd64.syso
-        shell: pwsh
-        run: |
-          $icon = "cmd\supervpn-client-gui\icon.ico"
-          if (-not (Test-Path $icon)) {
-            $icon = "cmd\supervpn-client-gui\icon.png"
-            if (-not (Test-Path $icon)) {
-              go run cmd\supervpn-client-gui\gen_icon.go
-            }
-          }
-          go install github.com/tc-hib/go-winres@latest
-          Push-Location cmd\supervpn-client-gui
-          go-winres simply --icon $icon.Replace("cmd\supervpn-client-gui\", "") --manifest gui --arch amd64
-          Pop-Location
-
-      - name: Build GUI client Fyne (windows/amd64)
-        shell: msys2 {0}
-        run: |
-          export PATH="/mingw64/bin:$PATH"
-          VER="${{ needs.setup.outputs.ver }}"
-          CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build \
-            -tags fyne \
-            -ldflags="-s -w -H windowsgui -X main.version=${VER}" \
-            -o dist/supervpn-client-gui-windows-fyne-amd64.exe \
-            ./cmd/supervpn-client-gui
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gui-windows-fyne-amd64
-          path: dist/
-
   # ── Publish release (push to main only, waits for all builds) ─────────────
   release:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [setup, build-server-cli, build-gui-macos, build-gui-windows, build-gui-windows-fyne]
+    needs: [setup, build-server-cli, build-gui-macos, build-gui-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -397,11 +288,6 @@ jobs:
           name: gui-windows-amd64
           path: dist/
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: gui-windows-fyne-amd64
-          path: dist/
-
       - name: Fix permissions on unix executables
         run: chmod +x dist/supervpn-server dist/supervpn-client-darwin-* dist/supervpn-client-gui-darwin-*
 
@@ -414,7 +300,6 @@ jobs:
             supervpn-client-darwin-amd64 \
             supervpn-client-darwin-arm64 \
             supervpn-client-gui-windows-amd64.exe \
-            supervpn-client-gui-windows-fyne-amd64.exe \
             supervpn-client-gui-darwin-amd64 \
             supervpn-client-gui-darwin-arm64 \
             README-user.pdf
@@ -431,7 +316,6 @@ jobs:
             dist/supervpn-client-darwin-amd64 \
             dist/supervpn-client-darwin-arm64 \
             dist/supervpn-client-gui-windows-amd64.exe \
-            dist/supervpn-client-gui-windows-fyne-amd64.exe \
             dist/supervpn-client-gui-darwin-amd64 \
             dist/supervpn-client-gui-darwin-arm64 \
             dist/superVPN-macos.zip \
