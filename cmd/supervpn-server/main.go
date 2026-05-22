@@ -85,10 +85,12 @@ func main() {
 		manager:   mgr,
 		sessions:  make(map[uint32]*Session),
 		kicked:    make(map[string]time.Time),
-		bannedIPs: make(map[string]struct{}),
-		startTime: time.Now(),
+		bannedIPs:    make(map[string]struct{}),
+		bannedLogins: make(map[string]map[uint16]bool),
+		startTime:    time.Now(),
 	}
 	srv.loadBannedIPs()
+	srv.loadBannedLogins()
 	srv.checkUpdateAssets()
 	if err := srv.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
@@ -130,7 +132,8 @@ type Server struct {
 	conn2         *net.UDPConn      // secondary UDP listener on port+1
 	sessions      map[uint32]*Session
 	kicked        map[string]time.Time   // login → blocked until; prevents immediate reconnect after kick
-	bannedIPs     map[string]struct{}    // IP (no port) → permanently banned until explicit unban
+	bannedIPs     map[string]struct{}        // IP (no port) → permanently banned until explicit unban
+	bannedLogins  map[string]map[uint16]bool // login → set of hub IDs where banned
 	mu            sync.RWMutex
 	startTime     time.Time
 	tcpListenerUp  bool             // true once the primary TLS/TCP listener successfully binds
@@ -390,9 +393,14 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 
 	s.mu.RLock()
 	blockedUntil, isBlocked := s.kicked[hello.Login]
+	loginBanned := s.bannedLogins[hello.Login][hello.HubID]
 	s.mu.RUnlock()
 	if isBlocked && time.Now().Before(blockedUntil) {
 		replyError(fmt.Sprintf("kicked: reconnect after %s", blockedUntil.UTC().Format(time.RFC3339)))
+		return 0
+	}
+	if loginBanned {
+		replyError("banned")
 		return 0
 	}
 
@@ -1109,8 +1117,9 @@ type statusResponse struct {
 	TCP2ListenerUp bool              `json:"tcp2_listener_up,omitempty"`
 	Hubs           []hubStatus       `json:"hubs"`
 	Blocked        map[string]string `json:"blocked,omitempty"`    // login → blocked_until (RFC3339)
-	BannedIPs      []string          `json:"banned_ips,omitempty"` // permanently banned IPs
-	UpdateMirror   *mirrorStatus     `json:"update_mirror,omitempty"`
+	BannedIPs      []string              `json:"banned_ips,omitempty"`     // permanently banned IPs
+	BannedLogins   map[string][]uint16   `json:"banned_logins,omitempty"`  // login → hub IDs where banned
+	UpdateMirror   *mirrorStatus         `json:"update_mirror,omitempty"`
 }
 
 type mirrorStatus struct {
@@ -1150,9 +1159,9 @@ type clientStatus struct {
 func (s *Server) runStatusServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
-	mux.HandleFunc("/api/hubs/", s.handleAPI)  // POST /api/hubs/{id}/kick/{session}
-	mux.HandleFunc("/api/bans", s.handleBans)  // GET /api/bans
-	mux.HandleFunc("/api/ips/", s.handleIPBan) // POST /api/ips/{ip}/ban|unban
+	mux.HandleFunc("/api/hubs/", s.handleAPI)      // POST /api/hubs/{id}/kick/{session}; GET|POST /api/hubs/{id}/loginbans[/{login}]; POST /api/hubs/{id}/loginunbans/{login}
+	mux.HandleFunc("/api/bans", s.handleBans)      // GET /api/bans
+	mux.HandleFunc("/api/ips/", s.handleIPBan)     // POST /api/ips/{ip}/ban|unban
 	// Serve /update/* on status_listen only when update_listen is not configured.
 	if s.cfg.UpdateListen == "" {
 		mux.HandleFunc("/update/version", s.handleUpdateVersion)
@@ -1191,8 +1200,15 @@ func (s *Server) runUpdateServer(ctx context.Context) {
 // handleAPI dispatches management actions.
 // Currently supports: POST /api/hubs/{hub_id}/kick/{session_id}
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
-	// Path: /api/hubs/{hub_id}/kick/{session_id}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	// Route loginbans/loginunbans to the dedicated handler.
+	if len(parts) >= 4 && parts[0] == "api" && parts[1] == "hubs" &&
+		(parts[3] == "loginbans" || parts[3] == "loginunbans") {
+		s.handleLoginBan(w, r)
+		return
+	}
+
+	// Path: /api/hubs/{hub_id}/kick/{session_id}
 	if len(parts) == 4 && parts[0] == "api" && parts[1] == "hubs" && parts[3] == "kick" {
 		http.Error(w, "use POST /api/hubs/{id}/kick/{session_id}", http.StatusBadRequest)
 		return
@@ -1390,6 +1406,167 @@ func (s *Server) handleIPBan(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ── Login ban helpers ─────────────────────────────────────────────────────────
+
+func (s *Server) loginBanFilePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "banned_logins.json"
+	}
+	return filepath.Join(filepath.Dir(exe), "banned_logins.json")
+}
+
+// bannedLoginsFile is the on-disk format: map[login][]hubID.
+type bannedLoginsFile map[string][]uint16
+
+func (s *Server) loadBannedLogins() {
+	data, err := os.ReadFile(s.loginBanFilePath())
+	if err != nil {
+		return
+	}
+	var f bannedLoginsFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		log.Printf("loginban: failed to parse %s: %v", s.loginBanFilePath(), err)
+		return
+	}
+	s.mu.Lock()
+	for login, hubs := range f {
+		s.bannedLogins[login] = make(map[uint16]bool, len(hubs))
+		for _, h := range hubs {
+			s.bannedLogins[login][h] = true
+		}
+	}
+	s.mu.Unlock()
+	log.Printf("loginban: loaded bans for %d logins from %s", len(f), s.loginBanFilePath())
+}
+
+func (s *Server) saveBannedLogins() {
+	s.mu.RLock()
+	f := make(bannedLoginsFile, len(s.bannedLogins))
+	for login, hubs := range s.bannedLogins {
+		ids := make([]uint16, 0, len(hubs))
+		for h := range hubs {
+			ids = append(ids, h)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		f[login] = ids
+	}
+	s.mu.RUnlock()
+	data, _ := json.MarshalIndent(f, "", "  ")
+	if err := os.WriteFile(s.loginBanFilePath(), data, 0644); err != nil {
+		log.Printf("loginban: failed to save %s: %v", s.loginBanFilePath(), err)
+	}
+}
+
+// kickSessionsByLogin closes all active sessions for login on hubID.
+func (s *Server) kickSessionsByLogin(login string, hubID uint16) {
+	s.mu.Lock()
+	var toKick []*Session
+	for id, sess := range s.sessions {
+		if sess.Login == login && sess.HubID == hubID {
+			toKick = append(toKick, sess)
+			delete(s.sessions, id)
+			s.kicked[login] = time.Now().Add(kickBlockDuration)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, sess := range toKick {
+		sess.closeConn()
+		sess.mu.Lock()
+		cc2 := sess.closeConn2
+		sess.mu.Unlock()
+		if cc2 != nil {
+			cc2()
+		}
+		if h, ok := s.manager.Get(sess.HubID); ok {
+			h.Leave(sess.ID)
+		}
+		log.Printf("loginban: kicked session %d (%s@hub%d) due to login ban", sess.ID, sess.Login, sess.HubID)
+	}
+}
+
+// POST /api/hubs/{hub_id}/loginbans/{login}   — ban login on hub + kick sessions.
+// POST /api/hubs/{hub_id}/loginunbans/{login}  — remove ban.
+// GET  /api/hubs/{hub_id}/loginbans            — list banned logins on hub.
+func (s *Server) handleLoginBan(w http.ResponseWriter, r *http.Request) {
+	// Paths:
+	//   /api/hubs/{hub_id}/loginbans
+	//   /api/hubs/{hub_id}/loginbans/{login}
+	//   /api/hubs/{hub_id}/loginunbans/{login}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 4 || parts[0] != "api" || parts[1] != "hubs" {
+		http.NotFound(w, r)
+		return
+	}
+	hubID64, err := strconv.ParseUint(parts[2], 10, 16)
+	if err != nil {
+		http.Error(w, "invalid hub_id", http.StatusBadRequest)
+		return
+	}
+	hubID := uint16(hubID64)
+	action := parts[3] // "loginbans" or "loginunbans"
+
+	// GET /api/hubs/{hub_id}/loginbans — list
+	if r.Method == http.MethodGet && action == "loginbans" && len(parts) == 4 {
+		s.mu.RLock()
+		var logins []string
+		for login, hubs := range s.bannedLogins {
+			if hubs[hubID] {
+				logins = append(logins, login)
+			}
+		}
+		s.mu.RUnlock()
+		sort.Strings(logins)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"hub_id": hubID, "banned_logins": logins})
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if len(parts) != 5 {
+		http.Error(w, "login required in path", http.StatusBadRequest)
+		return
+	}
+	login := parts[4]
+
+	switch action {
+	case "loginbans":
+		s.mu.Lock()
+		if s.bannedLogins[login] == nil {
+			s.bannedLogins[login] = make(map[uint16]bool)
+		}
+		s.bannedLogins[login][hubID] = true
+		s.mu.Unlock()
+		s.saveBannedLogins()
+		s.kickSessionsByLogin(login, hubID)
+		log.Printf("loginban: %s banned on hub%d via API", login, hubID)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","action":"ban","login":%q,"hub_id":%d}`, login, hubID)
+
+	case "loginunbans":
+		s.mu.Lock()
+		wasBanned := s.bannedLogins[login][hubID]
+		delete(s.bannedLogins[login], hubID)
+		if len(s.bannedLogins[login]) == 0 {
+			delete(s.bannedLogins, login)
+		}
+		s.mu.Unlock()
+		if wasBanned {
+			s.saveBannedLogins()
+		}
+		log.Printf("loginban: %s unbanned on hub%d via API", login, hubID)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","action":"unban","login":%q,"hub_id":%d,"was_banned":%v}`, login, hubID, wasBanned)
+
+	default:
+		http.NotFound(w, r)
+	}
+}
+
 func (s *Server) handleUpdateVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprint(w, version)
@@ -1509,6 +1686,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	for ip := range s.bannedIPs {
 		bannedList = append(bannedList, ip)
 	}
+	var bannedLoginMap map[string][]uint16
+	if len(s.bannedLogins) > 0 {
+		bannedLoginMap = make(map[string][]uint16, len(s.bannedLogins))
+		for login, hubs := range s.bannedLogins {
+			ids := make([]uint16, 0, len(hubs))
+			for h := range hubs {
+				ids = append(ids, h)
+			}
+			sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+			bannedLoginMap[login] = ids
+		}
+	}
 	s.mu.RUnlock()
 	sort.Strings(bannedList)
 
@@ -1529,6 +1718,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(bannedList) > 0 {
 		resp.BannedIPs = bannedList
+	}
+	if len(bannedLoginMap) > 0 {
+		resp.BannedLogins = bannedLoginMap
 	}
 
 	w.Header().Set("Content-Type", "application/json")
