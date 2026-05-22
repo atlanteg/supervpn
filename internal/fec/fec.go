@@ -86,7 +86,7 @@ type Decoder struct {
 	mu         sync.Mutex
 	blocks     map[uint32]*decBlock
 	maxSeen    uint32
-	lastExpire time.Time // throttle: only run expire() every 500ms
+	minBlockID uint32 // amortised expire pointer: lowest blockID not yet scanned
 	enc        reedsolomon.Encoder // nil when r==1
 }
 
@@ -127,14 +127,10 @@ func (d *Decoder) add(blockID uint32, idx int, pkt []byte, isRepair bool) ([][]b
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// track max seen block for expiry; throttled to avoid O(N) map scan per packet
+	// track max seen block for expiry
 	if blockID > d.maxSeen {
 		d.maxSeen = blockID
-		now := time.Now()
-		if now.Sub(d.lastExpire) >= 500*time.Millisecond {
-			d.expire()
-			d.lastExpire = now
-		}
+		d.expire()
 	}
 
 	b := d.getOrCreate(blockID)
@@ -179,25 +175,28 @@ func (d *Decoder) getOrCreate(id uint32) *decBlock {
 	return b
 }
 
+// expire advances the minBlockID pointer, deleting blocks that are old enough.
+// Amortised O(1) per call: each block is visited at most once across all calls.
+// Blocks still within blockKeepAge halt the scan so delayed repair packets can
+// still arrive; they will be checked again on the next expire() invocation.
 func (d *Decoder) expire() {
 	if d.maxSeen < uint32(maxOldBlocks) {
 		return
 	}
 	threshold := d.maxSeen - uint32(maxOldBlocks)
 	now := time.Now()
-	for id, b := range d.blocks {
-		if id >= threshold {
-			continue // too recent to consider
-		}
-		// Blocks that never received a packet can be dropped immediately.
-		if b.lastActivity.IsZero() {
-			delete(d.blocks, id)
+	for d.minBlockID < threshold {
+		b, ok := d.blocks[d.minBlockID]
+		if !ok {
+			d.minBlockID++
 			continue
 		}
-		// Keep recently-active blocks long enough for delayed repair packets to
-		// arrive (default repairDelay=50ms); blockKeepAge provides 4× margin.
-		if now.Sub(b.lastActivity) > blockKeepAge {
-			delete(d.blocks, id)
+		if b.lastActivity.IsZero() || now.Sub(b.lastActivity) > blockKeepAge {
+			delete(d.blocks, d.minBlockID)
+			d.minBlockID++
+		} else {
+			// Block still within keep age; stop and revisit on next call.
+			break
 		}
 	}
 }
