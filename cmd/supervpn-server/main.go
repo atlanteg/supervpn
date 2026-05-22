@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -80,15 +81,24 @@ func main() {
 		log.Printf("hub %d %q ready", hcfg.ID, hcfg.Name)
 	}
 
+	numWorkers := runtime.GOMAXPROCS(0)
 	srv := &Server{
-		cfg:       cfg,
-		manager:   mgr,
-		sessions:  make(map[uint32]*Session),
-		kicked:    make(map[string]time.Time),
+		cfg:          cfg,
+		manager:      mgr,
+		sessions:     make(map[uint32]*Session),
+		kicked:       make(map[string]time.Time),
 		bannedIPs:    make(map[string]struct{}),
 		ipToLogins:   make(map[string]map[string]bool),
 		bannedLogins: make(map[string]map[uint16]bool),
 		startTime:    time.Now(),
+		udpJobs:      make(chan udpJob, numWorkers*64),
+	}
+	srv.pktPool.New = func() interface{} {
+		b := make([]byte, 2048)
+		return &b
+	}
+	for i := 0; i < numWorkers; i++ {
+		go srv.udpWorker(ctx)
 	}
 	srv.loadBannedIPs()
 	srv.loadBannedLogins()
@@ -125,6 +135,15 @@ type Session struct {
 
 const kickBlockDuration = 5 * time.Minute
 
+// udpJob carries one received UDP datagram to a worker goroutine.
+type udpJob struct {
+	pkt    []byte
+	raddr  *net.UDPAddr
+	sendFn func([]byte) error
+	mode   string // "udp" or "udp2"
+	sec    bool   // secondary path flag
+}
+
 // Server handles auth, data forwarding, and ping/pong over UDP and TLS/TCP.
 type Server struct {
 	cfg           *config.ServerConfig
@@ -137,6 +156,8 @@ type Server struct {
 	ipToLogins    map[string]map[string]bool  // IP → logins that were kicked from it (for cleanup on unban)
 	bannedLogins  map[string]map[uint16]bool  // login → set of hub IDs where banned
 	mu            sync.RWMutex
+	pktPool       sync.Pool  // reusable packet buffers to reduce GC pressure
+	udpJobs       chan udpJob // worker-pool channel for incoming UDP packets
 	startTime     time.Time
 	tcpListenerUp  bool             // true once the primary TLS/TCP listener successfully binds
 	tcp2ListenerUp bool             // true once the secondary TLS/TCP listener successfully binds
@@ -144,6 +165,22 @@ type Server struct {
 }
 
 // Run starts the UDP listener (and TLS/TCP + status listeners if configured).
+// udpWorker drains udpJobs and processes each packet without spawning
+// a new goroutine per packet, eliminating per-packet GC pressure.
+func (s *Server) udpWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-s.udpJobs:
+			s.handlePacket(ctx, job.pkt, job.sendFn, job.raddr.String(), job.mode, func() {}, job.sec)
+			// Return the buffer to the pool after handlePacket is done with pkt.
+			buf := job.pkt[:cap(job.pkt)]
+			s.pktPool.Put(&buf)
+		}
+	}
+}
+
 func (s *Server) Run(ctx context.Context) error {
 	addr, err := net.ResolveUDPAddr("udp", s.cfg.Listen)
 	if err != nil {
@@ -187,20 +224,20 @@ func (s *Server) Run(ctx context.Context) error {
 
 	go s.cleanupLoop(ctx)
 
-	buf := make([]byte, 2048)
+	// Single deadline covers the whole loop; context cancellation is checked
+	// by the workers. The receive loop itself only needs to unblock on shutdown.
+	conn.SetReadDeadline(time.Time{}) // blocking reads
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
 	for {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-			return ctx.Err()
-		default:
-		}
-		conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		bufPtr := s.pktPool.Get().(*[]byte)
+		buf := *bufPtr
 		n, raddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				continue
-			}
+			s.pktPool.Put(bufPtr)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -208,13 +245,20 @@ func (s *Server) Run(ctx context.Context) error {
 				return err
 			}
 		}
-		pkt := make([]byte, n)
-		copy(pkt, buf[:n])
+		pkt := buf[:n]
 		ra := raddr
-		go s.handlePacket(ctx, pkt, func(p []byte) error {
-			_, err := s.conn.WriteToUDP(p, ra)
-			return err
-		}, ra.String(), "udp", func() {}, false)
+		select {
+		case s.udpJobs <- udpJob{
+			pkt:    pkt,
+			raddr:  ra,
+			sendFn: func(p []byte) error { _, err := s.conn.WriteToUDP(p, ra); return err },
+			mode:   "udp",
+			sec:    false,
+		}:
+		default:
+			// Worker pool saturated — drop packet rather than blocking the read loop.
+			s.pktPool.Put(bufPtr)
+		}
 	}
 }
 
@@ -760,20 +804,18 @@ func deriveSecondaryAddr(addr string) string {
 // through handlePacket with secondary=true, enabling auto-registration of the
 // client's secondary source address as sess.sendRaw2.
 func (s *Server) runSecondaryUDP(ctx context.Context, conn *net.UDPConn) {
-	defer conn.Close()
-	buf := make([]byte, 2048)
+	conn.SetReadDeadline(time.Time{})
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		bufPtr := s.pktPool.Get().(*[]byte)
+		buf := *bufPtr
 		n, raddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				continue
-			}
+			s.pktPool.Put(bufPtr)
 			select {
 			case <-ctx.Done():
 				return
@@ -782,13 +824,19 @@ func (s *Server) runSecondaryUDP(ctx context.Context, conn *net.UDPConn) {
 				return
 			}
 		}
-		pkt := make([]byte, n)
-		copy(pkt, buf[:n])
+		pkt := buf[:n]
 		ra := raddr
-		go s.handlePacket(ctx, pkt, func(p []byte) error {
-			_, err := conn.WriteToUDP(p, ra)
-			return err
-		}, ra.String(), "udp2", func() {}, true)
+		select {
+		case s.udpJobs <- udpJob{
+			pkt:    pkt,
+			raddr:  ra,
+			sendFn: func(p []byte) error { _, err := conn.WriteToUDP(p, ra); return err },
+			mode:   "udp2",
+			sec:    true,
+		}:
+		default:
+			s.pktPool.Put(bufPtr)
+		}
 	}
 }
 
