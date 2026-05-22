@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,8 +85,10 @@ func main() {
 		manager:   mgr,
 		sessions:  make(map[uint32]*Session),
 		kicked:    make(map[string]time.Time),
+		bannedIPs: make(map[string]struct{}),
 		startTime: time.Now(),
 	}
+	srv.loadBannedIPs()
 	srv.checkUpdateAssets()
 	if err := srv.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
@@ -126,7 +129,8 @@ type Server struct {
 	conn          *net.UDPConn
 	conn2         *net.UDPConn      // secondary UDP listener on port+1
 	sessions      map[uint32]*Session
-	kicked        map[string]time.Time // login → blocked until; prevents immediate reconnect after kick
+	kicked        map[string]time.Time   // login → blocked until; prevents immediate reconnect after kick
+	bannedIPs     map[string]struct{}    // IP (no port) → permanently banned until explicit unban
 	mu            sync.RWMutex
 	startTime     time.Time
 	tcpListenerUp  bool             // true once the primary TLS/TCP listener successfully binds
@@ -337,6 +341,16 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		hdr := make([]byte, proto.HeaderSize)
 		proto.Header{Type: proto.FrameAuth}.Marshal(hdr)
 		_ = sendReply(append(hdr, p...))
+	}
+
+	if ip, _, err2 := net.SplitHostPort(remoteAddr); err2 == nil {
+		s.mu.RLock()
+		_, isBanned := s.bannedIPs[ip]
+		s.mu.RUnlock()
+		if isBanned {
+			replyError("banned")
+			return 0
+		}
 	}
 
 	if len(payload) == 0 || payload[0] != proto.AuthMsgHello {
@@ -1094,7 +1108,8 @@ type statusResponse struct {
 	TCPListenerUp  bool              `json:"tcp_listener_up"`
 	TCP2ListenerUp bool              `json:"tcp2_listener_up,omitempty"`
 	Hubs           []hubStatus       `json:"hubs"`
-	Blocked        map[string]string `json:"blocked,omitempty"` // login → blocked_until (RFC3339)
+	Blocked        map[string]string `json:"blocked,omitempty"`    // login → blocked_until (RFC3339)
+	BannedIPs      []string          `json:"banned_ips,omitempty"` // permanently banned IPs
 	UpdateMirror   *mirrorStatus     `json:"update_mirror,omitempty"`
 }
 
@@ -1135,7 +1150,9 @@ type clientStatus struct {
 func (s *Server) runStatusServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
-	mux.HandleFunc("/api/hubs/", s.handleAPI) // POST /api/hubs/{id}/kick/{session}
+	mux.HandleFunc("/api/hubs/", s.handleAPI)  // POST /api/hubs/{id}/kick/{session}
+	mux.HandleFunc("/api/bans", s.handleBans)  // GET /api/bans
+	mux.HandleFunc("/api/ips/", s.handleIPBan) // POST /api/ips/{ip}/ban|unban
 	// Serve /update/* on status_listen only when update_listen is not configured.
 	if s.cfg.UpdateListen == "" {
 		mux.HandleFunc("/update/version", s.handleUpdateVersion)
@@ -1209,6 +1226,15 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ban the IP so the client cannot reconnect from the same address.
+	kickedIP, _, _ := net.SplitHostPort(sess.RemoteAddr)
+	if kickedIP != "" {
+		s.mu.Lock()
+		s.bannedIPs[kickedIP] = struct{}{}
+		s.mu.Unlock()
+		s.saveBannedIPs()
+	}
+
 	// Close transport (no-op for UDP; closes TCP connection immediately).
 	sess.closeConn()
 	sess.mu.Lock()
@@ -1221,10 +1247,147 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if h, ok2 := s.manager.Get(sess.HubID); ok2 {
 		h.Leave(sessionID)
 	}
-	log.Printf("kick: session %d (%s@hub%d) blocked for %s", sessionID, sess.Login, sess.HubID, kickBlockDuration)
+	log.Printf("kick: session %d (%s@hub%d, ip=%s) blocked login for %s and IP permanently",
+		sessionID, sess.Login, sess.HubID, kickedIP, kickBlockDuration)
 
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok","session_id":%d,"login":%q}`, sessionID, sess.Login)
+	fmt.Fprintf(w, `{"status":"ok","session_id":%d,"login":%q,"banned_ip":%q}`, sessionID, sess.Login, kickedIP)
+}
+
+// ── IP ban helpers ────────────────────────────────────────────────────────────
+
+func (s *Server) banFilePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "banned_ips.json"
+	}
+	return filepath.Join(filepath.Dir(exe), "banned_ips.json")
+}
+
+func (s *Server) loadBannedIPs() {
+	data, err := os.ReadFile(s.banFilePath())
+	if err != nil {
+		return // first run or no file yet
+	}
+	var ips []string
+	if err := json.Unmarshal(data, &ips); err != nil {
+		log.Printf("ban: failed to parse %s: %v", s.banFilePath(), err)
+		return
+	}
+	s.mu.Lock()
+	for _, ip := range ips {
+		s.bannedIPs[ip] = struct{}{}
+	}
+	s.mu.Unlock()
+	log.Printf("ban: loaded %d banned IPs from %s", len(ips), s.banFilePath())
+}
+
+func (s *Server) saveBannedIPs() {
+	s.mu.RLock()
+	ips := make([]string, 0, len(s.bannedIPs))
+	for ip := range s.bannedIPs {
+		ips = append(ips, ip)
+	}
+	s.mu.RUnlock()
+	sort.Strings(ips)
+	data, _ := json.MarshalIndent(ips, "", "  ")
+	if err := os.WriteFile(s.banFilePath(), data, 0644); err != nil {
+		log.Printf("ban: failed to save %s: %v", s.banFilePath(), err)
+	}
+}
+
+// kickSessionsByIP closes all active sessions whose remote IP matches ip
+// and removes them from s.sessions. Must be called without s.mu held.
+func (s *Server) kickSessionsByIP(ip string) {
+	s.mu.Lock()
+	var toKick []*Session
+	for id, sess := range s.sessions {
+		if sessIP, _, err := net.SplitHostPort(sess.RemoteAddr); err == nil && sessIP == ip {
+			toKick = append(toKick, sess)
+			delete(s.sessions, id)
+			s.kicked[sess.Login] = time.Now().Add(kickBlockDuration)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, sess := range toKick {
+		sess.closeConn()
+		sess.mu.Lock()
+		cc2 := sess.closeConn2
+		sess.mu.Unlock()
+		if cc2 != nil {
+			cc2()
+		}
+		if h, ok := s.manager.Get(sess.HubID); ok {
+			h.Leave(sess.ID)
+		}
+		log.Printf("ban: kicked session %d (%s@hub%d) due to IP ban on %s", sess.ID, sess.Login, sess.HubID, ip)
+	}
+}
+
+// GET /api/bans — list all permanently banned IPs.
+func (s *Server) handleBans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	ips := make([]string, 0, len(s.bannedIPs))
+	for ip := range s.bannedIPs {
+		ips = append(ips, ip)
+	}
+	s.mu.RUnlock()
+	sort.Strings(ips)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"banned_ips": ips})
+}
+
+// POST /api/ips/{ip}/ban  — permanently ban an IP and kick its sessions.
+// POST /api/ips/{ip}/unban — remove a ban.
+func (s *Server) handleIPBan(w http.ResponseWriter, r *http.Request) {
+	// Path: /api/ips/{ip}/ban  or  /api/ips/{ip}/unban
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) != 4 || parts[0] != "api" || parts[1] != "ips" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	ip := parts[2]
+	action := parts[3]
+	if net.ParseIP(ip) == nil {
+		http.Error(w, "invalid IP address", http.StatusBadRequest)
+		return
+	}
+
+	switch action {
+	case "ban":
+		s.mu.Lock()
+		s.bannedIPs[ip] = struct{}{}
+		s.mu.Unlock()
+		s.saveBannedIPs()
+		s.kickSessionsByIP(ip)
+		log.Printf("ban: IP %s banned via API", ip)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","action":"ban","ip":%q}`, ip)
+
+	case "unban":
+		s.mu.Lock()
+		_, wasBanned := s.bannedIPs[ip]
+		delete(s.bannedIPs, ip)
+		s.mu.Unlock()
+		if wasBanned {
+			s.saveBannedIPs()
+		}
+		log.Printf("ban: IP %s unbanned via API", ip)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"ok","action":"unban","ip":%q,"was_banned":%v}`, ip, wasBanned)
+
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func (s *Server) handleUpdateVersion(w http.ResponseWriter, r *http.Request) {
@@ -1341,6 +1504,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.mu.RLock()
+	var bannedList []string
+	for ip := range s.bannedIPs {
+		bannedList = append(bannedList, ip)
+	}
+	s.mu.RUnlock()
+	sort.Strings(bannedList)
+
 	resp := statusResponse{
 		Version:        version,
 		Uptime:         now.Sub(s.startTime).Truncate(time.Second).String(),
@@ -1355,6 +1526,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(blocked) > 0 {
 		resp.Blocked = blocked
+	}
+	if len(bannedList) > 0 {
+		resp.BannedIPs = bannedList
 	}
 
 	w.Header().Set("Content-Type", "application/json")
