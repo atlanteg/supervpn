@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lxn/walk"
@@ -80,7 +81,8 @@ type winUI struct {
 
 	// Advanced tab – behavior
 	minimizeToTrayCheck *walk.CheckBox
-	autoConnectCheck    *walk.CheckBox
+	autoConnectCheck      *walk.CheckBox
+	startWithWindowsCheck *walk.CheckBox
 
 	// System tray icon (created after window init)
 	notifyIcon *walk.NotifyIcon
@@ -379,17 +381,29 @@ func (ui *winUI) advancedPage() TabPage {
 				},
 				GroupBox{
 					Title:  "Behavior",
-					Layout: HBox{Spacing: 16},
+					Layout: VBox{Spacing: 6},
 					Children: []Widget{
-						CheckBox{
-							AssignTo: &ui.autoConnectCheck,
-							Text:     "Auto-connect on startup",
+						Composite{
+							Layout: HBox{MarginsZero: true, Spacing: 16},
+							Children: []Widget{
+								CheckBox{
+									AssignTo: &ui.autoConnectCheck,
+									Text:     "Auto-connect on startup",
+								},
+								CheckBox{
+									AssignTo: &ui.minimizeToTrayCheck,
+									Text:     "Minimize to tray on close / minimize",
+								},
+								HSpacer{},
+							},
 						},
 						CheckBox{
-							AssignTo: &ui.minimizeToTrayCheck,
-							Text:     "Minimize to tray on close / minimize",
+							AssignTo: &ui.startWithWindowsCheck,
+							Text:     "Start with Windows (register auto-start task)",
+							OnClicked: func() {
+								ui.applyStartWithWindows(ui.startWithWindowsCheck.Checked())
+							},
 						},
-						HSpacer{},
 					},
 				},
 			},
@@ -911,8 +925,9 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 		},
 		StatusListen:   strings.TrimSpace(ui.statusListenEdit.Text()),
 		Timeout:        strings.TrimSpace(ui.timeoutEdit.Text()),
-		MinimizeToTray: ui.minimizeToTrayCheck.Checked(),
-		AutoConnect:    ui.autoConnectCheck.Checked(),
+		MinimizeToTray:   ui.minimizeToTrayCheck.Checked(),
+		AutoConnect:      ui.autoConnectCheck.Checked(),
+		StartWithWindows: ui.startWithWindowsCheck.Checked(),
 	}
 	cfg.FEC = cfg.FEC.WithDefaults()
 	cfg.UDP = cfg.UDP.WithDefaults()
@@ -987,6 +1002,7 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	_ = ui.timeoutEdit.SetText(cfg.Timeout)
 	ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)
 	ui.autoConnectCheck.SetChecked(cfg.AutoConnect)
+	ui.startWithWindowsCheck.SetChecked(cfg.StartWithWindows)
 }
 
 // ── connectivity test tab ─────────────────────────────────────────────────────
@@ -1144,6 +1160,60 @@ func parseHubID(text string) uint16 {
 		return 1
 	}
 	return uint16(n)
+}
+
+// applyStartWithWindows registers or removes a Windows Scheduled Task that
+// launches this executable at user logon with elevated privileges.
+func (ui *winUI) applyStartWithWindows(enable bool) {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("start-with-windows: cannot locate exe: %v", err)
+		return
+	}
+	exe, _ = filepath.EvalSymlinks(exe)
+
+	var script string
+	if enable {
+		exeQ := strings.ReplaceAll(exe, "'", "''")
+		script = fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+$action   = New-ScheduledTaskAction -Execute '%s'
+$trigger  = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 `+
+			`-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$principal = New-ScheduledTaskPrincipal `+
+			`-UserId "$env:USERDOMAIN\$env:USERNAME" `+
+			`-RunLevel Highest -LogonType Interactive
+Register-ScheduledTask -TaskName 'superVPN' `+
+			`-Action $action -Trigger $trigger `+
+			`-Settings $settings -Principal $principal -Force | Out-Null
+Write-Output 'OK'
+`, exeQ)
+	} else {
+		script = `Unregister-ScheduledTask -TaskName 'superVPN' ` +
+			`-Confirm:$false -ErrorAction SilentlyContinue; Write-Output 'OK'`
+	}
+
+	cmd := exec.Command(
+		"powershell", "-NoProfile", "-NonInteractive",
+		"-ExecutionPolicy", "Bypass", "-Command", "-",
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	result := strings.TrimSpace(string(out))
+	if err != nil {
+		log.Printf("start-with-windows: powershell error: %v: %s", err, result)
+		walk.MsgBox(ui.form, "Start with Windows",
+			"Failed to update startup task:\n"+result,
+			walk.MsgBoxIconWarning)
+		return
+	}
+	action := "registered"
+	if !enable {
+		action = "removed"
+	}
+	log.Printf("start-with-windows: task %s (%s)", action, exe)
 }
 
 // listAdapterNames returns the friendly names of all network adapters visible

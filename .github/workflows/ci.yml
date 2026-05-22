@@ -301,10 +301,13 @@ jobs:
       - name: Build seema client (windows/amd64)
         shell: pwsh
         run: |
-          # Copy syso (icon + admin manifest) from the main GUI package so
-          # the seema binary gets the same embedded icon and elevation request.
-          Copy-Item cmd\supervpn-client-gui\rsrc_windows_amd64.syso `
-                    cmd\supervpn-client-seema\rsrc_windows_amd64.syso -Force
+          # Generate seema-specific syso with its own blue-rat icon.
+          $icon = "cmd\supervpn-client-seema\icon.ico"
+          Write-Host "seema icon: $icon ($((Get-Item $icon).Length) bytes)"
+          Push-Location cmd\supervpn-client-seema
+          go-winres simply --icon icon.ico --manifest gui --arch amd64
+          Pop-Location
+          Write-Host "seema syso: $((Get-Item 'cmd\supervpn-client-seema\rsrc_windows_amd64.syso').Length) bytes"
           $env:CGO_ENABLED = "0"
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"

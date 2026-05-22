@@ -199,7 +199,7 @@ type seemaApp struct {
 	form        *walk.MainWindow
 	dotView     *walk.ImageView
 	statusLabel *walk.Label
-	tray        *walk.NotifyIcon
+	modeLabel   *walk.Label // adapter mode line (direct / bridge + iface)
 
 	client        *vpnclient.Client
 	framer        bridge.Framer
@@ -280,12 +280,15 @@ func (a *seemaApp) doRefresh() {
 	}
 	stats := c.Stats()
 
-	var text string
+	var text, modeText string
 	var dot dotKind
 	switch stats.State {
 	case vpnclient.StateConnected:
 		text = "Connected"
 		dot = dotGreen
+		if stats.AdapterMode != "" {
+			modeText = stats.AdapterMode
+		}
 	case vpnclient.StateConnecting:
 		text = "Connecting..."
 		dot = dotYellow
@@ -299,48 +302,8 @@ func (a *seemaApp) doRefresh() {
 
 	a.form.Synchronize(func() {
 		_ = a.statusLabel.SetText(text)
+		_ = a.modeLabel.SetText(modeText)
 		a.setDot(dot)
-	})
-}
-
-// ── tray ─────────────────────────────────────────────────────────────────────
-
-func (a *seemaApp) setupTray() {
-	ni, err := walk.NewNotifyIcon(a.form)
-	if err != nil {
-		log.Printf("seema: tray: %v", err)
-		return
-	}
-	a.tray = ni
-
-	// Try loading icon from executable resource (resource ID 1).
-	if ico, err := walk.NewIconFromResourceId(1); err == nil {
-		_ = ni.SetIcon(ico)
-		_ = a.form.SetIcon(ico)
-	}
-
-	_ = ni.SetToolTip("seema VPN")
-	_ = ni.SetVisible(true)
-
-	menu := ni.ContextMenu()
-	showAct := walk.NewAction()
-	_ = showAct.SetText("Show")
-	showAct.Triggered().Attach(func() {
-		a.form.Show()
-		win.SetForegroundWindow(a.form.Handle())
-	})
-	_ = menu.Actions().Add(showAct)
-	_ = menu.Actions().Add(walk.NewSeparatorAction())
-	quitAct := walk.NewAction()
-	_ = quitAct.SetText("Quit")
-	quitAct.Triggered().Attach(func() { walk.App().Exit(0) })
-	_ = menu.Actions().Add(quitAct)
-
-	ni.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
-		if button == walk.LeftButton {
-			a.form.Show()
-			win.SetForegroundWindow(a.form.Handle())
-		}
 	})
 }
 
@@ -352,25 +315,40 @@ func run() {
 	if err := (MainWindow{
 		AssignTo: &a.form,
 		Title:    "seema",
-		MinSize:  Size{Width: 300, Height: 80},
-		MaxSize:  Size{Width: 300, Height: 80},
-		Size:     Size{Width: 300, Height: 80},
-		Layout:   HBox{Margins: Margins{Left: 16, Right: 16, Top: 16, Bottom: 16}, Spacing: 10},
+		MinSize:  Size{Width: 360, Height: 90},
+		MaxSize:  Size{Width: 360, Height: 90},
+		Size:     Size{Width: 360, Height: 90},
+		Layout:   VBox{Margins: Margins{Left: 16, Right: 16, Top: 12, Bottom: 12}, Spacing: 4},
 		Children: []Widget{
-			ImageView{
-				AssignTo: &a.dotView,
-				MinSize:  Size{Width: 16, Height: 16},
-				MaxSize:  Size{Width: 16, Height: 16},
+			Composite{
+				Layout: HBox{MarginsZero: true, Spacing: 10},
+				Children: []Widget{
+					ImageView{
+						AssignTo: &a.dotView,
+						MinSize:  Size{Width: 16, Height: 16},
+						MaxSize:  Size{Width: 16, Height: 16},
+					},
+					Label{
+						AssignTo: &a.statusLabel,
+						Text:     "Connecting...",
+						Font:     Font{Bold: true, PointSize: 11},
+					},
+				},
 			},
 			Label{
-				AssignTo: &a.statusLabel,
-				Text:     "Connecting...",
-				Font:     Font{Bold: true, PointSize: 11},
+				AssignTo: &a.modeLabel,
+				Text:     "",
+				Font:     Font{PointSize: 9},
 			},
 		},
 	}.Create()); err != nil {
 		walk.MsgBox(nil, "Error", err.Error(), walk.MsgBoxIconError)
 		return
+	}
+
+	// Set window icon from embedded resource.
+	if ico, err := walk.NewIconFromResourceId(1); err == nil {
+		_ = a.form.SetIcon(ico)
 	}
 
 	// Center on screen.
@@ -387,14 +365,7 @@ func run() {
 	}
 	_ = a.form.SetBoundsPixels(walk.Rectangle{X: x, Y: y, Width: b.Width, Height: b.Height})
 
-	a.setupTray()
 	a.setDot(dotYellow)
-
-	// Hide to tray instead of quitting on X button.
-	a.form.Closing().Attach(func(canceled *bool, _ walk.CloseReason) {
-		*canceled = true
-		a.form.SetVisible(false)
-	})
 
 	// Start VPN immediately.
 	a.form.Synchronize(a.connect)

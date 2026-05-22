@@ -83,6 +83,10 @@ type ClientConfig struct {
 	// AutoConnect, when true, makes the GUI initiate a VPN connection
 	// automatically after the saved config is loaded on startup.
 	AutoConnect bool `toml:"auto_connect"`
+	// StartWithWindows, when true, registers a Windows Scheduled Task so the
+	// client launches automatically at user logon with elevated privileges.
+	// Has no effect on non-Windows platforms.
+	StartWithWindows bool `toml:"start_with_windows"`
 }
 
 // BridgeConfig controls how the client bridges traffic in bridge mode (when a
