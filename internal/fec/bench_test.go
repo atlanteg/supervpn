@@ -277,6 +277,6 @@ func BenchmarkRSEncode_K20R2(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rsEncode(enc.enc, pkts, k, r)
+		rsEncode(enc.enc, pkts, k, r, &enc.shardsPool)
 	}
 }

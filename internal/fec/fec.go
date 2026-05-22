@@ -31,10 +31,11 @@ var ErrUnrecoverable = errors.New("fec: too many losses in block, unrecoverable"
 // Encoder groups outgoing data packets into blocks and generates repair symbols.
 // For R=1 it uses fast XOR. For R>1 it uses Reed-Solomon over GF(2^8).
 type Encoder struct {
-	k, r    int
-	buf     [][]byte
-	blockID uint32
-	enc     reedsolomon.Encoder // nil when r==1
+	k, r       int
+	buf        [][]byte
+	blockID    uint32
+	enc        reedsolomon.Encoder // nil when r==1
+	shardsPool sync.Pool           // pools [][]byte of length k+r for rsEncode
 }
 
 func NewEncoder(k, r int) (*Encoder, error) {
@@ -50,6 +51,11 @@ func NewEncoder(k, r int) (*Encoder, error) {
 		e.enc, err = reedsolomon.New(k, r)
 		if err != nil {
 			return nil, fmt.Errorf("fec: rs init: %w", err)
+		}
+		n := k + r
+		e.shardsPool.New = func() interface{} {
+			s := make([][]byte, n)
+			return &s
 		}
 	}
 	return e, nil
@@ -70,7 +76,7 @@ func (e *Encoder) Add(pkt []byte) [][]byte {
 	} else if e.r == 1 {
 		repairs = [][]byte{xorAll(e.buf)}
 	} else {
-		repairs = rsEncode(e.enc, e.buf, e.k, e.r)
+		repairs = rsEncode(e.enc, e.buf, e.k, e.r, &e.shardsPool)
 	}
 	e.buf = e.buf[:0]
 	e.blockID++
@@ -366,27 +372,43 @@ func xorRecover(data [][]byte, repair []byte, k int) ([][]byte, error) {
 }
 
 // rsEncode generates R repair symbols for K data shards using Reed-Solomon.
-func rsEncode(enc reedsolomon.Encoder, data [][]byte, k, r int) [][]byte {
-	// RS requires all shards to be the same length; pad to max
+// pool provides a reusable [][]byte header slice to reduce per-block allocations.
+// Encode does not modify data shards, so data shards are aliased directly (no copy)
+// unless padding to maxLen is needed.
+func rsEncode(enc reedsolomon.Encoder, data [][]byte, k, r int, pool *sync.Pool) [][]byte {
 	maxLen := 0
 	for _, p := range data {
 		if len(p) > maxLen {
 			maxLen = len(p)
 		}
 	}
-	shards := make([][]byte, k+r)
+	shardsPtr := pool.Get().(*[][]byte)
+	shards := *shardsPtr
 	for i, p := range data {
-		shard := make([]byte, maxLen)
-		copy(shard, p)
-		shards[i] = shard
+		if len(p) == maxLen {
+			shards[i] = p // alias directly; Encode never writes to data shards
+		} else {
+			shard := make([]byte, maxLen)
+			copy(shard, p)
+			shards[i] = shard
+		}
 	}
 	for i := k; i < k+r; i++ {
 		shards[i] = make([]byte, maxLen)
 	}
 	if err := enc.Encode(shards); err != nil {
+		pool.Put(shardsPtr)
 		return nil
 	}
-	return shards[k:]
+	// Extract repair shards before returning the header slice to the pool.
+	repairs := make([][]byte, r)
+	copy(repairs, shards[k:])
+	// Clear data-shard pointers so the pool entry doesn't retain frame references.
+	for i := 0; i < k+r; i++ {
+		shards[i] = nil
+	}
+	pool.Put(shardsPtr)
+	return repairs
 }
 
 // rsRecover reconstructs missing data shards using Reed-Solomon.

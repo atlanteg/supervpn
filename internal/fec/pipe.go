@@ -137,6 +137,11 @@ func (p *Pipe) StartRepairSender(ctx context.Context) {
 		return
 	}
 	go func() {
+		// Single timer reused across all repair jobs to avoid per-job allocations.
+		timer := time.NewTimer(0)
+		if !timer.Stop() {
+			<-timer.C
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -147,11 +152,13 @@ func (p *Pipe) StartRepairSender(ctx context.Context) {
 				}
 				// Sleep until the scheduled send time, but wake early on ctx cancel.
 				if d := time.Until(job.sendAt); d > 0 {
-					timer := time.NewTimer(d)
+					timer.Reset(d)
 					select {
 					case <-timer.C:
 					case <-ctx.Done():
-						timer.Stop()
+						if !timer.Stop() {
+							<-timer.C
+						}
 						return
 					}
 				}

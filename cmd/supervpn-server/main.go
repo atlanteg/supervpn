@@ -98,6 +98,11 @@ func main() {
 		b := make([]byte, 2048)
 		return &b
 	}
+	// proto.HeaderSize(15) + crypto overhead(24+16) + max Ethernet frame(1518) ≈ 1573; 2048 covers it.
+	srv.sendPktPool.New = func() interface{} {
+		b := make([]byte, 2048)
+		return &b
+	}
 	for i := 0; i < numWorkers; i++ {
 		go srv.udpWorker(ctx)
 	}
@@ -158,6 +163,7 @@ type Server struct {
 	bannedLogins  map[string]map[uint16]bool  // login → set of hub IDs where banned
 	mu            sync.RWMutex
 	pktPool       sync.Pool  // reusable packet buffers to reduce GC pressure
+	sendPktPool   sync.Pool  // reusable output-packet buffers for sendFECData/sendFECRepair
 	udpJobs       chan udpJob // worker-pool channel for incoming UDP packets
 	startTime     time.Time
 	tcpListenerUp  bool             // true once the primary TLS/TCP listener successfully binds
@@ -664,14 +670,19 @@ func (s *Server) sendFECData(sess *Session, blockID uint32, pktIdx uint16, frame
 	if err != nil {
 		return err
 	}
-	hdr := make([]byte, proto.HeaderSize)
+	total := proto.HeaderSize + len(encrypted)
+	bufPtr := s.sendPktPool.Get().(*[]byte)
+	if cap(*bufPtr) < total {
+		*bufPtr = make([]byte, total)
+	}
+	pkt := (*bufPtr)[:total]
 	proto.Header{
 		Type:      proto.FrameData,
 		HubID:     sess.HubID,
 		SessionID: sess.ID,
 		Seq:       proto.PackDataSeq(blockID, pktIdx),
-	}.Marshal(hdr)
-	pkt := append(hdr, encrypted...)
+	}.Marshal(pkt[:proto.HeaderSize])
+	copy(pkt[proto.HeaderSize:], encrypted)
 	sess.framesTx.Add(1)
 	sess.mu.Lock()
 	send2 := sess.sendRaw2
@@ -680,6 +691,7 @@ func (s *Server) sendFECData(sess *Session, blockID uint32, pktIdx uint16, frame
 	if send2 != nil {
 		_ = send2(pkt)
 	}
+	s.sendPktPool.Put(bufPtr)
 	return err
 }
 
@@ -688,14 +700,19 @@ func (s *Server) sendFECRepair(sess *Session, blockID uint32, repairIdx, blockK,
 	if err != nil {
 		return err
 	}
-	hdr := make([]byte, proto.HeaderSize)
+	total := proto.HeaderSize + len(encrypted)
+	bufPtr := s.sendPktPool.Get().(*[]byte)
+	if cap(*bufPtr) < total {
+		*bufPtr = make([]byte, total)
+	}
+	pkt := (*bufPtr)[:total]
 	proto.Header{
 		Type:      proto.FrameRepair,
 		HubID:     sess.HubID,
 		SessionID: sess.ID,
 		Seq:       proto.PackRepairSeq(blockID, repairIdx, blockK, blockR),
-	}.Marshal(hdr)
-	pkt := append(hdr, encrypted...)
+	}.Marshal(pkt[:proto.HeaderSize])
+	copy(pkt[proto.HeaderSize:], encrypted)
 	sess.mu.Lock()
 	send2 := sess.sendRaw2
 	sess.mu.Unlock()
@@ -703,6 +720,7 @@ func (s *Server) sendFECRepair(sess *Session, blockID uint32, repairIdx, blockK,
 	if send2 != nil {
 		_ = send2(pkt)
 	}
+	s.sendPktPool.Put(bufPtr)
 	return err
 }
 
