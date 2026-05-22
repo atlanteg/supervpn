@@ -86,6 +86,7 @@ func main() {
 		sessions:  make(map[uint32]*Session),
 		kicked:    make(map[string]time.Time),
 		bannedIPs:    make(map[string]struct{}),
+		ipToLogins:   make(map[string]map[string]bool),
 		bannedLogins: make(map[string]map[uint16]bool),
 		startTime:    time.Now(),
 	}
@@ -131,9 +132,10 @@ type Server struct {
 	conn          *net.UDPConn
 	conn2         *net.UDPConn      // secondary UDP listener on port+1
 	sessions      map[uint32]*Session
-	kicked        map[string]time.Time   // login → blocked until; prevents immediate reconnect after kick
-	bannedIPs     map[string]struct{}        // IP (no port) → permanently banned until explicit unban
-	bannedLogins  map[string]map[uint16]bool // login → set of hub IDs where banned
+	kicked        map[string]time.Time        // login → blocked until; prevents immediate reconnect after kick
+	bannedIPs     map[string]struct{}         // IP (no port) → permanently banned until explicit unban
+	ipToLogins    map[string]map[string]bool  // IP → logins that were kicked from it (for cleanup on unban)
+	bannedLogins  map[string]map[uint16]bool  // login → set of hub IDs where banned
 	mu            sync.RWMutex
 	startTime     time.Time
 	tcpListenerUp  bool             // true once the primary TLS/TCP listener successfully binds
@@ -1247,6 +1249,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if kickedIP != "" {
 		s.mu.Lock()
 		s.bannedIPs[kickedIP] = struct{}{}
+		if s.ipToLogins[kickedIP] == nil {
+			s.ipToLogins[kickedIP] = make(map[string]bool)
+		}
+		s.ipToLogins[kickedIP][sess.Login] = true
 		s.mu.Unlock()
 		s.saveBannedIPs()
 	}
@@ -1322,6 +1328,10 @@ func (s *Server) kickSessionsByIP(ip string) {
 			toKick = append(toKick, sess)
 			delete(s.sessions, id)
 			s.kicked[sess.Login] = time.Now().Add(kickBlockDuration)
+			if s.ipToLogins[ip] == nil {
+				s.ipToLogins[ip] = make(map[string]bool)
+			}
+			s.ipToLogins[ip][sess.Login] = true
 		}
 	}
 	s.mu.Unlock()
@@ -1393,6 +1403,11 @@ func (s *Server) handleIPBan(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		_, wasBanned := s.bannedIPs[ip]
 		delete(s.bannedIPs, ip)
+		// Also clear the temporary login block for all logins that were kicked from this IP.
+		for login := range s.ipToLogins[ip] {
+			delete(s.kicked, login)
+		}
+		delete(s.ipToLogins, ip)
 		s.mu.Unlock()
 		if wasBanned {
 			s.saveBannedIPs()
