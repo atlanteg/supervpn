@@ -30,6 +30,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/update"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
+	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
 var (
@@ -310,6 +311,21 @@ func (a *seemaApp) doRefresh() {
 // ── run ──────────────────────────────────────────────────────────────────────
 
 func run() {
+	// Npcap is required for bridge-mode packet capture.
+	// If it is not installed, launch the embedded wizard and then close so the
+	// user can relaunch once installation is complete.
+	if !pkgtun.NpcapInstalled() {
+		walk.MsgBox(nil, "seema VPN — установка Npcap",
+			"Npcap не установлен.\n\n"+
+				"Сейчас откроется мастер установки Npcap.\n"+
+				"После завершения установки запустите seema снова.",
+			walk.MsgBoxIconInformation)
+		if err := pkgtun.InstallNpcap(); err != nil {
+			log.Printf("npcap install: %v", err)
+		}
+		return
+	}
+
 	a := &seemaApp{}
 
 	if err := (MainWindow{
