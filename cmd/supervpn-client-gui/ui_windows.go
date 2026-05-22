@@ -850,9 +850,12 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 
 	hubID := parseHubID(ui.hubCombo.Text())
 	if hubID == 0 && ui.pendingHubID != 0 {
-		// hubCombo text is empty when auto-connect fires before
-		// fetchAndPopulateHubs completes; fall back to the config value.
+		// hubCombo is empty when auto-connect fires before fetchAndPopulateHubs
+		// returns; use the hub ID from the last loaded config.
 		hubID = ui.pendingHubID
+	}
+	if hubID == 0 {
+		hubID = 1 // absolute fallback
 	}
 	fecK := 4
 	if n, err := strconv.Atoi(ui.fecKEdit.Text()); err == nil && n > 0 {
@@ -1150,14 +1153,19 @@ func (ui *winUI) fetchAndPopulateHubs() {
 
 // parseHubID extracts a numeric hub ID from the combo text.
 // Accepts "7 - den", "7", or any prefix that parses as an integer.
+// Returns 0 when the text is empty or unparseable so callers can distinguish
+// "not yet determined" from a real hub ID and apply a pendingHubID fallback.
 func parseHubID(text string) uint16 {
 	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
 	if idx := strings.Index(text, " - "); idx >= 0 {
 		text = strings.TrimSpace(text[:idx])
 	}
 	n, err := strconv.Atoi(text)
 	if err != nil || n <= 0 {
-		return 1
+		return 0
 	}
 	return uint16(n)
 }
@@ -1175,15 +1183,20 @@ func (ui *winUI) applyStartWithWindows(enable bool) {
 	var script string
 	if enable {
 		exeQ := strings.ReplaceAll(exe, "'", "''")
+		// WindowsIdentity::GetCurrent().Name always returns DOMAIN\Username
+		// (or COMPUTERNAME\Username for local accounts), which is the format
+		// Task Scheduler expects for both -User and -UserId.  Using $env:USERNAME
+		// alone (without domain) can fail to match on some configurations.
 		script = fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
+$who      = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action   = New-ScheduledTaskAction -Execute '%s'
-$trigger  = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
+$trigger  = New-ScheduledTaskTrigger -AtLogon -User $who
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 `+
-			`-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+			`-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `+
+			`-MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal `+
-			`-UserId "$env:USERDOMAIN\$env:USERNAME" `+
-			`-RunLevel Highest -LogonType Interactive
+			`-UserId $who -RunLevel Highest -LogonType Interactive
 Register-ScheduledTask -TaskName 'superVPN' `+
 			`-Action $action -Trigger $trigger `+
 			`-Settings $settings -Principal $principal -Force | Out-Null
