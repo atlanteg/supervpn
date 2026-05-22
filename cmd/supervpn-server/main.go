@@ -63,7 +63,8 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	update.CheckAndUpdate(version, update.AssetServer, nil)
+	// Try peer servers as mirrors so servers update each other when GitHub is unreachable.
+	update.CheckAndUpdate(version, update.AssetServer, update.DefaultMirrors())
 
 	log.Printf("supervpn-server %s starting: UDP=%s hubs=%d", version, cfg.Listen, len(cfg.Hubs))
 
@@ -893,6 +894,8 @@ func (s *Server) handleJoin(hdr proto.Header, sendReply func([]byte) error, remo
 // clientAssets lists every binary the server may serve as a mirror.
 // Must stay in sync with the release artifacts published by CI.
 var clientAssets = []string{
+	// Server binary — served so peer servers can update each other.
+	update.AssetServer,
 	// CLI clients
 	"supervpn-client-windows-amd64.exe",
 	"supervpn-client-darwin-arm64",
