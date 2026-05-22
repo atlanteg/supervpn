@@ -41,7 +41,7 @@ func main() {
 	}()
 
 	update.CleanupOldFiles()
-	go update.CheckAndUpdate(version, update.AssetForClientGUI(), nil)
+	go update.CheckAndUpdate(version, update.AssetForClientGUI(), update.DefaultMirrors())
 
 	ui := &winUI{}
 	ui.runApp()

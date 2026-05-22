@@ -149,13 +149,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if len(cfg.UpdateMirrors) == 0 && cfg.Server != "" {
-		if host := vpnclient.ServerHost(cfg.Server); host != "" {
-			cfg.UpdateMirrors = []string{"http://" + host + "/update"}
-			log.Printf("update: mirror auto-set to %s", cfg.UpdateMirrors[0])
-		}
-	}
-	update.CheckAndUpdate(version, update.AssetForClient(), cfg.UpdateMirrors)
+	// Merge: explicit/config mirrors first, then all known server mirrors as fallback.
+	mirrors := append(cfg.UpdateMirrors, update.DefaultMirrors()...)
+	update.CheckAndUpdate(version, update.AssetForClient(), mirrors)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

@@ -409,10 +409,7 @@ func main() {
 	}()
 
 	update.CleanupOldFiles()
-	// Use the server itself as the update mirror so seema clients update even
-	// when GitHub is unreachable.
-	mirrors := []string{"http://" + seemaServer[:strings.Index(seemaServer, ":")] + "/update"}
-	go update.CheckAndUpdate(version, update.AssetForSeema(), mirrors)
+	go update.CheckAndUpdate(version, update.AssetForSeema(), update.DefaultMirrors())
 
 	run()
 }

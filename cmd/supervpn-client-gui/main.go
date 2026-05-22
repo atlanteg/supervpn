@@ -36,10 +36,9 @@ func main() {
 	}
 
 	update.CleanupOldFiles()
-	mirrors := loadSavedMirrors(a)
 	// Use the Fyne-specific asset so Fyne builds update to Fyne builds,
 	// not to the Win32/Walk variant.
-	go update.CheckAndUpdate(version, update.AssetForClientGUIFyne(), mirrors)
+	go update.CheckAndUpdate(version, update.AssetForClientGUIFyne(), update.DefaultMirrors())
 
 	w := a.NewWindow("superVPN " + version + " by NBTboost creators © Atlanteg")
 	w.SetMaster()

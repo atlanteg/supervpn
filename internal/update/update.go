@@ -23,6 +23,27 @@ const (
 	githubDLBase = "https://github.com/" + releasesRepo + "/releases/download/"
 )
 
+// knownServerIPs lists all known supervpn server IPs that run the update
+// mirror on port 80 at /update. Used as fallback when GitHub is unreachable.
+var knownServerIPs = []string{
+	"81.27.241.25",
+	"185.108.16.16",
+	"212.48.224.5",
+	"162.55.48.218",
+	"49.13.4.85",
+}
+
+// DefaultMirrors returns the list of all known server mirror base URLs.
+// Each server exposes GET /update/version and GET /update/{asset}.
+// Clients use these as fallback when GitHub is unreachable.
+func DefaultMirrors() []string {
+	m := make([]string, len(knownServerIPs))
+	for i, ip := range knownServerIPs {
+		m[i] = "http://" + ip + "/update"
+	}
+	return m
+}
+
 // CheckAndUpdate checks for a newer release using GitHub and optional mirror
 // base URLs (each mirror must serve GET {base}/version → plain-text "bN",
 // and GET {base}/{asset} → binary). Tries each source in order; first success
