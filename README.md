@@ -429,28 +429,73 @@ Any ≤ R losses in a block are recovered without retransmit. Streaming delivery
 
 `state`: `starting` | `connecting` | `connected` | `reconnecting`
 
-### `POST http://127.0.0.1:9090/api/hubs/{hub_id}/kick/{session_id}`
+### `POST /api/hubs/{hub_id}/kick/{session_id}` — kick session
+
+Disconnects the session and **permanently bans the client's IP** address.
+The login is also blocked for 5 minutes to prevent immediate reconnect.
 
 ```bash
 curl -X POST http://127.0.0.1:9090/api/hubs/1/kick/3141592653
-# {"status":"ok","session_id":3141592653,"login":"alice"}
+# {"status":"ok","session_id":3141592653,"login":"alice","banned_ip":"1.2.3.4"}
 ```
 
-The login is blocked for 5 minutes after kick.
+---
+
+### IP ban
+
+```bash
+# Ban an IP (also kicks all active sessions from that IP)
+curl -X POST http://127.0.0.1:9090/api/ips/1.2.3.4/ban
+# {"status":"ok","action":"ban","ip":"1.2.3.4"}
+
+# Unban
+curl -X POST http://127.0.0.1:9090/api/ips/1.2.3.4/unban
+# {"status":"ok","action":"unban","ip":"1.2.3.4","was_banned":true}
+
+# List all banned IPs
+curl http://127.0.0.1:9090/api/bans
+# {"banned_ips":["1.2.3.4","5.6.7.8"]}
+```
+
+Bans survive server restarts (`banned_ips.json` next to the binary).
+
+---
+
+### Login ban (per hub)
+
+Ban a specific login on a specific hub. The same login can remain allowed on other hubs.
+
+```bash
+# Ban login on hub 2 (also kicks active sessions)
+curl -X POST http://127.0.0.1:9090/api/hubs/2/loginbans/alice
+# {"status":"ok","action":"ban","login":"alice","hub_id":2}
+
+# Unban
+curl -X POST http://127.0.0.1:9090/api/hubs/2/loginunbans/alice
+# {"status":"ok","action":"unban","login":"alice","hub_id":2,"was_banned":true}
+
+# List banned logins on hub 2
+curl http://127.0.0.1:9090/api/hubs/2/loginbans
+# {"hub_id":2,"banned_logins":["alice","bob"]}
+```
+
+Bans survive server restarts (`banned_logins.json` next to the binary).
+Active bans are also visible in `GET /status` under `banned_ips` and `banned_logins`.
 
 ---
 
 ## Auto-update
 
-On startup, the client checks the latest release and restarts if a newer version is available.
+On startup every binary (server and all clients) checks for a newer release and restarts automatically if one is found.
 
-**Sources (in order):**
-1. GitHub API (`api.github.com/repos/atlanteg/supervpn-releases/releases/latest`)
-2. Mirrors from `update_mirrors` (tried in order)
+**Sources (tried in order):**
+1. GitHub releases (`api.github.com/repos/atlanteg/supervpn-releases/releases/latest`)
+2. Built-in mirror list — all 5 known server IPs at `http://{ip}/update`
 
-**Default mirror:** automatically derived from the `server` field in the client config: `http://server_host/update` (port 80). No explicit `update_mirrors` needed.
+No configuration needed. If GitHub is unreachable, any of the 5 servers acts as a fallback mirror.
+Additional mirrors can be added via `update_mirrors` in the client config (prepended before the built-in list).
 
-The server downloads missing client binaries from GitHub into `dist/` on startup and serves them at `GET /update/{asset}`. `GET /update/` (trailing slash) returns an HTML listing for browser inspection.
+**Server mirror:** each server downloads all client binaries + its own binary from GitHub into `dist/` on startup and serves them at `GET /update/{asset}`. This means servers can update each other even when GitHub is unreachable. `GET /update/` (trailing slash) returns an HTML listing.
 
 ---
 
@@ -544,7 +589,10 @@ systemctl enable --now supervpn-server
 - **Key:** HKDF-SHA256 from `SHA-256(password) + hub_name + login`. Unique per (user, hub) pair.
 - **Wire auth:** `hex(SHA-256(password))` sent to the server; the server stores `bcrypt(wire_hash)`.
 - **Replay protection:** sliding window of 512 packets.
-- **Kick + blocklist:** forcible disconnect via HTTP API; the login is blocked for 5 minutes.
+- **Kick:** forcible disconnect via HTTP API; automatically bans the client's IP permanently and blocks the login for 5 minutes.
+- **IP ban:** permanent ban by IP address, survives restarts (`banned_ips.json`). API: `POST /api/ips/{ip}/ban|unban`, `GET /api/bans`.
+- **Login ban:** permanent ban by login per hub, survives restarts (`banned_logins.json`). API: `POST /api/hubs/{id}/loginbans|loginunbans/{login}`, `GET /api/hubs/{id}/loginbans`.
+- **Management API:** no authentication — bind `status_listen` to loopback (`127.0.0.1`) only, never expose externally.
 
 ---
 
