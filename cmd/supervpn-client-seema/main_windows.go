@@ -28,6 +28,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/bridge"
 	"github.com/atlanteg/supervpn/internal/clientadapter"
 	"github.com/atlanteg/supervpn/internal/config"
+	"github.com/atlanteg/supervpn/internal/update"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
 )
 
@@ -419,6 +420,12 @@ func main() {
 			writeCrashReport(r)
 		}
 	}()
+
+	update.CleanupOldFiles()
+	// Use the server itself as the update mirror so seema clients update even
+	// when GitHub is unreachable.
+	mirrors := []string{"http://" + seemaServer[:strings.Index(seemaServer, ":")] + "/update"}
+	go update.CheckAndUpdate(version, update.AssetForSeema(), mirrors)
 
 	run()
 }

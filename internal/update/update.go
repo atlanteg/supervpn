@@ -194,6 +194,11 @@ func AssetForClientGUIFyne() string {
 	}
 }
 
+// AssetForSeema returns the release asset filename for the seema pre-configured client.
+func AssetForSeema() string {
+	return "supervpn-seema-windows-amd64.exe"
+}
+
 const AssetServer = "supervpn-server"
 
 // FetchAsset downloads one release asset from the tag-specific GitHub URL to

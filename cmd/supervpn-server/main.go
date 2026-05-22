@@ -900,9 +900,10 @@ var clientAssets = []string{
 	// GUI — macOS (universal app bundle zip + per-arch binaries)
 	"supervpn-client-gui-darwin-arm64",
 	"supervpn-client-gui-darwin-amd64",
-	// GUI — Windows: Win32/Walk (default) + Fyne/OpenGL variant
+	// GUI — Windows: Win32/Walk main client
 	"supervpn-client-gui-windows-amd64.exe",
-	"supervpn-client-gui-windows-fyne-amd64.exe",
+	// GUI — Windows: seema pre-configured minimal client
+	"supervpn-seema-windows-amd64.exe",
 }
 
 // updateDir returns the resolved directory for client assets.
