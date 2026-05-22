@@ -36,6 +36,12 @@ func DetectLinkLocal() ([]Interface, error) {
 	}
 	var result []Interface
 	for _, iface := range ifaces {
+		// Skip interfaces that are not up — a disabled/disconnected NIC
+		// may still have a 169.254 APIPA address assigned by Windows,
+		// and bridging it would be a no-op or cause confusion.
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue

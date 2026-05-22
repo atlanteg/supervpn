@@ -13,6 +13,7 @@ import (
 	"image/color"
 	"log"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,7 +61,7 @@ type winUI struct {
 	knockCountEdit    *walk.LineEdit
 	knockSizeEdit     *walk.LineEdit
 	udpAttemptsEdit   *walk.LineEdit
-	bridgeNICEdit     *walk.LineEdit
+	bridgeNICCombo    *walk.ComboBox
 	bridgeTAPEdit     *walk.LineEdit
 	bridgeMethodCombo *walk.ComboBox
 	tunNameEdit       *walk.LineEdit
@@ -336,7 +337,11 @@ func (ui *winUI) advancedPage() TabPage {
 					Layout: Grid{Columns: 2, Spacing: 4},
 					Children: []Widget{
 						Label{Text: "Bridge NIC:"},
-						LineEdit{AssignTo: &ui.bridgeNICEdit},
+						ComboBox{
+							AssignTo: &ui.bridgeNICCombo,
+							Model:    listAdapterNames(),
+							Editable: true,
+						},
 						Label{Text: "Bridge TAP name:"},
 						LineEdit{AssignTo: &ui.bridgeTAPEdit},
 						Label{Text: "Bridge method:"},
@@ -882,7 +887,7 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 			Attempts:   udpAttempts,
 		},
 		Bridge: config.BridgeConfig{
-			NIC:         strings.TrimSpace(ui.bridgeNICEdit.Text()),
+			NIC:         strings.TrimSpace(ui.bridgeNICCombo.Text()),
 			TapName:     strings.TrimSpace(ui.bridgeTAPEdit.Text()),
 			SetupMethod: bridgeMethod,
 		},
@@ -948,7 +953,7 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	if cfg.UDP.Attempts > 0 {
 		_ = ui.udpAttemptsEdit.SetText(strconv.Itoa(cfg.UDP.Attempts))
 	}
-	_ = ui.bridgeNICEdit.SetText(cfg.Bridge.NIC)
+	_ = ui.bridgeNICCombo.SetText(cfg.Bridge.NIC)
 	_ = ui.bridgeTAPEdit.SetText(cfg.Bridge.TapName)
 	bridgeMethodItems := []string{"netbridge", "hyperv"}
 	for i, m := range bridgeMethodItems {
@@ -1121,6 +1126,20 @@ func parseHubID(text string) uint16 {
 		return 1
 	}
 	return uint16(n)
+}
+
+// listAdapterNames returns the friendly names of all network adapters visible
+// to the OS, used to populate the Bridge NIC dropdown.
+func listAdapterNames() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(ifaces))
+	for _, iface := range ifaces {
+		names = append(names, iface.Name)
+	}
+	return names
 }
 
 // ── last-used config persistence ──────────────────────────────────────────────
