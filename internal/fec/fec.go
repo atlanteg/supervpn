@@ -85,6 +85,7 @@ type Decoder struct {
 	k, r       int
 	mu         sync.Mutex
 	blocks     map[uint32]*decBlock
+	blockPool  sync.Pool  // reusable *decBlock to reduce per-packet allocations
 	maxSeen    uint32
 	minBlockID uint32 // amortised expire pointer: lowest blockID not yet scanned
 	enc        reedsolomon.Encoder // nil when r==1
@@ -102,6 +103,13 @@ type decBlock struct {
 
 func NewDecoder(k, r int) (*Decoder, error) {
 	d := &Decoder{k: k, r: r, blocks: make(map[uint32]*decBlock)}
+	d.blockPool.New = func() interface{} {
+		return &decBlock{
+			data:    make([][]byte, k),
+			repair:  make([][]byte, r),
+			present: make([]bool, k+r),
+		}
+	}
 	if r > 1 {
 		var err error
 		d.enc, err = reedsolomon.New(k, r)
@@ -166,13 +174,27 @@ func (d *Decoder) getOrCreate(id uint32) *decBlock {
 	if b, ok := d.blocks[id]; ok {
 		return b
 	}
-	b := &decBlock{
-		data:    make([][]byte, d.k),
-		repair:  make([][]byte, d.r),
-		present: make([]bool, d.k+d.r),
-	}
+	b := d.blockPool.Get().(*decBlock)
 	d.blocks[id] = b
 	return b
+}
+
+func (d *Decoder) returnBlock(b *decBlock) {
+	// Reset all fields so the block is clean for the next caller.
+	for i := range b.data {
+		b.data[i] = nil
+	}
+	for i := range b.repair {
+		b.repair[i] = nil
+	}
+	for i := range b.present {
+		b.present[i] = false
+	}
+	b.count = 0
+	b.delivered = 0
+	b.done = false
+	b.lastActivity = time.Time{}
+	d.blockPool.Put(b)
 }
 
 // expire advances the minBlockID pointer, deleting blocks that are old enough.
@@ -193,6 +215,7 @@ func (d *Decoder) expire() {
 		}
 		if b.lastActivity.IsZero() || now.Sub(b.lastActivity) > blockKeepAge {
 			delete(d.blocks, d.minBlockID)
+			d.returnBlock(b)
 			d.minBlockID++
 		} else {
 			// Block still within keep age; stop and revisit on next call.

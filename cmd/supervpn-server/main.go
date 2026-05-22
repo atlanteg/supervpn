@@ -126,8 +126,8 @@ type Session struct {
 	cipher       *crypto.Cipher
 	replay       crypto.ReplayWindow
 	pipe         *fec.Pipe
-	cancel       context.CancelFunc // cancels per-session goroutines (e.g. FEC flush)
-	lastSeen     time.Time
+	cancel          context.CancelFunc // cancels per-session goroutines (e.g. FEC flush)
+	lastSeenNano    atomic.Int64       // Unix nanoseconds; updated lock-free on every data/repair packet
 	framesRx     atomic.Int64 // frames received from this client and forwarded to hub
 	framesTx     atomic.Int64 // frames sent to this client from hub
 	hubSendCalls atomic.Int64 // times hub called client.Send (pre-FEC)
@@ -248,6 +248,17 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		pkt := buf[:n]
 		ra := raddr
+		// Fast-path: repair and ping packets are cheap (no hub forward in normal
+		// operation). Process them inline to avoid channel overhead — with K=1/R=2
+		// repairs account for ~2/3 of all incoming UDP packets.
+		if hdr, ok := proto.ParseHeader(pkt); ok {
+			if hdr.Type == proto.FrameRepair || hdr.Type == proto.FramePing {
+				sendFn := func(p []byte) error { _, err := s.conn.WriteToUDP(p, ra); return err }
+				s.handlePacket(ctx, pkt, sendFn, ra.String(), "udp", func() {}, false)
+				s.pktPool.Put(bufPtr)
+				continue
+			}
+		}
 		select {
 		case s.udpJobs <- udpJob{
 			pkt:    pkt,
@@ -477,8 +488,8 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		sendRaw:     sendReply,
 		closeConn:   closeConn,
 		cipher:      cipher,
-		lastSeen:    now,
 	}
+	sess.lastSeenNano.Store(now.UnixNano())
 
 	pipe, err := fec.NewPipe(
 		fecCfg.K,
@@ -551,9 +562,7 @@ func (s *Server) handleData(hdr proto.Header, payload []byte, sendReply func([]b
 	if !ok {
 		return
 	}
-	sess.mu.Lock()
-	sess.lastSeen = time.Now()
-	sess.mu.Unlock()
+	sess.lastSeenNano.Store(time.Now().UnixNano())
 
 	frame, err := sess.cipher.Open(payload, &sess.replay)
 	if err != nil {
@@ -643,9 +652,7 @@ func (s *Server) handlePing(hdr proto.Header, sendReply func([]byte) error) {
 		return
 	}
 
-	sess.mu.Lock()
-	sess.lastSeen = time.Now()
-	sess.mu.Unlock()
+	sess.lastSeenNano.Store(time.Now().UnixNano())
 
 	pong := make([]byte, proto.HeaderSize)
 	proto.Header{Type: proto.FramePong, SessionID: hdr.SessionID}.Marshal(pong)
@@ -751,9 +758,7 @@ func (s *Server) cleanupSessions() {
 	now := time.Now()
 	s.mu.Lock()
 	for id, sess := range s.sessions {
-		sess.mu.Lock()
-		stale := sess.lastSeen.Before(deadline)
-		sess.mu.Unlock()
+		stale := time.Unix(0, sess.lastSeenNano.Load()).Before(deadline)
 		if stale {
 			delete(s.sessions, id)
 			if sess.cancel != nil {
@@ -820,6 +825,14 @@ func (s *Server) runSecondaryUDP(ctx context.Context, conn *net.UDPConn) {
 		}
 		pkt := buf[:n]
 		ra := raddr
+		if hdr, ok := proto.ParseHeader(pkt); ok {
+			if hdr.Type == proto.FrameRepair || hdr.Type == proto.FramePing {
+				sendFn := func(p []byte) error { _, err := conn.WriteToUDP(p, ra); return err }
+				s.handlePacket(ctx, pkt, sendFn, ra.String(), "udp2", func() {}, true)
+				s.pktPool.Put(bufPtr)
+				continue
+			}
+		}
 		select {
 		case s.udpJobs <- udpJob{
 			pkt:    pkt,
@@ -1657,7 +1670,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			SecondaryAddr: sess.secondaryAddr,
 			Mode:          sess.Mode,
 			ConnectedAt:   sess.ConnectedAt,
-			LastSeen:      sess.lastSeen,
+			LastSeen:      time.Unix(0, sess.lastSeenNano.Load()),
 			FramesRx:      sess.framesRx.Load(),
 			FramesTx:      sess.framesTx.Load(),
 			HubSendCalls:  sess.hubSendCalls.Load(),

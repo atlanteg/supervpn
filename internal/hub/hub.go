@@ -88,28 +88,41 @@ func (h *Hub) Forward(srcSession uint32, frame []byte) {
 	copy(dst[:], frame[0:6])
 	copy(src[:], frame[6:12])
 
-	h.mu.Lock()
-	// Learn source MAC; preserve any IP we already know for this MAC.
-	existing := h.macTable[src]
-	entry := macEntry{sessionID: srcSession, expires: time.Now().Add(macTableTTL), ip: existing.ip}
-	// Extract src IPv4 from ARP (sender protocol address) or IPv4 header.
-	if len(frame) >= 14 {
-		etype := uint16(frame[12])<<8 | uint16(frame[13])
-		switch etype {
-		case 0x0806: // ARP — sender IP at offset 28
-			if len(frame) >= 32 {
-				entry.ip = cloneIP(frame[28:32])
-			}
-		case 0x0800: // IPv4 — src IP at offset 26
-			if len(frame) >= 30 {
-				entry.ip = cloneIP(frame[26:30])
+	// Fast path: if we already know this src MAC for this session with a fresh
+	// TTL, skip the write lock and just do a read-lock dst lookup.
+	h.mu.RLock()
+	srcEntry, srcKnown := h.macTable[src]
+	dstEntry, known := h.macTable[dst]
+	h.mu.RUnlock()
+
+	needUpdate := !srcKnown ||
+		srcEntry.sessionID != srcSession ||
+		time.Until(srcEntry.expires) < time.Minute
+
+	if needUpdate {
+		// Slow path: write lock to update src MAC entry.
+		var newIP net.IP
+		if srcKnown {
+			newIP = srcEntry.ip
+		}
+		if len(frame) >= 14 {
+			etype := uint16(frame[12])<<8 | uint16(frame[13])
+			switch etype {
+			case 0x0806:
+				if len(frame) >= 32 {
+					newIP = cloneIP(frame[28:32])
+				}
+			case 0x0800:
+				if len(frame) >= 30 {
+					newIP = cloneIP(frame[26:30])
+				}
 			}
 		}
+		h.mu.Lock()
+		h.macTable[src] = macEntry{sessionID: srcSession, expires: time.Now().Add(macTableTTL), ip: newIP}
+		dstEntry, known = h.macTable[dst] // re-read under write lock
+		h.mu.Unlock()
 	}
-	h.macTable[src] = entry
-	// look up destination
-	dstEntry, known := h.macTable[dst]
-	h.mu.Unlock()
 
 	isBroadcast := dst == ([6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
 	isMulticast := dst[0]&0x01 != 0
