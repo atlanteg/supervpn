@@ -128,6 +128,12 @@ func (p *Pipe) RecvRepair(blockID uint32, repairIdx, blockK, blockR uint8, data 
 	return p.dec.AddRepair(blockID, int(repairIdx), data)
 }
 
+// RepairBlockDone reports whether blockID has already been fully delivered.
+// Callers can use this to skip decryption of repair packets for completed blocks.
+func (p *Pipe) RepairBlockDone(blockID uint32) bool {
+	return p.dec.BlockDone(blockID)
+}
+
 // StartRepairSender starts the single background goroutine that delivers delayed
 // repair packets. Must be called once after NewPipe when repairDelay > 0.
 // The goroutine stops when ctx is cancelled. Calling StartRepairSender when

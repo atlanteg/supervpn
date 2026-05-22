@@ -338,26 +338,58 @@ func (c *Client) runSession(ctx context.Context) error {
 	c.sessionFS = &stats
 	c.mu.Unlock()
 
+	// Pool for outgoing packet buffers: proto.HeaderSize(15) + crypto overhead(40) + max frame(1518) < 2048.
+	var sendBufPool sync.Pool
+	sendBufPool.New = func() interface{} {
+		b := make([]byte, 2048)
+		return &b
+	}
+
 	pipe, err := fec.NewPipe(
 		fecCfg.K,
 		fecCfg.R,
 		fecCfg.RepairDelayDuration(),
 		func(blockID uint32, pktIdx uint16, data []byte) error {
 			stats.bytesTx.Add(uint64(len(data)))
-			pkt, err := buildFECDataPkt(sessionID, c.Cfg.HubID, sessionCipher, blockID, pktIdx, data)
-			if err != nil {
-				return err
+			encrypted, encErr := sessionCipher.Seal(data)
+			if encErr != nil {
+				return encErr
 			}
+			total := proto.HeaderSize + len(encrypted)
+			bufPtr := sendBufPool.Get().(*[]byte)
+			if cap(*bufPtr) < total {
+				*bufPtr = make([]byte, total)
+			}
+			pkt := (*bufPtr)[:total]
+			proto.Header{
+				Type: proto.FrameData, HubID: c.Cfg.HubID,
+				SessionID: sessionID, Seq: proto.PackDataSeq(blockID, pktIdx),
+			}.Marshal(pkt[:proto.HeaderSize])
+			copy(pkt[proto.HeaderSize:], encrypted)
 			sendOnBoth(tr, tr2, pkt)
+			sendBufPool.Put(bufPtr)
 			return nil
 		},
 		func(blockID uint32, repairIdx uint8, data []byte) error {
 			stats.bytesTx.Add(uint64(len(data)))
-			pkt, err := buildFECRepairPkt(sessionID, c.Cfg.HubID, sessionCipher, blockID, repairIdx, uint8(fecCfg.K), uint8(fecCfg.R), data)
-			if err != nil {
-				return err
+			encrypted, encErr := sessionCipher.Seal(data)
+			if encErr != nil {
+				return encErr
 			}
+			total := proto.HeaderSize + len(encrypted)
+			bufPtr := sendBufPool.Get().(*[]byte)
+			if cap(*bufPtr) < total {
+				*bufPtr = make([]byte, total)
+			}
+			pkt := (*bufPtr)[:total]
+			proto.Header{
+				Type: proto.FrameRepair, HubID: c.Cfg.HubID,
+				SessionID: sessionID,
+				Seq:       proto.PackRepairSeq(blockID, repairIdx, uint8(fecCfg.K), uint8(fecCfg.R)),
+			}.Marshal(pkt[:proto.HeaderSize])
+			copy(pkt[proto.HeaderSize:], encrypted)
 			sendOnBoth(tr, tr2, pkt)
+			sendBufPool.Put(bufPtr)
 			return nil
 		},
 	)
@@ -373,6 +405,7 @@ func (c *Client) runSession(ctx context.Context) error {
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
 
+	pipe.StartRepairSender(sessionCtx)
 	pipe.StartFlush(sessionCtx, 200*time.Millisecond, func(frame []byte) {
 		if len(frame) < 14 {
 			return
@@ -683,13 +716,18 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 			}
 
 		case proto.FrameRepair:
+			blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
+			// Skip decryption if the block is already fully delivered — with K=1/R=2
+			// this avoids 2 out of 3 AES-GCM decrypt operations per original frame.
+			if pipe.RepairBlockDone(blockID) {
+				continue
+			}
 			frame, err := cipher.Open(payload, &replay)
 			if err != nil {
 				continue
 			}
 			stats.repairRecv.Add(1)
 			stats.bytesRx.Add(uint64(len(frame)))
-			blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
 			// Warn if repair-packet K/R differ from the pipe's configured values.
 			// This can happen if the server reloaded its config mid-session; the
 			// pipe handles it gracefully because blockK/blockR are passed through
@@ -744,36 +782,6 @@ func deriveSecondaryAddr(addr string) string {
 		return ""
 	}
 	return net.JoinHostPort(host, strconv.Itoa(port+1))
-}
-
-func buildFECDataPkt(sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, pktIdx uint16, frame []byte) ([]byte, error) {
-	encrypted, err := cipher.Seal(frame)
-	if err != nil {
-		return nil, err
-	}
-	hdr := make([]byte, proto.HeaderSize)
-	proto.Header{
-		Type:      proto.FrameData,
-		HubID:     hubID,
-		SessionID: sessionID,
-		Seq:       proto.PackDataSeq(blockID, pktIdx),
-	}.Marshal(hdr)
-	return append(hdr, encrypted...), nil
-}
-
-func buildFECRepairPkt(sessionID uint32, hubID uint16, cipher *crypto.Cipher, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) ([]byte, error) {
-	encrypted, err := cipher.Seal(data)
-	if err != nil {
-		return nil, err
-	}
-	hdr := make([]byte, proto.HeaderSize)
-	proto.Header{
-		Type:      proto.FrameRepair,
-		HubID:     hubID,
-		SessionID: sessionID,
-		Seq:       proto.PackRepairSeq(blockID, repairIdx, blockK, blockR),
-	}.Marshal(hdr)
-	return append(hdr, encrypted...), nil
 }
 
 func sendOnBoth(tr1, tr2 transport.Transport, pkt []byte) {

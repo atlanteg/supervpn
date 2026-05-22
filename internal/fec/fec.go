@@ -137,6 +137,16 @@ func (d *Decoder) AddRepair(blockID uint32, idx int, pkt []byte) ([][]byte, erro
 	return d.add(blockID, idx, pkt, true)
 }
 
+// BlockDone reports whether a FEC block has already been fully delivered.
+// When true, any further packets for that block can be dropped before decryption.
+func (d *Decoder) BlockDone(blockID uint32) bool {
+	d.mu.Lock()
+	b, ok := d.blocks[blockID]
+	done := ok && b.done
+	d.mu.Unlock()
+	return done
+}
+
 func (d *Decoder) add(blockID uint32, idx int, pkt []byte, isRepair bool) ([][]byte, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
