@@ -609,6 +609,13 @@ func (s *Server) handleRepair(hdr proto.Header, payload []byte, sendReply func([
 	if !ok {
 		return
 	}
+	// Extract blockID before decrypting: skip the expensive cipher.Open for
+	// repair packets whose block is already fully delivered (common at K=1/R=2).
+	blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
+	if sess.pipe.RepairBlockDone(blockID) {
+		return
+	}
+
 	frame, err := sess.cipher.Open(payload, &sess.replay)
 	if err != nil {
 		return
@@ -624,7 +631,6 @@ func (s *Server) handleRepair(hdr proto.Header, payload []byte, sendReply func([
 		sess.mu.Unlock()
 	}
 
-	blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
 	recovered, err := sess.pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
 	if err != nil || recovered == nil {
 		return

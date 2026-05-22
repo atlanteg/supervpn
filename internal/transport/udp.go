@@ -5,10 +5,23 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 )
 
-const udpReadBuf = 2048
+const (
+	udpReadBuf    = 2048
+	udpSockBufSz  = 4 * 1024 * 1024 // 4 MiB OS socket buffer — prevents silent drops during burst arrivals
+)
+
+// recvBufPool reuses read buffers across Recv calls; one buffer per goroutine
+// since Recv is always called from a single dedicated read goroutine per socket.
+var recvBufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, udpReadBuf)
+		return &b
+	},
+}
 
 type UDPTransport struct {
 	conn *net.UDPConn
@@ -23,6 +36,8 @@ func DialUDP(addr string) (*UDPTransport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("transport/udp: dial: %w", err)
 	}
+	_ = conn.SetReadBuffer(udpSockBufSz)
+	_ = conn.SetWriteBuffer(udpSockBufSz)
 	return &UDPTransport{conn: conn}, nil
 }
 
@@ -35,6 +50,8 @@ func ListenUDP(addr string) (*UDPTransport, error) {
 	if err != nil {
 		return nil, err
 	}
+	_ = conn.SetReadBuffer(udpSockBufSz)
+	_ = conn.SetWriteBuffer(udpSockBufSz)
 	return &UDPTransport{conn: conn}, nil
 }
 
@@ -44,7 +61,10 @@ func (u *UDPTransport) Send(f Frame) error {
 }
 
 func (u *UDPTransport) Recv(ctx context.Context) (Frame, error) {
-	buf := make([]byte, udpReadBuf)
+	bufPtr := recvBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer recvBufPool.Put(bufPtr)
+
 	_ = u.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	for {
 		select {
