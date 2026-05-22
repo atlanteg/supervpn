@@ -13,6 +13,14 @@ import (
 )
 
 func main() {
+	// Single-instance guard: if another copy is already running, bring its
+	// window to the foreground and exit. Must run before ensureAdmin so that
+	// the non-elevated launcher releases the mutex before the elevated
+	// re-launch acquires it.
+	if !acquireSingleInstance() {
+		return
+	}
+
 	// Request administrator privileges — required for WinTun/TAP adapter
 	// creation, pnputil driver install, netsh IP assignment, and Npcap capture.
 	// If not elevated, relaunches via UAC and exits this instance.

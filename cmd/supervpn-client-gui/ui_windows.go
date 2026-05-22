@@ -266,8 +266,21 @@ func (ui *winUI) connectionPage() TabPage {
 				Composite{
 					Layout: HBox{Spacing: 6},
 					Children: []Widget{
-						PushButton{AssignTo: &ui.connectBtn, Text: "Connect", OnClicked: ui.onConnect},
-						PushButton{AssignTo: &ui.disconnectBtn, Text: "Disconnect", Enabled: false, OnClicked: ui.onDisconnect},
+						PushButton{
+							AssignTo:  &ui.connectBtn,
+							Text:      "Connect",
+							OnClicked: ui.onConnect,
+							MinSize:   Size{Width: 130, Height: 44},
+							Font:      Font{Bold: true, PointSize: 12},
+						},
+						PushButton{
+							AssignTo:  &ui.disconnectBtn,
+							Text:      "Disconnect",
+							Enabled:   false,
+							OnClicked: ui.onDisconnect,
+							MinSize:   Size{Width: 130, Height: 44},
+							Font:      Font{Bold: true, PointSize: 12},
+						},
 					},
 				},
 				Label{AssignTo: &ui.statsLabel, Text: ""},
@@ -822,6 +835,11 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 	}
 
 	hubID := parseHubID(ui.hubCombo.Text())
+	if hubID == 0 && ui.pendingHubID != 0 {
+		// hubCombo text is empty when auto-connect fires before
+		// fetchAndPopulateHubs completes; fall back to the config value.
+		hubID = ui.pendingHubID
+	}
 	fecK := 4
 	if n, err := strconv.Atoi(ui.fecKEdit.Text()); err == nil && n > 0 {
 		fecK = n

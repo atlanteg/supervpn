@@ -54,9 +54,9 @@ jobs:
             server_cli=true
           fi
 
-          # GUI (Walk + macOS Fyne) trigger gui jobs
+          # GUI (Walk + macOS Fyne + seema) trigger gui jobs
           if echo "$CHANGED" | grep -qE \
-            '^(cmd/supervpn-client-gui/|internal/|pkg/|go\.(mod|sum))'; then
+            '^(cmd/supervpn-client-gui/|cmd/supervpn-client-seema/|internal/|pkg/|go\.(mod|sum))'; then
             gui=true
           fi
 
@@ -298,6 +298,22 @@ jobs:
             -o dist/supervpn-client-gui-windows-amd64.exe `
             ./cmd/supervpn-client-gui
 
+      - name: Build seema client (windows/amd64)
+        shell: pwsh
+        run: |
+          # Copy syso (icon + admin manifest) from the main GUI package so
+          # the seema binary gets the same embedded icon and elevation request.
+          Copy-Item cmd\supervpn-client-gui\rsrc_windows_amd64.syso `
+                    cmd\supervpn-client-seema\rsrc_windows_amd64.syso -Force
+          $env:CGO_ENABLED = "0"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $VER = "${{ needs.setup.outputs.ver }}"
+          go build `
+            -ldflags="-s -w -H windowsgui -X main.version=$VER" `
+            -o dist/supervpn-seema-windows-amd64.exe `
+            ./cmd/supervpn-client-seema
+
       - uses: actions/upload-artifact@v4
         with:
           name: gui-windows-amd64
@@ -377,8 +393,9 @@ jobs:
           fi
 
           if [ "${{ needs.build-gui-windows.result }}" = "skipped" ]; then
-            echo "Filling Windows GUI artifact from $PREV..."
+            echo "Filling Windows GUI artifacts from $PREV..."
             fill "supervpn-client-gui-windows-amd64.exe"
+            fill "supervpn-seema-windows-amd64.exe"
           fi
 
       - name: Fix permissions on unix executables
@@ -397,6 +414,7 @@ jobs:
             supervpn-client-gui-windows-amd64.exe \
             supervpn-client-gui-darwin-amd64 \
             supervpn-client-gui-darwin-arm64 \
+            supervpn-seema-windows-amd64.exe \
             README-user.pdf
 
       - name: Publish release to supervpn-releases
@@ -414,6 +432,7 @@ jobs:
             dist/supervpn-client-gui-darwin-amd64 \
             dist/supervpn-client-gui-darwin-arm64 \
             dist/superVPN-macos.zip \
+            dist/supervpn-seema-windows-amd64.exe \
             dist/README-user.pdf \
             --repo atlantegsrb/supervpn-releases \
             --title "supervpn $VER" \
