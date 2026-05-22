@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -127,9 +128,9 @@ type Session struct {
 	pipe         *fec.Pipe
 	cancel       context.CancelFunc // cancels per-session goroutines (e.g. FEC flush)
 	lastSeen     time.Time
-	framesRx     int64 // frames received from this client and forwarded to hub
-	framesTx     int64 // frames sent to this client from hub
-	hubSendCalls int64 // times hub called client.Send (pre-FEC); if >0 and framesTx=0, pipe/cipher bug
+	framesRx     atomic.Int64 // frames received from this client and forwarded to hub
+	framesTx     atomic.Int64 // frames sent to this client from hub
+	hubSendCalls atomic.Int64 // times hub called client.Send (pre-FEC)
 	mu           sync.Mutex
 }
 
@@ -509,9 +510,7 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		SessionID: sessionID,
 		Login:     hello.Login,
 		Send: func(frame []byte) error {
-			sess.mu.Lock()
-			sess.hubSendCalls++
-			sess.mu.Unlock()
+			sess.hubSendCalls.Add(1)
 			return sess.pipe.Send(frame)
 		},
 	}
@@ -523,11 +522,10 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		if len(frame) < 14 {
 			return
 		}
-		sess.mu.Lock()
-		sess.framesRx++
-		sess.mu.Unlock()
+		sess.framesRx.Add(1)
 		h.Forward(sessionID, frame)
 	})
+	pipe.StartRepairSender(sCtx)
 
 	log.Printf("auth ok: %s@hub%d session=%d addr=%s mode=%s fec=K%d/R%d delay=%dms",
 		hello.Login, hello.HubID, sessionID, remoteAddr, mode, fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
@@ -583,9 +581,7 @@ func (s *Server) handleData(hdr proto.Header, payload []byte, sendReply func([]b
 	}
 	for _, f := range recovered {
 		if len(f) >= 14 {
-			sess.mu.Lock()
-			sess.framesRx++
-			sess.mu.Unlock()
+			sess.framesRx.Add(1)
 			h.Forward(hdr.SessionID, f)
 		}
 	}
@@ -624,9 +620,7 @@ func (s *Server) handleRepair(hdr proto.Header, payload []byte, sendReply func([
 	}
 	for _, f := range recovered {
 		if len(f) >= 14 {
-			sess.mu.Lock()
-			sess.framesRx++
-			sess.mu.Unlock()
+			sess.framesRx.Add(1)
 			h.Forward(hdr.SessionID, f)
 		}
 	}
@@ -671,8 +665,8 @@ func (s *Server) sendFECData(sess *Session, blockID uint32, pktIdx uint16, frame
 		Seq:       proto.PackDataSeq(blockID, pktIdx),
 	}.Marshal(hdr)
 	pkt := append(hdr, encrypted...)
+	sess.framesTx.Add(1)
 	sess.mu.Lock()
-	sess.framesTx++
 	send2 := sess.sendRaw2
 	sess.mu.Unlock()
 	err = sess.sendRaw(pkt)
@@ -1664,9 +1658,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			Mode:          sess.Mode,
 			ConnectedAt:   sess.ConnectedAt,
 			LastSeen:      sess.lastSeen,
-			FramesRx:      sess.framesRx,
-			FramesTx:      sess.framesTx,
-			HubSendCalls:  sess.hubSendCalls,
+			FramesRx:      sess.framesRx.Load(),
+			FramesTx:      sess.framesTx.Load(),
+			HubSendCalls:  sess.hubSendCalls.Load(),
 		}
 		sess.mu.Unlock()
 		byHub[sess.HubID] = append(byHub[sess.HubID], snap)

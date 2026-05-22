@@ -82,11 +82,12 @@ func (e *Encoder) BlockID() uint32 { return e.blockID }
 
 // Decoder reassembles FEC blocks, recovering lost packets when possible.
 type Decoder struct {
-	k, r    int
-	mu      sync.Mutex
-	blocks  map[uint32]*decBlock
-	maxSeen uint32
-	enc     reedsolomon.Encoder // nil when r==1
+	k, r       int
+	mu         sync.Mutex
+	blocks     map[uint32]*decBlock
+	maxSeen    uint32
+	lastExpire time.Time // throttle: only run expire() every 500ms
+	enc        reedsolomon.Encoder // nil when r==1
 }
 
 type decBlock struct {
@@ -126,10 +127,14 @@ func (d *Decoder) add(blockID uint32, idx int, pkt []byte, isRepair bool) ([][]b
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// track max seen block for expiry
+	// track max seen block for expiry; throttled to avoid O(N) map scan per packet
 	if blockID > d.maxSeen {
 		d.maxSeen = blockID
-		d.expire()
+		now := time.Now()
+		if now.Sub(d.lastExpire) >= 500*time.Millisecond {
+			d.expire()
+			d.lastExpire = now
+		}
 	}
 
 	b := d.getOrCreate(blockID)
@@ -137,6 +142,8 @@ func (d *Decoder) add(blockID uint32, idx int, pkt []byte, isRepair bool) ([][]b
 		return nil, nil
 	}
 
+	// copy after done-check: avoids allocating for redundant repair packets
+	// (with K=1/R=2 the two repair packets almost always hit done=true)
 	cp := make([]byte, len(pkt))
 	copy(cp, pkt)
 

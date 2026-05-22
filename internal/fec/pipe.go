@@ -14,6 +14,13 @@ type SendDataFn func(blockID uint32, pktIdx uint16, data []byte) error
 // SendRepairFn is called for each repair symbol generated when a block is full.
 type SendRepairFn func(blockID uint32, repairIdx uint8, data []byte) error
 
+// repairJob carries a completed FEC block's repair symbols to the background sender.
+type repairJob struct {
+	sendAt  time.Time
+	blockID uint32
+	repairs [][]byte
+}
+
 // Pipe integrates FEC encoding (send path) and decoding (receive path) for one session.
 // It is safe for concurrent use from a single sender goroutine + single receiver goroutine.
 // Do NOT call Send from multiple goroutines simultaneously — use external locking if needed.
@@ -25,6 +32,10 @@ type Pipe struct {
 	repairDelay time.Duration // if >0, repair packets are sent after this delay
 	mu          sync.Mutex   // protects enc (send path)
 	pktIdx      uint16       // index of next packet within current block
+	// repairCh is non-nil when repairDelay > 0. A single background goroutine
+	// (started by StartRepairSender) drains it, sleeping until each job's sendAt.
+	// This replaces the previous goroutine-per-block-completion approach.
+	repairCh chan repairJob
 }
 
 // NewPipe creates a FEC pipe with the given K/R parameters and send callbacks.
@@ -41,13 +52,19 @@ func NewPipe(k, r int, repairDelay time.Duration, sendData SendDataFn, sendRepai
 	if err != nil {
 		return nil, err
 	}
-	return &Pipe{
+	p := &Pipe{
 		enc:         enc,
 		dec:         dec,
 		sendData:    sendData,
 		sendRepair:  sendRepair,
 		repairDelay: repairDelay,
-	}, nil
+	}
+	if repairDelay > 0 && sendRepair != nil {
+		// Buffer sized for ~0.5 s worth of blocks at K=1/2500 pps; drops to immediate
+		// send on overflow rather than blocking the hot path.
+		p.repairCh = make(chan repairJob, 2048)
+	}
+	return p, nil
 }
 
 // Send passes a plaintext L2 frame through the FEC encoder and onto the wire.
@@ -73,15 +90,21 @@ func (p *Pipe) Send(frame []byte) error {
 		return nil
 	}
 	if p.repairDelay > 0 {
-		// Send repairs after delay so they arrive after any short burst that
-		// killed the data packet. Errors are intentionally ignored — repairs
-		// are best-effort and the session may have ended by the time they fire.
-		go func() {
-			time.Sleep(p.repairDelay)
+		// Hand off to the single background sender goroutine (started by
+		// StartRepairSender). If the channel is full — extremely unlikely at
+		// normal rates — fall back to immediate send so repairs aren't lost.
+		job := repairJob{
+			sendAt:  time.Now().Add(p.repairDelay),
+			blockID: completedBlockID,
+			repairs: repairs,
+		}
+		select {
+		case p.repairCh <- job:
+		default:
 			for i, rep := range repairs {
 				_ = p.sendRepair(completedBlockID, uint8(i), rep)
 			}
-		}()
+		}
 	} else {
 		for i, rep := range repairs {
 			if err := p.sendRepair(completedBlockID, uint8(i), rep); err != nil {
@@ -103,6 +126,41 @@ func (p *Pipe) RecvData(blockID uint32, pktIdx uint16, data []byte) ([][]byte, e
 // Returns the complete block of K frames when recovery is possible, nil otherwise.
 func (p *Pipe) RecvRepair(blockID uint32, repairIdx, blockK, blockR uint8, data []byte) ([][]byte, error) {
 	return p.dec.AddRepair(blockID, int(repairIdx), data)
+}
+
+// StartRepairSender starts the single background goroutine that delivers delayed
+// repair packets. Must be called once after NewPipe when repairDelay > 0.
+// The goroutine stops when ctx is cancelled. Calling StartRepairSender when
+// repairDelay == 0 (repairCh == nil) is a no-op.
+func (p *Pipe) StartRepairSender(ctx context.Context) {
+	if p.repairCh == nil {
+		return
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case job, ok := <-p.repairCh:
+				if !ok {
+					return
+				}
+				// Sleep until the scheduled send time, but wake early on ctx cancel.
+				if d := time.Until(job.sendAt); d > 0 {
+					timer := time.NewTimer(d)
+					select {
+					case <-timer.C:
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					}
+				}
+				for i, rep := range job.repairs {
+					_ = p.sendRepair(job.blockID, uint8(i), rep)
+				}
+			}
+		}
+	}()
 }
 
 // StartFlush runs a background goroutine that calls FlushStale every maxAge/4.
