@@ -228,6 +228,11 @@ func (ui *winUI) runApp() {
 	if ui.autoConnectCheck != nil && ui.autoConnectCheck.Checked() {
 		ui.form.Synchronize(ui.onConnect)
 	}
+	// Bring window to foreground — needed when re-launched after auto-update,
+	// because the new process is started as a child and Windows places it behind
+	// existing windows by default.
+	win.SetForegroundWindow(ui.form.Handle())
+	win.BringWindowToTop(ui.form.Handle())
 	ui.form.Run()
 }
 
