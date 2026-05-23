@@ -5,7 +5,6 @@ package main
 import (
 	"io"
 	"log"
-	"os"
 
 	"github.com/lxn/walk"
 
@@ -26,12 +25,16 @@ func main() {
 	// If not elevated, relaunches via UAC and exits this instance.
 	ensureAdmin()
 
+	// Windows GUI apps have no console — writing to os.Stderr returns an error
+	// which causes io.MultiWriter to short-circuit and drop subsequent writers.
+	// Write only to the log file and the in-memory ring (AppLog).
 	if lf := openLogFile(); lf != nil {
 		defer lf.Close()
-		log.SetOutput(io.MultiWriter(os.Stderr, lf, AppLog))
+		log.SetOutput(io.MultiWriter(lf, AppLog))
 	} else {
-		log.SetOutput(io.MultiWriter(os.Stderr, AppLog))
+		log.SetOutput(AppLog)
 	}
+	log.Printf("superVPN %s started", version)
 
 	defer func() {
 		if r := recover(); r != nil {

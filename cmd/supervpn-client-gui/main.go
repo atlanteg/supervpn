@@ -23,6 +23,7 @@ func main() {
 	} else {
 		log.SetOutput(io.MultiWriter(os.Stderr, AppLog))
 	}
+	log.Printf("superVPN %s started", version)
 
 	defer func() {
 		if r := recover(); r != nil {
