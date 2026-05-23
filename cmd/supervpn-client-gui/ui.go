@@ -444,6 +444,13 @@ func (ui *mainUI) onConnect() {
 		return
 	}
 
+	// Reset the last-disconnect counter so a stale value from a previous
+	// session is not shown while the new connection is being established.
+	ui.lastDisconnect = time.Time{}
+	ui.prevConnected = false
+	if ui.disconnectLabel != nil {
+		ui.disconnectLabel.SetText("")
+	}
 	ui.connectBtn.Disable()
 	ui.disconnectBtn.Enable()
 

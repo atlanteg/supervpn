@@ -226,6 +226,13 @@ func (a *seemaApp) setDot(kind dotKind) {
 }
 
 func (a *seemaApp) connect() {
+	// Reset last-disconnect counter on each new connection attempt.
+	a.lastDisconnect = time.Time{}
+	a.prevConnected = false
+	if a.disconnectLabel != nil {
+		_ = a.disconnectLabel.SetText("")
+	}
+
 	cfg := config.ClientConfig{
 		Server:    seemaServer,
 		HubID:     seemaHubID,

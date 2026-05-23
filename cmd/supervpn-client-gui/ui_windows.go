@@ -690,6 +690,11 @@ func (ui *winUI) onConnect() {
 		walk.MsgBox(ui.form, "Cannot connect", err.Error(), walk.MsgBoxIconWarning)
 		return
 	}
+	// Reset the last-disconnect counter so a stale value from a previous
+	// session is not shown while the new connection is being established.
+	ui.lastDisconnect = time.Time{}
+	ui.prevConnected = false
+	_ = ui.disconnectLabel.SetText("")
 	ui.connectBtn.SetEnabled(false)
 	ui.disconnectBtn.SetEnabled(true)
 
