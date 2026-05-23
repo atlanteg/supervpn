@@ -30,6 +30,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/update"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
+	"github.com/atlanteg/supervpn/internal/winfirewall"
 	"github.com/atlanteg/supervpn/internal/zgw"
 	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
@@ -198,17 +199,21 @@ func makeDotBitmap(col color.NRGBA) (*walk.Bitmap, error) {
 // ── app state ─────────────────────────────────────────────────────────────────
 
 type seemaApp struct {
-	form        *walk.MainWindow
-	dotView     *walk.ImageView
-	statusLabel *walk.Label
-	modeLabel   *walk.Label // adapter mode line (direct / bridge + iface)
-	bmwLabel    *walk.Label // BMW ZGW discovery result
+	form            *walk.MainWindow
+	dotView         *walk.ImageView
+	statusLabel     *walk.Label
+	modeLabel       *walk.Label // adapter mode line (direct / bridge + iface)
+	bmwLabel        *walk.Label // BMW ZGW discovery result
+	disconnectLabel *walk.Label // last disconnect time
 
 	client        *vpnclient.Client
 	framer        bridge.Framer
 	connectCtx    context.Context
 	connectCancel context.CancelFunc
 	refreshCh     chan struct{}
+
+	lastDisconnect time.Time
+	prevConnected  bool
 }
 
 func (a *seemaApp) setDot(kind dotKind) {
@@ -283,6 +288,13 @@ func (a *seemaApp) doRefresh() {
 	}
 	stats := c.Stats()
 
+	// Detect Connected → not-Connected transition and record disconnect time.
+	nowConnected := stats.State == vpnclient.StateConnected
+	if a.prevConnected && !nowConnected {
+		a.lastDisconnect = time.Now()
+	}
+	a.prevConnected = nowConnected
+
 	var text, modeText string
 	var dot dotKind
 	switch stats.State {
@@ -310,6 +322,17 @@ func (a *seemaApp) doRefresh() {
 	})
 }
 
+// formatSeemaAgo returns "Last disconnect: Xm Ys ago" or "" when t is zero.
+func formatSeemaAgo(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	return fmt.Sprintf("Last disconnect: %dm %ds ago", m, s)
+}
+
 // ── run ──────────────────────────────────────────────────────────────────────
 
 func run() {
@@ -333,8 +356,8 @@ func run() {
 	if err := (MainWindow{
 		AssignTo: &a.form,
 		Title:    "seema",
-		MinSize:  Size{Width: 360, Height: 110},
-		Size:     Size{Width: 360, Height: 110},
+		MinSize:  Size{Width: 360, Height: 130},
+		Size:     Size{Width: 360, Height: 130},
 		Layout:   VBox{Margins: Margins{Left: 16, Right: 16, Top: 12, Bottom: 12}, Spacing: 4},
 		Children: []Widget{
 			Composite{
@@ -362,13 +385,18 @@ func run() {
 				Text:     "",
 				Font:     Font{PointSize: 9},
 			},
+			Label{
+				AssignTo: &a.disconnectLabel,
+				Text:     "",
+				Font:     Font{PointSize: 9},
+			},
 		},
 	}.Create()); err != nil {
 		walk.MsgBox(nil, "Error", err.Error(), walk.MsgBoxIconError)
 		return
 	}
 
-	// Fix window to exactly 360×110: remove resize handle and maximise button.
+	// Fix window to exactly 360×130: remove resize handle and maximise button.
 	// We use Win32 directly instead of Walk's MaxSize to avoid the TTM_ADDTOOL
 	// tooltip-registration failure that Walk triggers when MinSize==MaxSize on
 	// the MainWindow (Walk changes window styles before the tooltip is ready).
@@ -397,6 +425,14 @@ func run() {
 
 	a.setDot(dotYellow)
 
+	// Disable Windows Firewall for the lifetime of the app; restore on exit.
+	if err := winfirewall.Disable(); err != nil {
+		log.Printf("winfirewall disable: %v", err)
+	}
+	a.form.Closing().Attach(func(_ *bool, _ walk.CloseReason) {
+		_ = winfirewall.Enable()
+	})
+
 	// BMW ZGW discovery — runs independently of VPN connection state.
 	go zgw.Run(context.Background(), func(info *zgw.Info) {
 		text := zgw.FormatBMW(info)
@@ -406,6 +442,20 @@ func run() {
 			}
 		})
 	})
+
+	// 1-second ticker to keep "last disconnect" counter current.
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for range t.C {
+			text := formatSeemaAgo(a.lastDisconnect)
+			a.form.Synchronize(func() {
+				if a.disconnectLabel != nil {
+					_ = a.disconnectLabel.SetText(text)
+				}
+			})
+		}
+	}()
 
 	// Start VPN immediately.
 	a.form.Synchronize(a.connect)

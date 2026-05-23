@@ -30,6 +30,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
+	"github.com/atlanteg/supervpn/internal/winfirewall"
 	"github.com/atlanteg/supervpn/internal/zgw"
 	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
@@ -78,6 +79,11 @@ type winUI struct {
 
 	// BMW ZGW discovery result label (bottom of Connection tab)
 	bmwLabel *walk.Label
+
+	// Last disconnect time label (bottom of Connection tab)
+	disconnectLabel *walk.Label
+	lastDisconnect  time.Time
+	prevConnected   bool
 
 	// Test tab
 	testResultEdit *walk.TextEdit
@@ -159,6 +165,14 @@ func (ui *winUI) runApp() {
 	ui.initConfigSelect()
 	ui.updateNpcapButton()
 
+	// Disable Windows Firewall for the lifetime of the app; restore on exit.
+	if err := winfirewall.Disable(); err != nil {
+		log.Printf("winfirewall disable: %v", err)
+	}
+	ui.form.Closing().Attach(func(_ *bool, _ walk.CloseReason) {
+		_ = winfirewall.Enable()
+	})
+
 	// Start BMW ZGW discovery — runs independently of VPN connection state.
 	go zgw.Run(context.Background(), func(info *zgw.Info) {
 		text := zgw.FormatBMW(info)
@@ -168,6 +182,23 @@ func (ui *winUI) runApp() {
 			}
 		})
 	})
+
+	// 1-second ticker to keep "last disconnect" counter current.
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for range t.C {
+			if !ui.form.Visible() {
+				continue
+			}
+			text := formatAgo(ui.lastDisconnect)
+			ui.form.Synchronize(func() {
+				if ui.disconnectLabel != nil {
+					_ = ui.disconnectLabel.SetText(text)
+				}
+			})
+		}
+	}()
 	// Auto-connect: post to the message queue so onConnect runs after the
 	// message loop starts (Synchronize uses PostMessage, safe before Run).
 	if ui.autoConnectCheck != nil && ui.autoConnectCheck.Checked() {
@@ -320,6 +351,11 @@ func (ui *winUI) connectionPage() TabPage {
 				},
 				Label{
 					AssignTo: &ui.bmwLabel,
+					Text:     "",
+					Font:     Font{PointSize: 9},
+				},
+				Label{
+					AssignTo: &ui.disconnectLabel,
 					Text:     "",
 					Font:     Font{PointSize: 9},
 				},
@@ -801,6 +837,13 @@ func (ui *winUI) doRefreshStatus() {
 	// happen on the UI thread before the goroutine is launched.  Calling
 	// Synchronize a second time from the goroutine is fire-and-forget in Walk
 	// (PostMessage), so cfg would still be zero by the time Save runs.
+	// Detect Connected → not-Connected transition and record disconnect time.
+	nowConnected := stats.State == vpnclient.StateConnected
+	if ui.prevConnected && !nowConnected {
+		ui.lastDisconnect = time.Now()
+	}
+	ui.prevConnected = nowConnected
+
 	var dotColor dotKind
 	switch stats.State {
 	case vpnclient.StateConnected:

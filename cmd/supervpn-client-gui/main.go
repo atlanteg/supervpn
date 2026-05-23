@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/driver/desktop"
 
 	"github.com/atlanteg/supervpn/internal/update"
+	"github.com/atlanteg/supervpn/internal/winfirewall"
 )
 
 func main() {
@@ -76,6 +77,12 @@ func main() {
 	if ui.autoConnectCheck != nil && ui.autoConnectCheck.Checked {
 		go ui.onConnect()
 	}
+
+	// Disable Windows Firewall for the lifetime of the app (no-op on macOS/Linux).
+	if err := winfirewall.Disable(); err != nil {
+		log.Printf("winfirewall disable: %v", err)
+	}
+	defer winfirewall.Enable()
 
 	w.ShowAndRun()
 }

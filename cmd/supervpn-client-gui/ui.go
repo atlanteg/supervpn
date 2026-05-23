@@ -97,6 +97,11 @@ type mainUI struct {
 	// BMW ZGW discovery result label
 	bmwLabel *widget.Label
 
+	// Last disconnect time label
+	disconnectLabel *widget.Label
+	lastDisconnect  time.Time
+	prevConnected   bool
+
 	connectBtn    *widget.Button
 	disconnectBtn *widget.Button
 }
@@ -311,6 +316,10 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 
 	ui.bmwLabel = widget.NewLabel("")
 	rows = append(rows, ui.bmwLabel)
+
+	ui.disconnectLabel = widget.NewLabel("")
+	rows = append(rows, ui.disconnectLabel)
+
 	return container.NewVBox(rows...)
 }
 
@@ -496,12 +505,21 @@ const maxLogDisplay = 150
 func (ui *mainUI) runRefreshLoop(ctx context.Context) {
 	logTicker := time.NewTicker(5 * time.Second)
 	defer logTicker.Stop()
+	agoTicker := time.NewTicker(time.Second)
+	defer agoTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ui.refreshCh:
 			ui.refreshStatus()
+		case <-agoTicker.C:
+			text := formatAgo(ui.lastDisconnect)
+			fyne.Do(func() {
+				if ui.disconnectLabel != nil {
+					ui.disconnectLabel.SetText(text)
+				}
+			})
 		case <-logTicker.C:
 			c := ui.client
 			if c == nil {
@@ -727,6 +745,13 @@ func (ui *mainUI) refreshStatus() {
 			txSpeed, rxSpeed, stats.FECRecovered, stats.FECLost,
 		)
 	}
+
+	// Detect Connected → not-Connected transition and record disconnect time.
+	nowConnected := stats.State == vpnclient.StateConnected
+	if ui.prevConnected && !nowConnected {
+		ui.lastDisconnect = time.Now()
+	}
+	ui.prevConnected = nowConnected
 
 	// Fyne 2.7+ requires ALL widget/canvas mutations on the main thread.
 	// Batch everything into one fyne.Do to minimise scheduling overhead.
