@@ -61,7 +61,7 @@ func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 
 	tag, tagSrc, err := resolveLatestTag(hc, mirrors)
 	if err != nil {
-		log.Printf("update: check failed (all sources): %v", err)
+		log.Printf("update: check failed (current: %s, all sources unreachable): %v", currentVersion, err)
 		return
 	}
 
