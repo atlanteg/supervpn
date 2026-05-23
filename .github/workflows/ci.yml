@@ -420,9 +420,11 @@ jobs:
           (cd dist && zip -r ../supervpn-dist.zip linux/ windows/ macos/)
 
           # Per-platform convenience zips.
+          # Note: no supervpn-macos.zip — it would conflict case-insensitively
+          # with superVPN-macos.zip (the macOS GUI app bundle from build-gui-macos).
+          # macOS CLI clients are included in supervpn-dist.zip under macos/.
           (cd dist && zip -r ../supervpn-linux.zip   linux/)
           (cd dist && zip -r ../supervpn-windows.zip windows/)
-          (cd dist && zip -r ../supervpn-macos.zip   macos/)
 
       - name: Publish release to supervpn-releases
         env:
@@ -433,7 +435,6 @@ jobs:
             supervpn-dist.zip \
             supervpn-linux.zip \
             supervpn-windows.zip \
-            supervpn-macos.zip \
             dist/supervpn-server \
             dist/supervpn-client-windows-amd64.exe \
             dist/supervpn-client-darwin-amd64 \
