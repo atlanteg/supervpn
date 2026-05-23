@@ -514,7 +514,11 @@ func (ui *mainUI) runRefreshLoop(ctx context.Context) {
 		case <-ui.refreshCh:
 			ui.refreshStatus()
 		case <-agoTicker.C:
-			text := formatAgo(ui.lastDisconnect)
+			// Only show the counter while connected; clear it otherwise.
+			var text string
+			if ui.prevConnected {
+				text = formatAgo(ui.lastDisconnect)
+			}
 			fyne.Do(func() {
 				if ui.disconnectLabel != nil {
 					ui.disconnectLabel.SetText(text)

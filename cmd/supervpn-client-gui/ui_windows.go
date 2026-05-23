@@ -184,14 +184,15 @@ func (ui *winUI) runApp() {
 	})
 
 	// 1-second ticker to keep "last disconnect" counter current.
+	// Only shown while VPN is Connected; cleared otherwise.
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		for range t.C {
-			if !ui.form.Visible() {
-				continue
+			var text string
+			if ui.prevConnected {
+				text = formatAgo(ui.lastDisconnect)
 			}
-			text := formatAgo(ui.lastDisconnect)
 			ui.form.Synchronize(func() {
 				if ui.disconnectLabel != nil {
 					_ = ui.disconnectLabel.SetText(text)

@@ -444,11 +444,15 @@ func run() {
 	})
 
 	// 1-second ticker to keep "last disconnect" counter current.
+	// Only shown while VPN is Connected; cleared otherwise.
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		for range t.C {
-			text := formatSeemaAgo(a.lastDisconnect)
+			var text string
+			if a.prevConnected {
+				text = formatSeemaAgo(a.lastDisconnect)
+			}
 			a.form.Synchronize(func() {
 				if a.disconnectLabel != nil {
 					_ = a.disconnectLabel.SetText(text)
