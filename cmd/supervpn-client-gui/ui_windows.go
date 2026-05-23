@@ -182,6 +182,30 @@ func (ui *winUI) runApp() {
 		})
 	})
 
+	// Log tab ticker — updates the log tab every 2 s from AppLog regardless of
+	// VPN connection state, so ZGW/update/firewall messages are always visible.
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			ver := AppLog.Version()
+			if ver == ui.lastLogVersion {
+				continue
+			}
+			ui.lastLogVersion = ver
+			logs := AppLog.Lines()
+			if len(logs) > maxLogDisplay {
+				logs = logs[len(logs)-maxLogDisplay:]
+			}
+			text := strings.Join(logs, "\r\n")
+			ui.form.Synchronize(func() {
+				if ui.logEdit != nil {
+					_ = ui.logEdit.SetText(text)
+				}
+			})
+		}
+	}()
+
 	// 1-second ticker to keep "last disconnect" counter current.
 	// Only shown while VPN is Connected; cleared otherwise.
 	go func() {

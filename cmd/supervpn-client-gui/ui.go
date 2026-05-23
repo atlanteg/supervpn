@@ -134,6 +134,29 @@ func (ui *mainUI) build() fyne.CanvasObject {
 		})
 	})
 
+	// Log tab ticker — updates from AppLog every 2 s regardless of VPN state.
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			ver := AppLog.Version()
+			if ver == ui.lastLogVersion {
+				continue
+			}
+			ui.lastLogVersion = ver
+			logs := AppLog.Lines()
+			if len(logs) > maxLogDisplay {
+				logs = logs[len(logs)-maxLogDisplay:]
+			}
+			text := strings.Join(logs, "\n")
+			fyne.Do(func() {
+				if ui.logEntry != nil {
+					ui.logEntry.SetText(text)
+				}
+			})
+		}
+	}()
+
 	return container.NewBorder(statusBar, nil, nil, nil, tabs)
 }
 
