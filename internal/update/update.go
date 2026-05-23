@@ -1,7 +1,9 @@
 package update
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -89,6 +91,10 @@ func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 
 	dlc := &http.Client{Timeout: 3 * time.Minute}
 	if err := downloadWithFallback(dlc, tag, asset, exe, mirrors); err != nil {
+		if errors.Is(err, errBinaryUnchanged) {
+			log.Printf("update: %s asset is identical to current binary — already up to date (tag reused)", tag)
+			return
+		}
 		log.Printf("update: download failed (all sources): %v", err)
 		return
 	}
@@ -160,6 +166,7 @@ func latestTagFromURL(c *http.Client, url string) (string, error) {
 }
 
 // downloadWithFallback tries GitHub (tag-specific URL) first, then each mirror.
+// Returns errBinaryUnchanged if every source served an identical binary.
 func downloadWithFallback(c *http.Client, tag, asset, exe string, mirrors []string) error {
 	urls := []string{githubDLBase + tag + "/" + asset}
 	for _, m := range mirrors {
@@ -169,6 +176,9 @@ func downloadWithFallback(c *http.Client, tag, asset, exe string, mirrors []stri
 	var lastErr error
 	for _, url := range urls {
 		if err := downloadAndReplace(c, url, exe); err != nil {
+			if errors.Is(err, errBinaryUnchanged) {
+				return errBinaryUnchanged
+			}
 			log.Printf("update: download from %s failed: %v", url, err)
 			lastErr = err
 			continue
@@ -259,6 +269,13 @@ func parseVersion(v string) (int, error) {
 	return strconv.Atoi(strings.TrimPrefix(v, "b"))
 }
 
+// errBinaryUnchanged is returned by downloadAndReplace when the downloaded
+// binary is byte-for-byte identical to the currently running one.  This
+// happens when a release tag is published with an asset that was filled from
+// a previous release (e.g. build was skipped).  Callers must not treat this
+// as a real error and must not re-exec.
+var errBinaryUnchanged = errors.New("downloaded binary is identical to current — skipping replace")
+
 func downloadAndReplace(c *http.Client, url, exe string) error {
 	resp, err := c.Get(url)
 	if err != nil {
@@ -284,6 +301,15 @@ func downloadAndReplace(c *http.Client, url, exe string) error {
 		return err
 	}
 
+	// Guard against infinite update loops: if the downloaded binary is
+	// identical to the one currently on disk (version tag was reused), skip
+	// the replacement entirely so the caller doesn't re-exec into the same
+	// binary forever.
+	if same, _ := filesBytesEqual(exe, tmp); same {
+		os.Remove(tmp)
+		return errBinaryUnchanged
+	}
+
 	// On Windows: rename running exe to .old first.
 	if runtime.GOOS == "windows" {
 		old := exe + ".old"
@@ -297,4 +323,17 @@ func downloadAndReplace(c *http.Client, url, exe string) error {
 		return fmt.Errorf("rename .new→current: %w", err)
 	}
 	return nil
+}
+
+// filesBytesEqual returns true when both files exist and have identical content.
+func filesBytesEqual(a, b string) (bool, error) {
+	ab, err := os.ReadFile(a)
+	if err != nil {
+		return false, err
+	}
+	bb, err := os.ReadFile(b)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(ab, bb), nil
 }
