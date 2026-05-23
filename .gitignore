@@ -12,3 +12,15 @@
 *.exe
 /supervpn-client-gui
 /supervpn-client-gui-*
+
+# dist/ — built binaries and assembled archives (never commit these)
+dist/supervpn-server
+dist/supervpn-client-*
+dist/supervpn-seema-*
+dist/linux/supervpn-server
+dist/macos/supervpn-client-amd64
+dist/macos/supervpn-client-arm64
+dist/windows/supervpn-client.exe
+dist/*.zip
+dist/superVPN.app/
+dist/README-user.pdf

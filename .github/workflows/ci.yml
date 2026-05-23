@@ -406,19 +406,23 @@ jobs:
           chmod +x dist/supervpn-server dist/supervpn-client-darwin-* \
             dist/supervpn-client-gui-darwin-* 2>/dev/null || true
 
-      - name: Package zip (all binaries)
+      - name: Assemble dist subdirs and package zips
         run: |
-          cd dist
-          zip -j ../supervpn-dist.zip \
-            supervpn-server \
-            supervpn-client-windows-amd64.exe \
-            supervpn-client-darwin-amd64 \
-            supervpn-client-darwin-arm64 \
-            supervpn-client-gui-windows-amd64.exe \
-            supervpn-client-gui-darwin-amd64 \
-            supervpn-client-gui-darwin-arm64 \
-            supervpn-seema-windows-amd64.exe \
-            README-user.pdf
+          # Copy fresh binaries into the subdirectory templates so configs,
+          # scripts and driver files are bundled alongside the binary.
+          cp dist/supervpn-server                   dist/linux/supervpn-server
+          cp dist/supervpn-client-windows-amd64.exe dist/windows/supervpn-client.exe
+          cp dist/supervpn-client-darwin-amd64      dist/macos/supervpn-client-amd64
+          cp dist/supervpn-client-darwin-arm64      dist/macos/supervpn-client-arm64
+          chmod +x dist/linux/supervpn-server dist/macos/supervpn-client-*
+
+          # supervpn-dist.zip — full package: linux/ + windows/ + macos/ with configs.
+          (cd dist && zip -r ../supervpn-dist.zip linux/ windows/ macos/)
+
+          # Per-platform convenience zips.
+          (cd dist && zip -r ../supervpn-linux.zip   linux/)
+          (cd dist && zip -r ../supervpn-windows.zip windows/)
+          (cd dist && zip -r ../supervpn-macos.zip   macos/)
 
       - name: Publish release to supervpn-releases
         env:
@@ -427,6 +431,9 @@ jobs:
           VER="${{ needs.setup.outputs.ver }}"
           gh release create "$VER" \
             supervpn-dist.zip \
+            supervpn-linux.zip \
+            supervpn-windows.zip \
+            supervpn-macos.zip \
             dist/supervpn-server \
             dist/supervpn-client-windows-amd64.exe \
             dist/supervpn-client-darwin-amd64 \
