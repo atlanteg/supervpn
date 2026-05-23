@@ -23,6 +23,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/clientadapter"
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
+	"github.com/atlanteg/supervpn/internal/zgw"
 	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
@@ -93,6 +94,9 @@ type mainUI struct {
 	minimizeToTrayCheck *widget.Check
 	autoConnectCheck    *widget.Check
 
+	// BMW ZGW discovery result label
+	bmwLabel *widget.Label
+
 	connectBtn    *widget.Button
 	disconnectBtn *widget.Button
 }
@@ -114,6 +118,16 @@ func (ui *mainUI) build() fyne.CanvasObject {
 		container.NewTabItem("Test", ui.buildTestTab()),
 		container.NewTabItem("Log", ui.buildLogTab()),
 	)
+
+	// BMW ZGW discovery — runs independently of VPN connection state.
+	go zgw.Run(context.Background(), func(info *zgw.Info) {
+		text := zgw.FormatBMW(info)
+		fyne.Do(func() {
+			if ui.bmwLabel != nil {
+				ui.bmwLabel.SetText(text)
+			}
+		})
+	})
 
 	return container.NewBorder(statusBar, nil, nil, nil, tabs)
 }
@@ -294,6 +308,9 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 			ui.npcapBtn,
 		))
 	}
+
+	ui.bmwLabel = widget.NewLabel("")
+	rows = append(rows, ui.bmwLabel)
 	return container.NewVBox(rows...)
 }
 

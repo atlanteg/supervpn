@@ -30,6 +30,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
+	"github.com/atlanteg/supervpn/internal/zgw"
 	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
@@ -74,6 +75,9 @@ type winUI struct {
 
 	// Npcap install button (connection tab)
 	npcapBtn *walk.PushButton
+
+	// BMW ZGW discovery result label (bottom of Connection tab)
+	bmwLabel *walk.Label
 
 	// Test tab
 	testResultEdit *walk.TextEdit
@@ -154,6 +158,16 @@ func (ui *winUI) runApp() {
 	ui.setStatusDot(dotGray) // initial disconnected state
 	ui.initConfigSelect()
 	ui.updateNpcapButton()
+
+	// Start BMW ZGW discovery — runs independently of VPN connection state.
+	go zgw.Run(context.Background(), func(info *zgw.Info) {
+		text := zgw.FormatBMW(info)
+		ui.form.Synchronize(func() {
+			if ui.bmwLabel != nil {
+				_ = ui.bmwLabel.SetText(text)
+			}
+		})
+	})
 	// Auto-connect: post to the message queue so onConnect runs after the
 	// message loop starts (Synchronize uses PostMessage, safe before Run).
 	if ui.autoConnectCheck != nil && ui.autoConnectCheck.Checked() {
@@ -303,6 +317,11 @@ func (ui *winUI) connectionPage() TabPage {
 							OnClicked: func() { go ui.onInstallNpcap() },
 						},
 					},
+				},
+				Label{
+					AssignTo: &ui.bmwLabel,
+					Text:     "",
+					Font:     Font{PointSize: 9},
 				},
 			},
 		},

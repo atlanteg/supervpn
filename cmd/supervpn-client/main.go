@@ -20,6 +20,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/update"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
+	"github.com/atlanteg/supervpn/internal/zgw"
 )
 
 var version = "dev"
@@ -155,6 +156,15 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// BMW ZGW discovery — log each state change.
+	go zgw.Run(ctx, func(info *zgw.Info) {
+		if info != nil {
+			log.Printf("BMW found: %s", info)
+		} else {
+			log.Printf("BMW: not found")
+		}
+	})
 
 	if cfg.StatusListen != "" {
 		go runClientStatusServer(ctx, cfg.StatusListen)

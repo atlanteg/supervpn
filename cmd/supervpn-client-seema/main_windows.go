@@ -30,6 +30,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/update"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
+	"github.com/atlanteg/supervpn/internal/zgw"
 	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
@@ -201,6 +202,7 @@ type seemaApp struct {
 	dotView     *walk.ImageView
 	statusLabel *walk.Label
 	modeLabel   *walk.Label // adapter mode line (direct / bridge + iface)
+	bmwLabel    *walk.Label // BMW ZGW discovery result
 
 	client        *vpnclient.Client
 	framer        bridge.Framer
@@ -331,8 +333,8 @@ func run() {
 	if err := (MainWindow{
 		AssignTo: &a.form,
 		Title:    "seema",
-		MinSize:  Size{Width: 360, Height: 90},
-		Size:     Size{Width: 360, Height: 90},
+		MinSize:  Size{Width: 360, Height: 110},
+		Size:     Size{Width: 360, Height: 110},
 		Layout:   VBox{Margins: Margins{Left: 16, Right: 16, Top: 12, Bottom: 12}, Spacing: 4},
 		Children: []Widget{
 			Composite{
@@ -355,13 +357,18 @@ func run() {
 				Text:     "",
 				Font:     Font{PointSize: 9},
 			},
+			Label{
+				AssignTo: &a.bmwLabel,
+				Text:     "",
+				Font:     Font{PointSize: 9},
+			},
 		},
 	}.Create()); err != nil {
 		walk.MsgBox(nil, "Error", err.Error(), walk.MsgBoxIconError)
 		return
 	}
 
-	// Fix window to exactly 360×90: remove resize handle and maximise button.
+	// Fix window to exactly 360×110: remove resize handle and maximise button.
 	// We use Win32 directly instead of Walk's MaxSize to avoid the TTM_ADDTOOL
 	// tooltip-registration failure that Walk triggers when MinSize==MaxSize on
 	// the MainWindow (Walk changes window styles before the tooltip is ready).
@@ -389,6 +396,16 @@ func run() {
 	_ = a.form.SetBoundsPixels(walk.Rectangle{X: x, Y: y, Width: b.Width, Height: b.Height})
 
 	a.setDot(dotYellow)
+
+	// BMW ZGW discovery — runs independently of VPN connection state.
+	go zgw.Run(context.Background(), func(info *zgw.Info) {
+		text := zgw.FormatBMW(info)
+		a.form.Synchronize(func() {
+			if a.bmwLabel != nil {
+				_ = a.bmwLabel.SetText(text)
+			}
+		})
+	})
 
 	// Start VPN immediately.
 	a.form.Synchronize(a.connect)
