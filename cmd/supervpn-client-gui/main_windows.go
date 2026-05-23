@@ -28,7 +28,9 @@ func main() {
 
 	if lf := openLogFile(); lf != nil {
 		defer lf.Close()
-		log.SetOutput(io.MultiWriter(os.Stderr, lf))
+		log.SetOutput(io.MultiWriter(os.Stderr, lf, AppLog))
+	} else {
+		log.SetOutput(io.MultiWriter(os.Stderr, AppLog))
 	}
 
 	defer func() {

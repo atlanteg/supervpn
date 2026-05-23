@@ -779,16 +779,12 @@ func (ui *winUI) runRefreshLoop(ctx context.Context) {
 		case <-ui.refreshCh:
 			ui.doRefreshStatus()
 		case <-logTicker.C:
-			c := ui.client
-			if c == nil {
-				continue
-			}
-			ver := c.LogVersion()
+			ver := AppLog.Version()
 			if ver == ui.lastLogVersion {
 				continue // nothing new — skip the expensive SetText
 			}
 			ui.lastLogVersion = ver
-			logs := c.Logs()
+			logs := AppLog.Lines()
 			// Display only the most recent lines to keep SetText fast.
 			if len(logs) > maxLogDisplay {
 				logs = logs[len(logs)-maxLogDisplay:]

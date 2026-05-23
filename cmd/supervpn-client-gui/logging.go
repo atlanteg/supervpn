@@ -6,8 +6,63 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
+	"sync"
 	"time"
 )
+
+// AppLog is a global in-memory ring buffer that receives every line written
+// to the standard logger (log.Printf / log.Print / log.Println).
+// The UI Log tab reads from it so all subsystem output — VPN client, ZGW
+// discovery, update checker, firewall — is visible without opening a file.
+var AppLog = newRingWriter(500)
+
+// ringWriter is a thread-safe line-oriented io.Writer backed by a fixed-size
+// circular slice.  It is wired into log.SetOutput alongside the log file.
+type ringWriter struct {
+	mu      sync.Mutex
+	lines   []string
+	version uint64
+	max     int
+}
+
+func newRingWriter(max int) *ringWriter {
+	return &ringWriter{max: max}
+}
+
+func (r *ringWriter) Write(p []byte) (n int, err error) {
+	line := strings.TrimRight(string(p), "\r\n")
+	if line == "" {
+		return len(p), nil
+	}
+	r.mu.Lock()
+	r.lines = append(r.lines, line)
+	if len(r.lines) > r.max {
+		copy(r.lines, r.lines[len(r.lines)-r.max:])
+		r.lines = r.lines[:r.max]
+	}
+	r.version++
+	r.mu.Unlock()
+	return len(p), nil
+}
+
+// Lines returns a snapshot of the current log lines.
+func (r *ringWriter) Lines() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.lines))
+	copy(out, r.lines)
+	return out
+}
+
+// Version returns a counter incremented on every new line.
+// UI components can compare against their last-seen value to skip repaints.
+func (r *ringWriter) Version() uint64 {
+	r.mu.Lock()
+	v := r.version
+	r.mu.Unlock()
+	return v
+}
 
 // openLogFile opens (or creates) a persistent log file in the user config dir.
 // Each run appends a session header. Returns nil if the file cannot be opened.
