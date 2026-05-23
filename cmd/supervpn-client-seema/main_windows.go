@@ -332,7 +332,6 @@ func run() {
 		AssignTo: &a.form,
 		Title:    "seema",
 		MinSize:  Size{Width: 360, Height: 90},
-		MaxSize:  Size{Width: 360, Height: 90},
 		Size:     Size{Width: 360, Height: 90},
 		Layout:   VBox{Margins: Margins{Left: 16, Right: 16, Top: 12, Bottom: 12}, Spacing: 4},
 		Children: []Widget{
@@ -361,6 +360,14 @@ func run() {
 		walk.MsgBox(nil, "Error", err.Error(), walk.MsgBoxIconError)
 		return
 	}
+
+	// Fix window to exactly 360×90: remove resize handle and maximise button.
+	// We use Win32 directly instead of Walk's MaxSize to avoid the TTM_ADDTOOL
+	// tooltip-registration failure that Walk triggers when MinSize==MaxSize on
+	// the MainWindow (Walk changes window styles before the tooltip is ready).
+	hwnd := a.form.Handle()
+	style := win.GetWindowLong(hwnd, win.GWL_STYLE)
+	win.SetWindowLong(hwnd, win.GWL_STYLE, style&^(win.WS_THICKFRAME|win.WS_MAXIMIZEBOX))
 
 	// Set window icon from embedded resource.
 	if ico, err := walk.NewIconFromResourceId(1); err == nil {
