@@ -362,8 +362,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           mkdir -p dist
+          # The current release has not been published yet at this point,
+          # so .[0] is the previous release — use it to fill skipped build artifacts.
           PREV=$(gh release list --repo atlantegsrb/supervpn-releases \
-            --limit 2 --json tagName --jq '.[1].tagName' 2>/dev/null || echo "")
+            --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
           if [ -z "$PREV" ]; then
             echo "No previous release found — skipping fill step"
             exit 0
