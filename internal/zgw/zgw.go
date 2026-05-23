@@ -9,16 +9,23 @@
 //   - Response:  variable-length; contains VIN as the first 17-byte sequence
 //     matching [A-HJ-NPR-Z0-9]{17}; source IP is the ZGW address.
 //
-// Discovery uses two separate sockets:
-//   - A persistent receiver bound to 0.0.0.0:6811 (SO_REUSEADDR) — catches both
-//     responses to our probes AND any unsolicited periodic ZGW announcements.
-//   - Short-lived senders bound to each 169.254.x.x address to force the broadcast
-//     out the correct interface.
+// Discovery strategy (two complementary probes on every tick):
+//
+//  1. Send from the persistent rx socket (0.0.0.0:6811, SO_REUSEADDR).
+//     Source port == 6811, so the ZGW's unicast response is also directed to
+//     port 6811 — where the rx loop is already listening.
+//
+//  2. Send from a short-lived socket bound to each 169.254.x.x interface address.
+//     This forces the broadcast out the correct NIC on multi-homed hosts.
+//     Broadcast responses (169.254.255.255:6811) are caught by the rx socket.
+//     Unicast responses to the ephemeral source port are NOT caught this way,
+//     but probe #1 already covers that case.
 package zgw
 
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"sync"
@@ -51,35 +58,50 @@ func (i *Info) String() string {
 	return i.IP + "  " + i.VIN
 }
 
-// sendProbes broadcasts the 4-byte ZGW request on every detected 169.254
-// interface.  Each interface gets its own short-lived send socket so the OS
-// routes the broadcast out the correct NIC.
-func sendProbes() {
-	ifaces, err := bridge.DetectLinkLocal()
-	if err != nil {
-		return
-	}
+// doProbes sends the 4-byte ZGW request:
+//   - from rx (0.0.0.0:6811) so the ZGW's unicast reply lands on port 6811
+//   - from each detected 169.254.x.x interface to force the broadcast
+//     out the correct NIC on multi-homed machines
+func doProbes(rx *net.UDPConn) {
 	dst := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
 	probe := []byte{0x00, 0x00, 0x00, 0x00}
+
+	// Probe 1: from rx socket (source port = zgwPort).
+	_ = rx.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+	if _, err := rx.WriteToUDP(probe, dst); err != nil {
+		log.Printf("zgw: probe from rx socket failed: %v", err)
+	}
+
+	// Probe 2: per-interface, to ensure the broadcast exits the correct NIC.
+	ifaces, err := bridge.DetectLinkLocal()
+	if err != nil {
+		log.Printf("zgw: DetectLinkLocal: %v", err)
+		return
+	}
+	if len(ifaces) == 0 {
+		log.Printf("zgw: no 169.254 interfaces found — BMW not reachable")
+		return
+	}
 	for _, iface := range ifaces {
 		if iface.Addr == nil {
 			continue
 		}
 		sc, err := openSendConn(iface.Addr.String())
 		if err != nil {
+			log.Printf("zgw: openSendConn(%s): %v", iface.Addr, err)
 			continue
 		}
 		_ = sc.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 		_, _ = sc.WriteToUDP(probe, dst)
 		sc.Close()
+		log.Printf("zgw: probe sent from %s → %s", iface.Addr, dst)
 	}
 }
 
 // Run opens a persistent UDP listener on port zgwPort (SO_REUSEADDR) and
-// calls onChange each time the result changes.  A probe broadcast is sent
-// immediately and then every interval seconds to solicit a ZGW response; the
-// listener also catches any unsolicited periodic ZGW announcements so the BMW
-// is found as soon as it sends one — matching Remote Enet's behaviour.
+// calls onChange each time the result changes.  Probes are sent immediately
+// and then every interval seconds; the listener also catches unsolicited
+// periodic ZGW announcements (matching Remote Enet behaviour).
 //
 // onChange is always called on a background goroutine; callers must dispatch
 // to their UI thread as appropriate.
@@ -103,10 +125,11 @@ func Run(ctx context.Context, onChange func(*Info)) {
 
 	rx, err := openRecvConn(zgwPort)
 	if err != nil {
-		// No persistent listener available; fall back to the old probe-only path.
+		log.Printf("zgw: openRecvConn(:%d) failed: %v — falling back to request-response mode", zgwPort, err)
 		runFallback(ctx, onChange)
 		return
 	}
+	log.Printf("zgw: listening on 0.0.0.0:%d", zgwPort)
 
 	// Close the receive socket when the context is cancelled so the read loop
 	// unblocks immediately.
@@ -117,7 +140,7 @@ func Run(ctx context.Context, onChange func(*Info)) {
 
 	// Receive loop: runs for the lifetime of ctx.
 	go func() {
-		buf := make([]byte, 512)
+		buf := make([]byte, 4096)
 		for {
 			_ = rx.SetReadDeadline(time.Now().Add(interval + time.Second))
 			n, addr, err := rx.ReadFromUDP(buf)
@@ -125,14 +148,22 @@ func Run(ctx context.Context, onChange func(*Info)) {
 				if ctx.Err() != nil {
 					return
 				}
-				// Read timeout — no packet in this window; continue to keep
-				// the deadline rolling rather than blocking forever.
+				// Read timeout — no packet; keep rolling the deadline.
 				continue
 			}
+			// Log every incoming packet for diagnostics (first 32 bytes).
+			preview := n
+			if preview > 32 {
+				preview = 32
+			}
+			log.Printf("zgw: recv %d bytes from %s: % x", n, addr, buf[:preview])
+
 			vin := vinRe.Find(buf[:n])
 			if vin == nil {
+				log.Printf("zgw: packet from %s has no VIN match", addr)
 				continue
 			}
+			log.Printf("zgw: found ZGW at %s  VIN=%s", addr.IP, string(vin))
 			mu.Lock()
 			lastSeen = time.Now()
 			mu.Unlock()
@@ -144,8 +175,8 @@ func Run(ctx context.Context, onChange func(*Info)) {
 	// first ZGW packet arrives.
 	notify(nil)
 
-	// Send the first probe right away; subsequent probes on every tick.
-	sendProbes()
+	// First probe immediately; subsequent probes on every tick.
+	doProbes(rx)
 
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -155,20 +186,22 @@ func Run(ctx context.Context, onChange func(*Info)) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			sendProbes()
+			doProbes(rx)
 			// If we had found a ZGW but it has gone silent, report "not found".
 			mu.Lock()
 			seen := lastSeen
 			mu.Unlock()
 			if !seen.IsZero() && time.Since(seen) > zgwSilenceTimeout {
+				log.Printf("zgw: ZGW silent for >%v — reporting not found", zgwSilenceTimeout)
 				notify(nil)
 			}
 		}
 	}
 }
 
-// runFallback is the old request-response approach used when openRecvConn
-// fails (e.g. port 6811 cannot be opened even with SO_REUSEADDR).
+// runFallback is the classic request-response approach used when openRecvConn
+// fails.  Each Discover call uses its own socket: send + read on the same
+// socket so the reply lands on the correct (ephemeral) source port.
 func runFallback(ctx context.Context, onChange func(*Info)) {
 	var last *Info
 	first := true
@@ -214,7 +247,7 @@ func Discover(localIP string) *Info {
 		return nil
 	}
 
-	buf := make([]byte, 256)
+	buf := make([]byte, 4096)
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
