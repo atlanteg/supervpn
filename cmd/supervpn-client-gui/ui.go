@@ -691,6 +691,12 @@ func (ui *mainUI) onDisconnect() {
 		_ = ui.framer.Close()
 		ui.framer = nil
 	}
+	// Stop the disconnect timer: prevConnected=false makes the 1s ticker
+	// clear the label instead of ticking (runRefreshLoop already exited).
+	ui.prevConnected = false
+	if ui.disconnectLabel != nil {
+		ui.disconnectLabel.SetText("")
+	}
 	ui.statusDot.FillColor = color.Gray{Y: 128}
 	canvas.Refresh(ui.statusDot)
 	ui.statusLabel.SetText("Disconnected")

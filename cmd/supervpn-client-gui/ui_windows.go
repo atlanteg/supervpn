@@ -738,6 +738,10 @@ func (ui *winUI) onDisconnect() {
 		_ = ui.framer.Close()
 		ui.framer = nil
 	}
+	// Stop the disconnect timer: prevConnected=false makes the 1s ticker
+	// clear the label instead of ticking (runRefreshLoop already exited).
+	ui.prevConnected = false
+	_ = ui.disconnectLabel.SetText("")
 	_ = ui.statusBarItem.SetText("Disconnected")
 	_ = ui.connectionStatusLabel.SetText("Disconnected")
 	ui.setStatusDot(dotGray)

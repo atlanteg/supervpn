@@ -1044,8 +1044,7 @@ func (s *Server) checkUpdateAssets() {
 	stale := strings.TrimSpace(string(cachedVer)) != version
 
 	if stale && canFetch {
-		log.Printf("update mirror: cached version %q → server %s, re-downloading all assets",
-			strings.TrimSpace(string(cachedVer)), version)
+		log.Printf("update mirror: refreshing client assets for %s", version)
 	}
 
 	assets := make(map[string]int64, len(clientAssets))
