@@ -56,6 +56,10 @@ func Discover(localIP string) *Info {
 	}
 	defer conn.Close()
 
+	// Windows requires SO_BROADCAST to be set explicitly; without it the packet
+	// is silently dropped by Winsock before it reaches the wire.
+	enableBroadcast(conn)
+
 	_ = conn.SetDeadline(time.Now().Add(zgwTimeout))
 
 	broadcast := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
