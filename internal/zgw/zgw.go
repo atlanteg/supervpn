@@ -1,25 +1,23 @@
 // Package zgw implements BMW ZGW (Central Gateway) discovery over the
 // ENET link-local network.
 //
-// The ZGW discovery protocol (reverse-engineered from ZGW_SEARCH_3.0.exe and
-// Remote Enet_ssh.exe):
+// Two-stage discovery:
 //
-//   - Transport: UDP broadcast to 169.254.255.255:6811
-//   - Request:   4 zero bytes  (\x00\x00\x00\x00)
-//   - Response:  variable-length; contains VIN as the first 17-byte sequence
-//     matching [A-HJ-NPR-Z0-9]{17}; source IP is the ZGW address.
+//  1. Interface stage: as soon as a 169.254.x.x NIC is detected, report it
+//     immediately (VIN = "").  This matches Remote Enet behaviour — the car
+//     appears the moment the cable is connected, before any UDP exchange.
 //
-// Discovery strategy (two complementary probes on every tick):
+//  2. ZGW stage: broadcast 4 zero bytes to 169.254.255.255:6811 and wait for
+//     a UDP response containing a 17-char VIN.  Updates the display with the
+//     real ZGW IP and VIN when confirmed.
 //
-//  1. Send from the persistent rx socket (0.0.0.0:6811, SO_REUSEADDR).
-//     Source port == 6811, so the ZGW's unicast response is also directed to
-//     port 6811 — where the rx loop is already listening.
-//
-//  2. Send from a short-lived socket bound to each 169.254.x.x interface address.
-//     This forces the broadcast out the correct NIC on multi-homed hosts.
-//     Broadcast responses (169.254.255.255:6811) are caught by the rx socket.
-//     Unicast responses to the ephemeral source port are NOT caught this way,
-//     but probe #1 already covers that case.
+// Probe sockets:
+//   - Persistent rx bound to 0.0.0.0:6811 (SO_REUSEADDR) — catches ZGW
+//     responses directed to port 6811 AND any unsolicited ZGW announcements.
+//   - Short-lived sockets bound to each 169.254.x.x NIC — force the broadcast
+//     out the correct interface on multi-homed machines.
+//   - The rx socket itself also sends a probe (source port = 6811) so the
+//     ZGW's unicast reply is directed back to port 6811.
 package zgw
 
 import (
@@ -37,49 +35,64 @@ import (
 const (
 	zgwPort  = 6811
 	interval = 5 * time.Second
-	// zgwSilenceTimeout: if no ZGW packet arrives for this long, report "not found".
+	// zgwSilenceTimeout: if no ZGW packet for this long after one was seen, revert to interface-only state.
 	zgwSilenceTimeout = 2 * interval
 )
 
 // vinRe matches a valid VIN: 17 chars, no I/O/Q (ISO 3779).
 var vinRe = regexp.MustCompile(`[A-HJ-NPR-Z0-9]{17}`)
 
-// Info holds the result of a successful ZGW discovery.
+// Info holds the result of a discovery step.
+// VIN == "" means the 169.254 interface was found but ZGW has not responded yet.
 type Info struct {
 	IP  string
 	VIN string
 }
 
-// String returns a compact display string, e.g. "169.254.1.200  WBA1234567890ABCD".
 func (i *Info) String() string {
 	if i == nil {
 		return ""
 	}
+	if i.VIN == "" {
+		return i.IP
+	}
 	return i.IP + "  " + i.VIN
 }
 
-// doProbes sends the 4-byte ZGW request:
-//   - from rx (0.0.0.0:6811) so the ZGW's unicast reply lands on port 6811
-//   - from each detected 169.254.x.x interface to force the broadcast
-//     out the correct NIC on multi-homed machines
+// scanIfaces returns the first detected 169.254 interface as a bare Info
+// (no VIN), or nil if none found.
+func scanIfaces() *Info {
+	ifaces, err := bridge.DetectLinkLocal()
+	if err != nil {
+		log.Printf("zgw: DetectLinkLocal: %v", err)
+		return nil
+	}
+	if len(ifaces) == 0 {
+		return nil
+	}
+	for _, iface := range ifaces {
+		if iface.Addr != nil {
+			log.Printf("zgw: 169.254 interface found: %s (%s)", iface.Name, iface.Addr)
+			return &Info{IP: iface.Addr.String()}
+		}
+	}
+	return nil
+}
+
+// doProbes sends the 4-byte ZGW discovery request on all available paths.
 func doProbes(rx *net.UDPConn) {
 	dst := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
 	probe := []byte{0x00, 0x00, 0x00, 0x00}
 
-	// Probe 1: from rx socket (source port = zgwPort).
+	// From rx socket (source port = zgwPort) so unicast ZGW reply lands on 6811.
 	_ = rx.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 	if _, err := rx.WriteToUDP(probe, dst); err != nil {
-		log.Printf("zgw: probe from rx socket failed: %v", err)
+		log.Printf("zgw: probe from rx failed: %v", err)
 	}
 
-	// Probe 2: per-interface, to ensure the broadcast exits the correct NIC.
+	// Per-interface sockets to force broadcast out the correct NIC.
 	ifaces, err := bridge.DetectLinkLocal()
-	if err != nil {
-		log.Printf("zgw: DetectLinkLocal: %v", err)
-		return
-	}
-	if len(ifaces) == 0 {
-		log.Printf("zgw: no 169.254 interfaces found — BMW not reachable")
+	if err != nil || len(ifaces) == 0 {
 		return
 	}
 	for _, iface := range ifaces {
@@ -94,51 +107,58 @@ func doProbes(rx *net.UDPConn) {
 		_ = sc.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 		_, _ = sc.WriteToUDP(probe, dst)
 		sc.Close()
-		log.Printf("zgw: probe sent from %s → %s", iface.Addr, dst)
+		log.Printf("zgw: probe sent from %s", iface.Addr)
 	}
 }
 
-// Run opens a persistent UDP listener on port zgwPort (SO_REUSEADDR) and
-// calls onChange each time the result changes.  Probes are sent immediately
-// and then every interval seconds; the listener also catches unsolicited
-// periodic ZGW announcements (matching Remote Enet behaviour).
-//
-// onChange is always called on a background goroutine; callers must dispatch
-// to their UI thread as appropriate.
+// Run detects 169.254 interfaces and discovers the BMW ZGW.
+// onChange is called on a background goroutine whenever the result changes;
+// callers must dispatch to their UI thread as appropriate.
 func Run(ctx context.Context, onChange func(*Info)) {
 	var (
 		mu       sync.Mutex
 		last     *Info
 		first    = true
-		lastSeen time.Time
+		lastSeen time.Time // last time a ZGW UDP packet arrived
 	)
 
 	notify := func(info *Info) {
 		mu.Lock()
 		defer mu.Unlock()
-		if first || !equal(last, info) {
+		changed := first || !equal(last, info)
+		if changed {
 			first = false
 			last = info
 			onChange(info)
 		}
 	}
 
+	// Stage 1: report interface immediately, before any UDP exchange.
+	notify(scanIfaces())
+
 	rx, err := openRecvConn(zgwPort)
 	if err != nil {
-		log.Printf("zgw: openRecvConn(:%d) failed: %v — falling back to request-response mode", zgwPort, err)
-		runFallback(ctx, onChange)
-		return
+		log.Printf("zgw: openRecvConn(:%d) failed: %v — VIN discovery disabled, interface-only mode", zgwPort, err)
+		// Keep refreshing interface presence even without UDP.
+		tick := time.NewTicker(interval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				notify(scanIfaces())
+			}
+		}
 	}
 	log.Printf("zgw: listening on 0.0.0.0:%d", zgwPort)
 
-	// Close the receive socket when the context is cancelled so the read loop
-	// unblocks immediately.
 	go func() {
 		<-ctx.Done()
 		rx.Close()
 	}()
 
-	// Receive loop: runs for the lifetime of ctx.
+	// Receive loop.
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -148,10 +168,8 @@ func Run(ctx context.Context, onChange func(*Info)) {
 				if ctx.Err() != nil {
 					return
 				}
-				// Read timeout — no packet; keep rolling the deadline.
 				continue
 			}
-			// Log every incoming packet for diagnostics (first 32 bytes).
 			preview := n
 			if preview > 32 {
 				preview = 32
@@ -160,10 +178,10 @@ func Run(ctx context.Context, onChange func(*Info)) {
 
 			vin := vinRe.Find(buf[:n])
 			if vin == nil {
-				log.Printf("zgw: packet from %s has no VIN match", addr)
+				log.Printf("zgw: no VIN in packet from %s", addr)
 				continue
 			}
-			log.Printf("zgw: found ZGW at %s  VIN=%s", addr.IP, string(vin))
+			log.Printf("zgw: ZGW at %s  VIN=%s", addr.IP, string(vin))
 			mu.Lock()
 			lastSeen = time.Now()
 			mu.Unlock()
@@ -171,11 +189,7 @@ func Run(ctx context.Context, onChange func(*Info)) {
 		}
 	}()
 
-	// Report "not found" immediately so the UI label is populated before the
-	// first ZGW packet arrives.
-	notify(nil)
-
-	// First probe immediately; subsequent probes on every tick.
+	// Periodic probe + interface re-scan.
 	doProbes(rx)
 
 	tick := time.NewTicker(interval)
@@ -186,51 +200,29 @@ func Run(ctx context.Context, onChange func(*Info)) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			// Re-scan interfaces first so the UI is updated even without ZGW response.
+			ifaceInfo := scanIfaces()
+
 			doProbes(rx)
-			// If we had found a ZGW but it has gone silent, report "not found".
+
 			mu.Lock()
 			seen := lastSeen
 			mu.Unlock()
+
 			if !seen.IsZero() && time.Since(seen) > zgwSilenceTimeout {
-				log.Printf("zgw: ZGW silent for >%v — reporting not found", zgwSilenceTimeout)
-				notify(nil)
+				// ZGW was found before but went silent — fall back to interface-only.
+				log.Printf("zgw: ZGW silent for >%v — reverting to interface-only", zgwSilenceTimeout)
+				notify(ifaceInfo)
+			} else if seen.IsZero() {
+				// Never got a ZGW response — keep showing interface if present.
+				notify(ifaceInfo)
 			}
+			// If lastSeen is recent, the receive goroutine already called notify with VIN.
 		}
 	}
 }
 
-// runFallback is the classic request-response approach used when openRecvConn
-// fails.  Each Discover call uses its own socket: send + read on the same
-// socket so the reply lands on the correct (ephemeral) source port.
-func runFallback(ctx context.Context, onChange func(*Info)) {
-	var last *Info
-	first := true
-
-	probe := func() {
-		info := scanAll()
-		if first || !equal(last, info) {
-			first = false
-			last = info
-			onChange(info)
-		}
-	}
-	probe()
-
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-			probe()
-		}
-	}
-}
-
-// Discover sends a single ZGW discovery broadcast on the interface with the
-// given localIP (a 169.254.x.x address) and waits up to 1500 ms for a response.
-// Used only by scanAll (fallback path).
+// Discover is used by the fallback path only.
 func Discover(localIP string) *Info {
 	const timeout = 1500 * time.Millisecond
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(localIP), Port: 0})
@@ -238,7 +230,6 @@ func Discover(localIP string) *Info {
 		return nil
 	}
 	defer conn.Close()
-
 	enableBroadcast(conn)
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 
@@ -246,35 +237,16 @@ func Discover(localIP string) *Info {
 	if _, err := conn.WriteToUDP([]byte{0x00, 0x00, 0x00, 0x00}, broadcast); err != nil {
 		return nil
 	}
-
 	buf := make([]byte, 4096)
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			return nil
 		}
-		vin := vinRe.Find(buf[:n])
-		if vin != nil {
+		if vin := vinRe.Find(buf[:n]); vin != nil {
 			return &Info{IP: remoteAddr.IP.String(), VIN: string(vin)}
 		}
 	}
-}
-
-// scanAll tries ZGW discovery on every detected 169.254 interface.
-func scanAll() *Info {
-	ifaces, err := bridge.DetectLinkLocal()
-	if err != nil || len(ifaces) == 0 {
-		return nil
-	}
-	for _, iface := range ifaces {
-		if iface.Addr == nil {
-			continue
-		}
-		if info := Discover(iface.Addr.String()); info != nil {
-			return info
-		}
-	}
-	return nil
 }
 
 func equal(a, b *Info) bool {
@@ -287,10 +259,13 @@ func equal(a, b *Info) bool {
 	return a.IP == b.IP && a.VIN == b.VIN
 }
 
-// FormatBMW returns the display string shown in the UI status area.
+// FormatBMW returns the display string for the UI label.
 func FormatBMW(info *Info) string {
 	if info == nil {
 		return "BMW: not found"
+	}
+	if info.VIN == "" {
+		return fmt.Sprintf("BMW: %s (no ZGW response)", info.IP)
 	}
 	return fmt.Sprintf("BMW: %s  %s", info.IP, info.VIN)
 }
