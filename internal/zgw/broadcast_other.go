@@ -2,8 +2,21 @@
 
 package zgw
 
-import "net"
+import (
+	"fmt"
+	"net"
+)
 
-// enableBroadcast is a no-op on non-Windows platforms where the kernel
-// permits sending to broadcast addresses without an explicit socket option.
+func openRecvConn(port int) (*net.UDPConn, error) {
+	return net.ListenUDP("udp4", &net.UDPAddr{Port: port})
+}
+
+func openSendConn(localIP string) (*net.UDPConn, error) {
+	return net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(localIP), Port: 0})
+}
+
+// enableBroadcast is a no-op on non-Windows platforms.
 func enableBroadcast(_ *net.UDPConn) {}
+
+// Silence "declared and not used" for fmt if only used on Windows.
+var _ = fmt.Sprintf
