@@ -78,19 +78,22 @@ func Discover(localIP string) *Info {
 
 // Run scans for 169.254.x.x interfaces every interval and calls onChange
 // each time the result changes (found → not found, not found → found, or
-// VIN/IP changes).  Stops when ctx is cancelled.
+// VIN/IP changes).  The first call always fires onChange so the label is
+// populated immediately on startup.  Stops when ctx is cancelled.
 //
 // onChange is always called on a background goroutine; callers must
 // dispatch to their UI thread as appropriate.
 func Run(ctx context.Context, onChange func(*Info)) {
 	var last *Info
+	first := true
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 
 	// Probe immediately on first call so the UI doesn't show a blank for 5 s.
 	probe := func() {
 		info := scanAll()
-		if !equal(last, info) {
+		if first || !equal(last, info) {
+			first = false
 			last = info
 			onChange(info)
 		}
@@ -136,10 +139,10 @@ func equal(a, b *Info) bool {
 }
 
 // FormatBMW returns the display string shown in the UI status area.
-// Returns "" when info is nil (no BMW found).
+// Always returns a non-empty string so the label row stays visible.
 func FormatBMW(info *Info) string {
 	if info == nil {
-		return ""
+		return "BMW: not found"
 	}
 	return fmt.Sprintf("BMW: %s  %s", info.IP, info.VIN)
 }
