@@ -51,7 +51,8 @@ func DefaultMirrors() []string {
 func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 	cur, err := parseVersion(currentVersion)
 	if err != nil {
-		return // dev build — skip
+		log.Printf("update: dev build — skipping version check")
+		return
 	}
 
 	log.Printf("update: checking for updates (current: %s) ...", currentVersion)
@@ -69,7 +70,7 @@ func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 		return
 	}
 	if latest <= cur {
-		log.Printf("update: already up to date (%s)", currentVersion)
+		log.Printf("update: up to date (%s is latest)", currentVersion)
 		return
 	}
 
