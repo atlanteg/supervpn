@@ -79,15 +79,24 @@ func scanIfaces() *Info {
 	return nil
 }
 
+// knownZGWIPs are BMW ZGW static IPs to try via unicast in addition to
+// broadcast.  Many BMWs use 169.254.112.4; broadcast does not propagate
+// through VPN tunnels (e.g. Remote Enet over internet), but unicast does.
+var knownZGWIPs = []string{
+	"169.254.112.4", // F/G/I series (most common)
+	"169.254.112.1",
+	"169.254.1.1",
+}
+
 // doProbes sends the 4-byte ZGW discovery request on all available paths.
 func doProbes(rx *net.UDPConn) {
-	dst := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
+	bcast := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
 	probe := []byte{0x00, 0x00, 0x00, 0x00}
 
 	// From rx socket (source port = zgwPort) so unicast ZGW reply lands on 6811.
 	_ = rx.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-	if _, err := rx.WriteToUDP(probe, dst); err != nil {
-		log.Printf("zgw: probe from rx failed: %v", err)
+	if _, err := rx.WriteToUDP(probe, bcast); err != nil {
+		log.Printf("zgw: broadcast from rx failed: %v", err)
 	}
 
 	// Per-interface sockets to force broadcast out the correct NIC.
@@ -105,9 +114,20 @@ func doProbes(rx *net.UDPConn) {
 			continue
 		}
 		_ = sc.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-		_, _ = sc.WriteToUDP(probe, dst)
+
+		// Broadcast — works on direct ENET connections.
+		_, _ = sc.WriteToUDP(probe, bcast)
+		log.Printf("zgw: broadcast from %s", iface.Addr)
+
+		// Unicast to well-known ZGW IPs — works through VPN tunnels where
+		// broadcast is not forwarded (e.g. Remote Enet over internet).
+		for _, ip := range knownZGWIPs {
+			dst := &net.UDPAddr{IP: net.ParseIP(ip), Port: zgwPort}
+			_, _ = sc.WriteToUDP(probe, dst)
+		}
+		log.Printf("zgw: unicast probes to %v from %s", knownZGWIPs, iface.Addr)
+
 		sc.Close()
-		log.Printf("zgw: probe sent from %s", iface.Addr)
 	}
 }
 
