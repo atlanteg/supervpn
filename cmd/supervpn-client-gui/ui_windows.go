@@ -165,13 +165,12 @@ func (ui *winUI) runApp() {
 	ui.initConfigSelect()
 	ui.updateNpcapButton()
 
-	// Disable Windows Firewall for the lifetime of the app; restore on exit.
+	// Disable Windows Firewall for the lifetime of the app.
+	// The Closing handler that restores it is registered in setupTray, where
+	// it can check whether the close is being cancelled (minimize-to-tray).
 	if err := winfirewall.Disable(); err != nil {
 		log.Printf("winfirewall disable: %v", err)
 	}
-	ui.form.Closing().Attach(func(_ *bool, _ walk.CloseReason) {
-		_ = winfirewall.Enable()
-	})
 
 	// Start BMW ZGW discovery — runs independently of VPN connection state.
 	go zgw.Run(context.Background(), func(info *zgw.Info) {
@@ -1407,11 +1406,14 @@ func (ui *winUI) setupTray() {
 	_ = ni.ContextMenu().Actions().Add(quitAction)
 
 	// X button → hide to tray instead of quit when minimize_to_tray is set.
+	// Also restore the Windows Firewall on real close (not when hiding to tray).
 	ui.form.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
 		if ui.minimizeToTrayCheck != nil && ui.minimizeToTrayCheck.Checked() {
 			*canceled = true
 			ui.form.SetVisible(false)
+			return // app keeps running — do NOT restore firewall
 		}
+		_ = winfirewall.Enable()
 	})
 
 	// Minimize button → hide to tray when minimize_to_tray is set.
