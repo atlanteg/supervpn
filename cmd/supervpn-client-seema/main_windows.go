@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"io"
 	"log"
 	"math"
 	"os"
@@ -471,6 +470,9 @@ func run() {
 	// Start VPN immediately.
 	a.form.Synchronize(a.connect)
 
+	// Bring window to foreground — needed when re-launched after auto-update.
+	win.SetForegroundWindow(a.form.Handle())
+	win.BringWindowToTop(a.form.Handle())
 	a.form.Run()
 }
 
@@ -484,7 +486,7 @@ func main() {
 
 	if lf := openLogFile(); lf != nil {
 		defer lf.Close()
-		log.SetOutput(io.MultiWriter(os.Stderr, lf))
+		log.SetOutput(lf)
 	}
 
 	defer func() {
