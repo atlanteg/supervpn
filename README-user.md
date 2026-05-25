@@ -6,7 +6,7 @@
 
 | Система | Файл |
 |---|---|
-| Windows | `supervpn-client-gui-windows-amd64.exe` |
+| Windows 7 / 8 / 10 / 11 | `supervpn-client-gui-windows-amd64.exe` |
 | macOS Apple Silicon (M1/M2/M3) | `supervpn-client-gui-darwin-arm64` |
 | macOS Intel | `supervpn-client-gui-darwin-amd64` |
 | macOS (оба в одном, .app) | `superVPN-macos.zip` |

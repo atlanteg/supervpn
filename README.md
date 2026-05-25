@@ -501,7 +501,7 @@ Additional mirrors can be added via `update_mirrors` in the client config (prepe
 
 ## Build
 
-**Prerequisites:** Go 1.24+. CGO is only required for the macOS Fyne GUI build.
+**Prerequisites:** Go 1.20+. CGO is only required for the macOS Fyne GUI build. Go 1.20 is required to produce binaries compatible with Windows 7.
 
 ```bash
 # Server (Linux/amd64)
