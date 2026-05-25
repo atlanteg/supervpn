@@ -94,6 +94,9 @@ jobs:
         with:
           go-version: '1.20'
 
+      - name: Pin go directive to 1.20
+        run: sed -i 's/^go .*/go 1.20/' go.mod
+
       - name: Download dependencies
         run: go mod download
 
@@ -162,6 +165,9 @@ jobs:
         with:
           go-version: '1.20'
 
+      - name: Pin go directive to 1.20
+        run: sed -i '' 's/^go .*/go 1.20/' go.mod
+
       - name: Download dependencies
         run: go mod download
 
@@ -211,6 +217,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.20'
+
+      - name: Pin go directive to 1.20
+        shell: pwsh
+        run: (Get-Content go.mod) -replace '^go .*', 'go 1.20' | Set-Content go.mod
 
       - name: Download dependencies
         run: go mod download
