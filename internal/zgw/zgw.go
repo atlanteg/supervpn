@@ -90,7 +90,7 @@ var knownZGWIPs = []string{
 
 // doProbes sends the 4-byte ZGW discovery request on all available paths.
 func doProbes(rx *net.UDPConn) {
-	bcast := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
+	bcast := &net.UDPAddr{IP: net.IPv4(255, 255, 255, 255), Port: zgwPort}
 	probe := []byte{0x00, 0x00, 0x00, 0x00}
 
 	// From rx socket (source port = zgwPort) so unicast ZGW reply lands on 6811.
