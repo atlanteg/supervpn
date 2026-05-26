@@ -93,7 +93,7 @@ func doProbes(rx *net.UDPConn, skipName string, onPacket func([]byte, *net.UDPAd
 	// the directed form.
 	bcastLimited  := &net.UDPAddr{IP: net.IPv4(255, 255, 255, 255), Port: zgwPort}
 	bcastDirected := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
-	probe := []byte{0x00, 0x00, 0x00, 0x00}
+	probe := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x11} // 0x0011 = 17 = VIN length, ZGW ignores probe without it
 
 	// From rx socket (source port = zgwPort) so ZGW unicast reply lands on 6811.
 	_ = rx.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
@@ -275,7 +275,7 @@ func Discover(localIP string) *Info {
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	broadcast := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
-	if _, err := conn.WriteToUDP([]byte{0x00, 0x00, 0x00, 0x00}, broadcast); err != nil {
+	if _, err := conn.WriteToUDP([]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x11}, broadcast); err != nil {
 		return nil
 	}
 	buf := make([]byte, 4096)
