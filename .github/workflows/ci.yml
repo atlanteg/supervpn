@@ -12,6 +12,9 @@ jobs:
   # ── Compute version + detect what needs rebuilding ────────────────────────
   setup:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     outputs:
       ver:                ${{ steps.ver.outputs.ver }}
       rebuild_server_cli: ${{ steps.changes.outputs.server_cli }}
@@ -20,6 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
 
       - name: Compute version
         id: ver
@@ -90,6 +94,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
       - uses: actions/setup-go@v5
         with:
@@ -161,6 +167,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
       - uses: actions/setup-go@v5
         with:
@@ -214,6 +222,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
       - uses: actions/setup-go@v5
         with:
@@ -338,7 +348,7 @@ jobs:
     # Run even when some build jobs were skipped (not cancelled/failed).
     if: |
       github.ref == 'refs/heads/main' &&
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       !failure() && !cancelled()
     needs: [setup, build-server-cli, build-gui-macos, build-gui-windows]
     runs-on: ubuntu-latest
@@ -346,6 +356,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
 
       # Download artifacts from jobs that actually ran.
       - if: needs.build-server-cli.result == 'success'
