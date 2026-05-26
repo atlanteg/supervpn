@@ -81,11 +81,12 @@ func scanIfaces(skipName string) *Info {
 }
 
 // knownZGWIPs are BMW ZGW static IPs to try via unicast in addition to
-// broadcast.  Many BMWs use 169.254.112.4; broadcast does not propagate
-// through VPN tunnels (e.g. Remote Enet over internet), but unicast does.
+// broadcast.  Broadcast does not propagate through VPN tunnels (e.g. Remote
+// Enet over internet), but unicast does — so we probe all known addresses.
 var knownZGWIPs = []string{
-	"169.254.112.4", // F/G/I series (most common)
+	"169.254.112.4", // F/G/I/H series (most common)
 	"169.254.112.1",
+	"169.254.65.120", // E series and some older models
 	"169.254.1.1",
 }
 
