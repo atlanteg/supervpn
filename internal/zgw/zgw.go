@@ -26,6 +26,7 @@ import (
 	"log"
 	"net"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -47,11 +48,115 @@ const (
 // on other 17-char sequences in the payload (e.g. "AGADR10BMWMAC48C5").
 var vinRe = regexp.MustCompile(`BMWVIN([A-HJ-NPR-Z0-9]{17})`)
 
+// diagadrRe extracts the DIAGADR field (hex string) from the ZGW response.
+// Example payload: "DIAGADR10BMWMAC..." → captures "10".
+var diagadrRe = regexp.MustCompile(`DIAGADR([0-9A-Fa-f]+)`)
+
+// bmwModelEntry maps a BMW type key (VIN[3]) to a chassis code and numeric series.
+type bmwModelEntry struct {
+	chassis string // e.g. "F34"
+	series  string // e.g. "3" (numeric) or "X5" (X-model)
+}
+
+// bmwTypeKeys maps VIN position 3 (type key / Baumuster) to chassis + series.
+// Covers common F-series (2011–2019) and G-series (2019–) models.
+var bmwTypeKeys = map[byte]bmwModelEntry{
+	// F-series
+	'2': {"F20", "1"},   // 1 Series hatch
+	'3': {"F30", "3"},   // 3 Series sedan
+	'4': {"F32", "4"},   // 4 Series coupe
+	'5': {"F10", "5"},   // 5 Series sedan
+	'6': {"F12", "6"},   // 6 Series
+	'7': {"F01", "7"},   // 7 Series
+	'8': {"F34", "3"},   // 3 Series Gran Turismo
+	'A': {"F15", "X5"},  // X5
+	'B': {"F16", "X6"},  // X6
+	'C': {"F25", "X3"},  // X3
+	'D': {"F26", "X4"},  // X4
+	'E': {"F45", "2"},   // 2 Series Active Tourer
+	'F': {"F48", "X1"},  // X1
+	'G': {"F39", "X2"},  // X2
+	// G-series
+	'H': {"G20", "3"},   // 3 Series
+	'J': {"G30", "5"},   // 5 Series
+	'K': {"G11", "7"},   // 7 Series
+	'L': {"G01", "X3"},  // X3
+	'M': {"G02", "X4"},  // X4
+	'N': {"G05", "X5"},  // X5
+	'P': {"G06", "X6"},  // X6
+	'R': {"G07", "X7"},  // X7
+	'S': {"G29", "Z4"},  // Z4
+	'T': {"G42", "2"},   // 2 Series Coupe
+}
+
+// bmwEngineCodes maps VIN position 5 to the engine/fuel suffix shown in the model name.
+var bmwEngineCodes = map[byte]string{
+	'1': "18i", '2': "20d", '3': "30d", '4': "35i",
+	'5': "20i", '6': "40i", '7': "35d", '8': "40d",
+	'9': "50i",
+	'A': "16d", 'B': "18d", 'C': "20d", 'D': "25d",
+	'E': "30i", 'F': "M",   'G': "M",   'H': "25e",
+	'J': "30e", 'K': "45e", 'S': "M",   'U': "30i",
+	'V': "40i",
+}
+
+// decodeVIN derives the chassis code (e.g. "F34") and model label
+// (e.g. "F34 320i xDrive") from a 17-char BMW VIN.
+// Returns empty strings for unrecognised type keys.
+func decodeVIN(vin string) (chassis, model string) {
+	if len(vin) < 17 {
+		return "", ""
+	}
+	entry, ok := bmwTypeKeys[vin[3]]
+	if !ok {
+		return "", ""
+	}
+	chassis = entry.chassis
+	eng := bmwEngineCodes[vin[5]] // "" if unknown engine code
+
+	var drive string
+	if vin[4] == 'X' {
+		drive = "xDrive"
+	}
+
+	if len(entry.series) > 1 {
+		// X-model or Z-model: "F15 X5 35d xDrive"
+		model = chassis + " " + entry.series
+		if eng != "" {
+			model += " " + eng
+		}
+	} else {
+		// Numeric series: "F34 320i"
+		model = chassis + " " + entry.series
+		if eng != "" {
+			model += eng // appended directly: "3" + "20i" = "320i"
+		}
+	}
+	if drive != "" {
+		model += " " + drive
+	}
+	return chassis, model
+}
+
+// diagadrToTarget converts the DIAGADR hex string from the ZGW response to the
+// BMW ISTA target string.  The ZGW DIAGADR is half the numeric ISTA target ID,
+// so we multiply by 2: DIAGADR "10" → 0x10×2 = 0x20 → "F020".
+func diagadrToTarget(hexStr string) string {
+	v, err := strconv.ParseInt(hexStr, 16, 64)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("F%03X", v*2)
+}
+
 // Info holds the result of a discovery step.
 // VIN == "" means the 169.254 interface was found but ZGW has not responded yet.
 type Info struct {
-	IP  string
-	VIN string
+	IP      string
+	VIN     string
+	Model   string // e.g. "F34 320i xDrive"; empty until ZGW responds
+	Chassis string // e.g. "F34"; empty until ZGW responds
+	Target  string // e.g. "F020"; derived from DIAGADR in ZGW response
 }
 
 func (i *Info) String() string {
@@ -61,7 +166,14 @@ func (i *Info) String() string {
 	if i.VIN == "" {
 		return i.IP
 	}
-	return i.IP + "  " + i.VIN
+	s := i.IP + "  " + i.VIN
+	if i.Model != "" {
+		s += "  " + i.Model
+	}
+	if i.Target != "" {
+		s += "  " + i.Target
+	}
+	return s
 }
 
 // scanIfaces returns the first detected 169.254 interface as a bare Info
@@ -179,12 +291,19 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 			log.Printf("zgw: no VIN in packet from %s", addr)
 			return
 		}
-		vin := m[1]
-		log.Printf("zgw: ZGW at %s  VIN=%s", addr.IP, string(vin))
+		vin := string(m[1])
+
+		var target, chassis, model string
+		if dm := diagadrRe.FindSubmatch(buf); dm != nil {
+			target = diagadrToTarget(string(dm[1]))
+		}
+		chassis, model = decodeVIN(vin)
+
+		log.Printf("zgw: ZGW at %s  VIN=%s  target=%s  model=%s", addr.IP, vin, target, model)
 		mu.Lock()
 		lastSeen = time.Now()
 		mu.Unlock()
-		notify(&Info{IP: addr.IP.String(), VIN: string(vin)})
+		notify(&Info{IP: addr.IP.String(), VIN: vin, Model: model, Chassis: chassis, Target: target})
 	}
 
 	// Stage 1: report interface immediately, before any UDP exchange.
@@ -288,8 +407,13 @@ func Discover(localIP string) *Info {
 			return nil
 		}
 		if m := vinRe.FindSubmatch(buf[:n]); m != nil {
-			vin := m[1]
-			return &Info{IP: remoteAddr.IP.String(), VIN: string(vin)}
+			vin := string(m[1])
+			var target, chassis, model string
+			if dm := diagadrRe.FindSubmatch(buf[:n]); dm != nil {
+				target = diagadrToTarget(string(dm[1]))
+			}
+			chassis, model = decodeVIN(vin)
+			return &Info{IP: remoteAddr.IP.String(), VIN: vin, Model: model, Chassis: chassis, Target: target}
 		}
 	}
 }
@@ -301,7 +425,7 @@ func equal(a, b *Info) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.IP == b.IP && a.VIN == b.VIN
+	return a.IP == b.IP && a.VIN == b.VIN && a.Target == b.Target && a.Model == b.Model
 }
 
 // FormatBMW returns the display string for the UI label.
@@ -312,5 +436,12 @@ func FormatBMW(info *Info) string {
 	if info.VIN == "" {
 		return fmt.Sprintf("BMW: %s (no ZGW response)", info.IP)
 	}
-	return fmt.Sprintf("BMW: %s  %s", info.IP, info.VIN)
+	s := fmt.Sprintf("BMW: %s  %s", info.IP, info.VIN)
+	if info.Model != "" {
+		s += "  " + info.Model
+	}
+	if info.Target != "" {
+		s += "  " + info.Target
+	}
+	return s
 }
