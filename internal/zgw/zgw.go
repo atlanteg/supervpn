@@ -7,17 +7,17 @@
 //     immediately (VIN = "").  This matches Remote Enet behaviour — the car
 //     appears the moment the cable is connected, before any UDP exchange.
 //
-//  2. ZGW stage: broadcast 4 zero bytes to 169.254.255.255:6811 and wait for
-//     a UDP response containing a 17-char VIN.  Updates the display with the
-//     real ZGW IP and VIN when confirmed.
+//  2. ZGW stage: broadcast 4 zero bytes to 255.255.255.255:6811 and
+//     169.254.255.255:6811 and wait for a UDP response containing a 17-char
+//     VIN.  Updates the display with the real ZGW IP and VIN when confirmed.
 //
 // Probe sockets:
-//   - Persistent rx bound to 0.0.0.0:6811 (SO_REUSEADDR) — catches ZGW
-//     responses directed to port 6811 AND any unsolicited ZGW announcements.
+//   - Persistent rx bound to 0.0.0.0:6811 (SO_REUSEADDR) — catches any ZGW
+//     packet directed to port 6811.
 //   - Short-lived sockets bound to each 169.254.x.x NIC — force the broadcast
-//     out the correct interface on multi-homed machines.
-//   - The rx socket itself also sends a probe (source port = 6811) so the
-//     ZGW's unicast reply is directed back to port 6811.
+//     out the correct interface on multi-homed machines.  Each socket stays
+//     open for 2 s after sending so the ZGW's unicast reply (directed to the
+//     ephemeral source port) is not lost.
 package zgw
 
 import (
@@ -37,6 +37,9 @@ const (
 	interval = 5 * time.Second
 	// zgwSilenceTimeout: if no ZGW packet for this long after one was seen, revert to interface-only state.
 	zgwSilenceTimeout = 2 * interval
+	// probeRecvWindow: how long per-interface sockets stay open after sending
+	// to collect a ZGW unicast reply directed to the ephemeral source port.
+	probeRecvWindow = 2 * time.Second
 )
 
 // vinRe matches a valid VIN: 17 chars, no I/O/Q (ISO 3779).
@@ -80,10 +83,11 @@ func scanIfaces(skipName string) *Info {
 	return nil
 }
 
-
-// doProbes sends the 4-byte ZGW discovery request on all available paths.
-// skipName is the VPN tunnel adapter name to exclude from per-interface probing.
-func doProbes(rx *net.UDPConn, skipName string) {
+// doProbes sends the 4-byte ZGW discovery probe on all available 169.254
+// interfaces (except skipName).  onPacket is called for every UDP packet
+// received in response — both on the persistent rx socket (port 6811) and on
+// the ephemeral per-interface sockets which stay open for probeRecvWindow.
+func doProbes(rx *net.UDPConn, skipName string, onPacket func([]byte, *net.UDPAddr)) {
 	// Both broadcast forms: limited (255.255.255.255) and directed link-local
 	// subnet broadcast (169.254.255.255).  Some ZGW firmware only responds to
 	// the directed form.
@@ -117,7 +121,26 @@ func doProbes(rx *net.UDPConn, skipName string) {
 		_, _ = sc.WriteToUDP(probe, bcastLimited)
 		_, _ = sc.WriteToUDP(probe, bcastDirected)
 		log.Printf("zgw: broadcast from %s", iface.Addr)
-		sc.Close()
+
+		// Keep the socket open for probeRecvWindow so the ZGW's unicast reply
+		// (directed to this socket's ephemeral source port) is not lost.
+		go func(conn *net.UDPConn) {
+			defer conn.Close()
+			buf := make([]byte, 4096)
+			_ = conn.SetReadDeadline(time.Now().Add(probeRecvWindow))
+			for {
+				n, addr, err := conn.ReadFromUDP(buf)
+				if err != nil {
+					return // deadline expired or closed
+				}
+				preview := n
+				if preview > 32 {
+					preview = 32
+				}
+				log.Printf("zgw: recv(ep) %d bytes from %s: % x", n, addr, buf[:preview])
+				onPacket(buf[:n], addr)
+			}
+		}(sc)
 	}
 }
 
@@ -146,6 +169,21 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 		}
 	}
 
+	// processPacket parses a received UDP packet and updates state if it
+	// contains a valid VIN.  Safe to call from multiple goroutines.
+	processPacket := func(buf []byte, addr *net.UDPAddr) {
+		vin := vinRe.Find(buf)
+		if vin == nil {
+			log.Printf("zgw: no VIN in packet from %s", addr)
+			return
+		}
+		log.Printf("zgw: ZGW at %s  VIN=%s", addr.IP, string(vin))
+		mu.Lock()
+		lastSeen = time.Now()
+		mu.Unlock()
+		notify(&Info{IP: addr.IP.String(), VIN: string(vin)})
+	}
+
 	// Stage 1: report interface immediately, before any UDP exchange.
 	notify(scanIfaces(skipIfaceName))
 
@@ -171,7 +209,7 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 		rx.Close()
 	}()
 
-	// Receive loop.
+	// Receive loop on the persistent rx socket (port 6811).
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -188,22 +226,12 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 				preview = 32
 			}
 			log.Printf("zgw: recv %d bytes from %s: % x", n, addr, buf[:preview])
-
-			vin := vinRe.Find(buf[:n])
-			if vin == nil {
-				log.Printf("zgw: no VIN in packet from %s", addr)
-				continue
-			}
-			log.Printf("zgw: ZGW at %s  VIN=%s", addr.IP, string(vin))
-			mu.Lock()
-			lastSeen = time.Now()
-			mu.Unlock()
-			notify(&Info{IP: addr.IP.String(), VIN: string(vin)})
+			processPacket(buf[:n], addr)
 		}
 	}()
 
 	// Periodic probe + interface re-scan.
-	doProbes(rx, skipIfaceName)
+	doProbes(rx, skipIfaceName, processPacket)
 
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -216,7 +244,7 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 			// Re-scan interfaces first so the UI is updated even without ZGW response.
 			ifaceInfo := scanIfaces(skipIfaceName)
 
-			doProbes(rx, skipIfaceName)
+			doProbes(rx, skipIfaceName, processPacket)
 
 			mu.Lock()
 			seen := lastSeen
