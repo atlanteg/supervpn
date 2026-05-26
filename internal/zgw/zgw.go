@@ -49,8 +49,10 @@ const (
 var vinRe = regexp.MustCompile(`BMWVIN([A-HJ-NPR-Z0-9]{17})`)
 
 // diagadrRe extracts the DIAGADR field (hex string) from the ZGW response.
+// The field is always immediately followed by "BMWMAC", so we anchor there to
+// avoid greedily consuming the 'B' from "BMWMAC" (which is a valid hex digit).
 // Example payload: "DIAGADR10BMWMAC..." → captures "10".
-var diagadrRe = regexp.MustCompile(`DIAGADR([0-9A-Fa-f]+)`)
+var diagadrRe = regexp.MustCompile(`DIAGADR([0-9A-Fa-f]+)BMWMAC`)
 
 // bmwModelEntry maps a BMW type key (VIN[3]) to a chassis code and numeric series.
 type bmwModelEntry struct {
@@ -59,45 +61,57 @@ type bmwModelEntry struct {
 }
 
 // bmwTypeKeys maps VIN position 3 (type key / Baumuster) to chassis + series.
-// Covers common F-series (2011–2019) and G-series (2019–) models.
+// Covers E-series, F-series (2011–2019) and G-series (2019–) models.
 var bmwTypeKeys = map[byte]bmwModelEntry{
+	// E-series (pre-2011)
+	'1': {"E87", "1"},   // 1 Series E87 hatch / E81 3-door
+	'9': {"E90", "3"},   // 3 Series E90 sedan / E91 touring
 	// F-series
-	'2': {"F20", "1"},   // 1 Series hatch
-	'3': {"F30", "3"},   // 3 Series sedan
-	'4': {"F32", "4"},   // 4 Series coupe
-	'5': {"F10", "5"},   // 5 Series sedan
-	'6': {"F12", "6"},   // 6 Series
-	'7': {"F01", "7"},   // 7 Series
-	'8': {"F34", "3"},   // 3 Series Gran Turismo
-	'A': {"F15", "X5"},  // X5
-	'B': {"F16", "X6"},  // X6
-	'C': {"F25", "X3"},  // X3
-	'D': {"F26", "X4"},  // X4
-	'E': {"F45", "2"},   // 2 Series Active Tourer
-	'F': {"F48", "X1"},  // X1
-	'G': {"F39", "X2"},  // X2
+	'2': {"F20", "1"},   // 1 Series F20/F21 hatch
+	'3': {"F30", "3"},   // 3 Series F30 sedan / F31 touring
+	'4': {"F32", "4"},   // 4 Series F32 coupe / F33 cabrio / F36 gran coupe
+	'5': {"F10", "5"},   // 5 Series F10 sedan / F11 touring
+	'6': {"F12", "6"},   // 6 Series F12 cabrio / F13 coupe / F06 gran coupe
+	'7': {"F01", "7"},   // 7 Series F01 / F02 long
+	'8': {"F34", "3"},   // 3 Series Gran Turismo F34
+	'A': {"F15", "X5"},  // X5 F15
+	'B': {"F16", "X6"},  // X6 F16
+	'C': {"F25", "X3"},  // X3 F25
+	'D': {"F26", "X4"},  // X4 F26
+	'E': {"F45", "2"},   // 2 Series Active Tourer F45 / Gran Tourer F46
+	'F': {"F48", "X1"},  // X1 F48
+	'G': {"F39", "X2"},  // X2 F39
 	// G-series
-	'H': {"G20", "3"},   // 3 Series
-	'J': {"G30", "5"},   // 5 Series
-	'K': {"G11", "7"},   // 7 Series
-	'L': {"G01", "X3"},  // X3
-	'M': {"G02", "X4"},  // X4
-	'N': {"G05", "X5"},  // X5
-	'P': {"G06", "X6"},  // X6
-	'R': {"G07", "X7"},  // X7
-	'S': {"G29", "Z4"},  // Z4
-	'T': {"G42", "2"},   // 2 Series Coupe
+	'H': {"G20", "3"},   // 3 Series G20 sedan / G21 touring
+	'J': {"G30", "5"},   // 5 Series G30 sedan / G31 touring
+	'K': {"G11", "7"},   // 7 Series G11 / G12 long
+	'L': {"G01", "X3"},  // X3 G01
+	'M': {"G02", "X4"},  // X4 G02
+	'N': {"G05", "X5"},  // X5 G05
+	'P': {"G06", "X6"},  // X6 G06
+	'R': {"G07", "X7"},  // X7 G07
+	'S': {"G29", "Z4"},  // Z4 G29
+	'T': {"G42", "2"},   // 2 Series Coupe G42
+	'U': {"G80", "M3"},  // M3 G80 / M3 Touring G81
+	'V': {"G82", "M4"},  // M4 G82 coupe / G83 cabrio
+	'W': {"G26", "4"},   // 4 Series Gran Coupe G26
+	'X': {"G22", "4"},   // 4 Series G22 coupe / G23 cabrio
+	'Y': {"G15", "8"},   // 8 Series G15 coupe / G14 cabrio
+	'Z': {"G16", "8"},   // 8 Series Gran Coupe G16
 }
 
 // bmwEngineCodes maps VIN position 5 to the engine/fuel suffix shown in the model name.
 var bmwEngineCodes = map[byte]string{
+	'0': "16i",
 	'1': "18i", '2': "20d", '3': "30d", '4': "35i",
 	'5': "20i", '6': "40i", '7': "35d", '8': "40d",
 	'9': "50i",
 	'A': "16d", 'B': "18d", 'C': "20d", 'D': "25d",
 	'E': "30i", 'F': "M",   'G': "M",   'H': "25e",
-	'J': "30e", 'K': "45e", 'S': "M",   'U': "30i",
-	'V': "40i",
+	'J': "30e", 'K': "45e", 'L': "25i", 'N': "28i",
+	'P': "35i", 'R': "28d", 'S': "M",   'T': "30i",
+	'U': "30i", 'V': "40i", 'W': "50e", 'X': "45e",
+	'Y': "M",   'Z': "60i",
 }
 
 // decodeVIN derives the chassis code (e.g. "F34") and model label
@@ -119,17 +133,17 @@ func decodeVIN(vin string) (chassis, model string) {
 		drive = "xDrive"
 	}
 
-	if len(entry.series) > 1 {
-		// X-model or Z-model: "F15 X5 35d xDrive"
+	if len(entry.series) == 1 {
+		// Single-digit series: "F34 3" + "20i" = "F34 320i"
 		model = chassis + " " + entry.series
 		if eng != "" {
-			model += " " + eng
+			model += eng
 		}
 	} else {
-		// Numeric series: "F34 320i"
+		// Named model (X1–X7, Z4, M3, M4, 8 Series…): always space-separated.
 		model = chassis + " " + entry.series
-		if eng != "" {
-			model += eng // appended directly: "3" + "20i" = "320i"
+		if eng != "" && eng != "M" { // M3/M4 already carry the M name; skip redundant engine tag
+			model += " " + eng
 		}
 	}
 	if drive != "" {
