@@ -42,8 +42,10 @@ const (
 	probeRecvWindow = 2 * time.Second
 )
 
-// vinRe matches a valid VIN: 17 chars, no I/O/Q (ISO 3779).
-var vinRe = regexp.MustCompile(`[A-HJ-NPR-Z0-9]{17}`)
+// vinRe extracts VIN from ZGW response: looks for "BMWVIN" keyword followed by
+// 17 ISO 3779 chars (no I/O/Q).  Anchoring to the keyword avoids false matches
+// on other 17-char sequences in the payload (e.g. "AGADR10BMWMAC48C5").
+var vinRe = regexp.MustCompile(`BMWVIN([A-HJ-NPR-Z0-9]{17})`)
 
 // Info holds the result of a discovery step.
 // VIN == "" means the 169.254 interface was found but ZGW has not responded yet.
@@ -172,11 +174,12 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 	// processPacket parses a received UDP packet and updates state if it
 	// contains a valid VIN.  Safe to call from multiple goroutines.
 	processPacket := func(buf []byte, addr *net.UDPAddr) {
-		vin := vinRe.Find(buf)
-		if vin == nil {
+		m := vinRe.FindSubmatch(buf)
+		if m == nil {
 			log.Printf("zgw: no VIN in packet from %s", addr)
 			return
 		}
+		vin := m[1]
 		log.Printf("zgw: ZGW at %s  VIN=%s", addr.IP, string(vin))
 		mu.Lock()
 		lastSeen = time.Now()
@@ -284,7 +287,8 @@ func Discover(localIP string) *Info {
 		if err != nil {
 			return nil
 		}
-		if vin := vinRe.Find(buf[:n]); vin != nil {
+		if m := vinRe.FindSubmatch(buf[:n]); m != nil {
+			vin := m[1]
 			return &Info{IP: remoteAddr.IP.String(), VIN: string(vin)}
 		}
 	}
