@@ -80,15 +80,6 @@ func scanIfaces(skipName string) *Info {
 	return nil
 }
 
-// knownZGWIPs are BMW ZGW static IPs to try via unicast in addition to
-// broadcast.  Broadcast does not propagate through VPN tunnels (e.g. Remote
-// Enet over internet), but unicast does — so we probe all known addresses.
-var knownZGWIPs = []string{
-	"169.254.112.4", // F/G/I/H series (most common)
-	"169.254.112.1",
-	"169.254.65.120", // E series and some older models
-	"169.254.1.1",
-}
 
 // doProbes sends the 4-byte ZGW discovery request on all available paths.
 // skipName is the VPN tunnel adapter name to exclude from per-interface probing.
@@ -120,19 +111,8 @@ func doProbes(rx *net.UDPConn, skipName string) {
 			continue
 		}
 		_ = sc.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-
-		// Broadcast — works on direct ENET connections.
 		_, _ = sc.WriteToUDP(probe, bcast)
 		log.Printf("zgw: broadcast from %s", iface.Addr)
-
-		// Unicast to well-known ZGW IPs — works through VPN tunnels where
-		// broadcast is not forwarded (e.g. Remote Enet over internet).
-		for _, ip := range knownZGWIPs {
-			dst := &net.UDPAddr{IP: net.ParseIP(ip), Port: zgwPort}
-			_, _ = sc.WriteToUDP(probe, dst)
-		}
-		log.Printf("zgw: unicast probes to %v from %s", knownZGWIPs, iface.Addr)
-
 		sc.Close()
 	}
 }
