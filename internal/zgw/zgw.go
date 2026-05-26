@@ -60,17 +60,18 @@ func (i *Info) String() string {
 }
 
 // scanIfaces returns the first detected 169.254 interface as a bare Info
-// (no VIN), or nil if none found.
-func scanIfaces() *Info {
+// (no VIN), or nil if none found.  skipName is the name of our own VPN tunnel
+// adapter (e.g. "supervpn") which must not be mistaken for a BMW connection.
+func scanIfaces(skipName string) *Info {
 	ifaces, err := bridge.DetectLinkLocal()
 	if err != nil {
 		log.Printf("zgw: DetectLinkLocal: %v", err)
 		return nil
 	}
-	if len(ifaces) == 0 {
-		return nil
-	}
 	for _, iface := range ifaces {
+		if skipName != "" && iface.Name == skipName {
+			continue // skip our own VPN tunnel adapter
+		}
 		if iface.Addr != nil {
 			log.Printf("zgw: 169.254 interface found: %s (%s)", iface.Name, iface.Addr)
 			return &Info{IP: iface.Addr.String()}
@@ -89,7 +90,8 @@ var knownZGWIPs = []string{
 }
 
 // doProbes sends the 4-byte ZGW discovery request on all available paths.
-func doProbes(rx *net.UDPConn) {
+// skipName is the VPN tunnel adapter name to exclude from per-interface probing.
+func doProbes(rx *net.UDPConn, skipName string) {
 	bcast := &net.UDPAddr{IP: net.IPv4(255, 255, 255, 255), Port: zgwPort}
 	probe := []byte{0x00, 0x00, 0x00, 0x00}
 
@@ -107,6 +109,9 @@ func doProbes(rx *net.UDPConn) {
 	for _, iface := range ifaces {
 		if iface.Addr == nil {
 			continue
+		}
+		if skipName != "" && iface.Name == skipName {
+			continue // don't probe through our own VPN tunnel
 		}
 		sc, err := openSendConn(iface.Addr.String())
 		if err != nil {
@@ -132,9 +137,12 @@ func doProbes(rx *net.UDPConn) {
 }
 
 // Run detects 169.254 interfaces and discovers the BMW ZGW.
+// skipIfaceName is the name of the local VPN tunnel adapter (e.g. "supervpn")
+// that should be excluded from BMW interface detection and probing — otherwise
+// the VPN adapter itself would be mistaken for a BMW ENET connection.
 // onChange is called on a background goroutine whenever the result changes;
 // callers must dispatch to their UI thread as appropriate.
-func Run(ctx context.Context, onChange func(*Info)) {
+func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 	var (
 		mu       sync.Mutex
 		last     *Info
@@ -154,7 +162,7 @@ func Run(ctx context.Context, onChange func(*Info)) {
 	}
 
 	// Stage 1: report interface immediately, before any UDP exchange.
-	notify(scanIfaces())
+	notify(scanIfaces(skipIfaceName))
 
 	rx, err := openRecvConn(zgwPort)
 	if err != nil {
@@ -167,7 +175,7 @@ func Run(ctx context.Context, onChange func(*Info)) {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				notify(scanIfaces())
+				notify(scanIfaces(skipIfaceName))
 			}
 		}
 	}
@@ -210,7 +218,7 @@ func Run(ctx context.Context, onChange func(*Info)) {
 	}()
 
 	// Periodic probe + interface re-scan.
-	doProbes(rx)
+	doProbes(rx, skipIfaceName)
 
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -221,9 +229,9 @@ func Run(ctx context.Context, onChange func(*Info)) {
 			return
 		case <-tick.C:
 			// Re-scan interfaces first so the UI is updated even without ZGW response.
-			ifaceInfo := scanIfaces()
+			ifaceInfo := scanIfaces(skipIfaceName)
 
-			doProbes(rx)
+			doProbes(rx, skipIfaceName)
 
 			mu.Lock()
 			seen := lastSeen

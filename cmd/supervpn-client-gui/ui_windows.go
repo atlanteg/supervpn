@@ -173,7 +173,12 @@ func (ui *winUI) runApp() {
 	}
 
 	// Start BMW ZGW discovery — runs independently of VPN connection state.
-	go zgw.Run(context.Background(), func(info *zgw.Info) {
+	// Exclude our own VPN tunnel adapter so it is not mistaken for a BMW ENET cable.
+	tunName := strings.TrimSpace(ui.tunNameEdit.Text())
+	if tunName == "" {
+		tunName = "supervpn"
+	}
+	go zgw.Run(context.Background(), tunName, func(info *zgw.Info) {
 		text := zgw.FormatBMW(info)
 		ui.form.Synchronize(func() {
 			if ui.bmwLabel != nil {

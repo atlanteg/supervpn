@@ -440,7 +440,8 @@ func run() {
 	})
 
 	// BMW ZGW discovery — runs independently of VPN connection state.
-	go zgw.Run(context.Background(), func(info *zgw.Info) {
+	// Seema uses the default "supervpn" adapter name — exclude it from BMW detection.
+	go zgw.Run(context.Background(), "supervpn", func(info *zgw.Info) {
 		text := zgw.FormatBMW(info)
 		a.form.Synchronize(func() {
 			if a.bmwLabel != nil {

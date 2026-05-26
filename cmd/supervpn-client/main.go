@@ -158,7 +158,11 @@ func main() {
 	defer cancel()
 
 	// BMW ZGW discovery — log each state change.
-	go zgw.Run(ctx, func(info *zgw.Info) {
+	zgwSkip := cfg.TunName
+	if zgwSkip == "" {
+		zgwSkip = "supervpn"
+	}
+	go zgw.Run(ctx, zgwSkip, func(info *zgw.Info) {
 		if info != nil {
 			log.Printf("BMW found: %s", info)
 		} else {
