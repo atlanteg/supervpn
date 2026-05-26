@@ -374,7 +374,7 @@ jobs:
           mkdir -p dist
           # The current release has not been published yet at this point,
           # so .[0] is the previous release — use it to fill skipped build artifacts.
-          PREV=$(gh release list --repo atlantegsrb/supervpn-releases \
+          PREV=$(gh release list --repo atlanteg/supervpn-releases \
             --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
           if [ -z "$PREV" ]; then
             echo "No previous release found — skipping fill step"
@@ -385,7 +385,7 @@ jobs:
           fill() {
             local pattern="$1"
             gh release download "$PREV" \
-              --repo atlantegsrb/supervpn-releases \
+              --repo atlanteg/supervpn-releases \
               --pattern "$pattern" \
               --dir dist/ --clobber 2>/dev/null \
               && echo "  filled: $pattern" || echo "  not found in prev: $pattern"
@@ -457,7 +457,7 @@ jobs:
             dist/superVPN-macos.zip \
             dist/supervpn-seema-windows-amd64.exe \
             dist/README-user.pdf \
-            --repo atlantegsrb/supervpn-releases \
+            --repo atlanteg/supervpn-releases \
             --title "supervpn $VER" \
             --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
             --latest
@@ -467,7 +467,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           git clone --depth=1 \
-            "https://x-access-token:${GH_TOKEN}@github.com/atlantegsrb/supervpn-releases.git" \
+            "https://x-access-token:${GH_TOKEN}@github.com/atlanteg/supervpn-releases.git" \
             releases-repo
           cp README-user.md releases-repo/README-user.md
           cp dist/README-user.pdf releases-repo/README-user.pdf
