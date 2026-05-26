@@ -84,14 +84,17 @@ func scanIfaces(skipName string) *Info {
 // doProbes sends the 4-byte ZGW discovery request on all available paths.
 // skipName is the VPN tunnel adapter name to exclude from per-interface probing.
 func doProbes(rx *net.UDPConn, skipName string) {
-	bcast := &net.UDPAddr{IP: net.IPv4(255, 255, 255, 255), Port: zgwPort}
+	// Both broadcast forms: limited (255.255.255.255) and directed link-local
+	// subnet broadcast (169.254.255.255).  Some ZGW firmware only responds to
+	// the directed form.
+	bcastLimited  := &net.UDPAddr{IP: net.IPv4(255, 255, 255, 255), Port: zgwPort}
+	bcastDirected := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
 	probe := []byte{0x00, 0x00, 0x00, 0x00}
 
-	// From rx socket (source port = zgwPort) so unicast ZGW reply lands on 6811.
+	// From rx socket (source port = zgwPort) so ZGW unicast reply lands on 6811.
 	_ = rx.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-	if _, err := rx.WriteToUDP(probe, bcast); err != nil {
-		log.Printf("zgw: broadcast from rx failed: %v", err)
-	}
+	_, _ = rx.WriteToUDP(probe, bcastLimited)
+	_, _ = rx.WriteToUDP(probe, bcastDirected)
 
 	// Per-interface sockets to force broadcast out the correct NIC.
 	ifaces, err := bridge.DetectLinkLocal()
@@ -111,7 +114,8 @@ func doProbes(rx *net.UDPConn, skipName string) {
 			continue
 		}
 		_ = sc.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-		_, _ = sc.WriteToUDP(probe, bcast)
+		_, _ = sc.WriteToUDP(probe, bcastLimited)
+		_, _ = sc.WriteToUDP(probe, bcastDirected)
 		log.Printf("zgw: broadcast from %s", iface.Addr)
 		sc.Close()
 	}
