@@ -54,53 +54,73 @@ var vinRe = regexp.MustCompile(`BMWVIN([A-HJ-NPR-Z0-9]{17})`)
 // Example payload: "DIAGADR10BMWMAC..." → captures "10".
 var diagadrRe = regexp.MustCompile(`DIAGADR([0-9A-Fa-f]+)BMWMAC`)
 
-// bmwModelEntry maps a BMW type key (VIN[3]) to a chassis code and numeric series.
+// bmwModelEntry maps a BMW type key (VIN[3]) to chassis platform info.
 type bmwModelEntry struct {
-	chassis string // e.g. "F34"
-	series  string // e.g. "3" (numeric) or "X5" (X-model)
+	chassis string // base chassis code, e.g. "G20" (sedan/coupé)
+	tourer  string // estate/wagon variant chassis, e.g. "G21"; "" if N/A
+	series  string // series label: single digit "3" or named "X5", "M3"
+	fwd     bool   // true = front-wheel drive platform (F45, F48, F39…)
 }
 
-// bmwTypeKeys maps VIN position 3 (type key / Baumuster) to chassis + series.
-// Covers E-series, F-series (2011–2019) and G-series (2019–) models.
+// bmwBodyInfo describes the body style and drivetrain encoded in VIN[4].
+type bmwBodyInfo struct {
+	touring bool // estate/wagon (Touring) body — selects entry.tourer chassis
+	xdrive  bool // BMW xDrive all-wheel drive
+}
+
+// bmwBodyCodes maps VIN[4] to body style and drivetrain.
+// Absent codes → standard sedan/coupé body, rear-wheel drive.
+var bmwBodyCodes = map[byte]bmwBodyInfo{
+	'X': {false, true},  // xDrive sedan (all series)
+	'B': {true, false},  // F31/F11 Touring RWD
+	'D': {true, true},   // F31/F11 Touring xDrive
+	'E': {true, false},  // G21/G31 Touring RWD
+	'N': {true, true},   // G21/G31 Touring xDrive
+	'F': {true, false},  // G81 M3 Touring RWD
+	'G': {true, true},   // G81 M3 Touring xDrive
+}
+
+// bmwTypeKeys maps VIN[3] (BMW Baumuster / type key) to chassis + series.
+// Covers E-series (pre-2011), F-series (2011–2019), and G-series (2019–).
 var bmwTypeKeys = map[byte]bmwModelEntry{
-	// E-series (pre-2011)
-	'1': {"E87", "1"},   // 1 Series E87 hatch / E81 3-door
-	'9': {"E90", "3"},   // 3 Series E90 sedan / E91 touring
+	// E-series
+	'1': {"E87", "", "1", false},    // 1 Series E87/E81
+	'9': {"E90", "E91", "3", false}, // 3 Series E90 sedan / E91 Touring
 	// F-series
-	'2': {"F20", "1"},   // 1 Series F20/F21 hatch
-	'3': {"F30", "3"},   // 3 Series F30 sedan / F31 touring
-	'4': {"F32", "4"},   // 4 Series F32 coupe / F33 cabrio / F36 gran coupe
-	'5': {"F10", "5"},   // 5 Series F10 sedan / F11 touring
-	'6': {"F12", "6"},   // 6 Series F12 cabrio / F13 coupe / F06 gran coupe
-	'7': {"F01", "7"},   // 7 Series F01 / F02 long
-	'8': {"F34", "3"},   // 3 Series Gran Turismo F34
-	'A': {"F15", "X5"},  // X5 F15
-	'B': {"F16", "X6"},  // X6 F16
-	'C': {"F25", "X3"},  // X3 F25
-	'D': {"F26", "X4"},  // X4 F26
-	'E': {"F45", "2"},   // 2 Series Active Tourer F45 / Gran Tourer F46
-	'F': {"F48", "X1"},  // X1 F48
-	'G': {"F39", "X2"},  // X2 F39
+	'2': {"F20", "F21", "1", false}, // 1 Series F20/F21
+	'3': {"F30", "F31", "3", false}, // 3 Series F30 sedan / F31 Touring
+	'4': {"F32", "", "4", false},    // 4 Series F32 coupé / F33 cabrio / F36 Gran Coupé
+	'5': {"F10", "F11", "5", false}, // 5 Series F10 sedan / F11 Touring
+	'6': {"F12", "", "6", false},    // 6 Series F12 cabrio / F13 coupé / F06 Gran Coupé
+	'7': {"F01", "", "7", false},    // 7 Series F01 SWB / F02 LWB
+	'8': {"F34", "", "3", false},    // 3 Series Gran Turismo F34
+	'A': {"F15", "", "X5", false},   // X5 F15
+	'B': {"F16", "", "X6", false},   // X6 F16
+	'C': {"F25", "", "X3", false},   // X3 F25
+	'D': {"F26", "", "X4", false},   // X4 F26
+	'E': {"F45", "", "2", true},     // 2 Series Active Tourer F45 / Gran Tourer F46 (FWD)
+	'F': {"F48", "", "X1", true},    // X1 F48 (FWD)
+	'G': {"F39", "", "X2", true},    // X2 F39 (FWD)
 	// G-series
-	'H': {"G20", "3"},   // 3 Series G20 sedan / G21 touring
-	'J': {"G30", "5"},   // 5 Series G30 sedan / G31 touring
-	'K': {"G11", "7"},   // 7 Series G11 / G12 long
-	'L': {"G01", "X3"},  // X3 G01
-	'M': {"G02", "X4"},  // X4 G02
-	'N': {"G05", "X5"},  // X5 G05
-	'P': {"G06", "X6"},  // X6 G06
-	'R': {"G07", "X7"},  // X7 G07
-	'S': {"G29", "Z4"},  // Z4 G29
-	'T': {"G42", "2"},   // 2 Series Coupe G42
-	'U': {"G80", "M3"},  // M3 G80 / M3 Touring G81
-	'V': {"G82", "M4"},  // M4 G82 coupe / G83 cabrio
-	'W': {"G26", "4"},   // 4 Series Gran Coupe G26
-	'X': {"G22", "4"},   // 4 Series G22 coupe / G23 cabrio
-	'Y': {"G15", "8"},   // 8 Series G15 coupe / G14 cabrio
-	'Z': {"G16", "8"},   // 8 Series Gran Coupe G16
+	'H': {"G20", "G21", "3", false},  // 3 Series G20 sedan / G21 Touring
+	'J': {"G30", "G31", "5", false},  // 5 Series G30 sedan / G31 Touring
+	'K': {"G11", "G12", "7", false},  // 7 Series G11 SWB / G12 LWB
+	'L': {"G01", "", "X3", false},    // X3 G01
+	'M': {"G02", "", "X4", false},    // X4 G02
+	'N': {"G05", "", "X5", false},    // X5 G05
+	'P': {"G06", "", "X6", false},    // X6 G06
+	'R': {"G07", "", "X7", false},    // X7 G07
+	'S': {"G29", "", "Z4", false},    // Z4 G29
+	'T': {"G42", "", "2", false},     // 2 Series Coupé G42
+	'U': {"G80", "G81", "M3", false}, // M3 G80 sedan / G81 Touring
+	'V': {"G82", "G83", "M4", false}, // M4 G82 coupé / G83 cabrio
+	'W': {"G26", "", "4", false},     // 4 Series Gran Coupé G26
+	'X': {"G22", "G23", "4", false},  // 4 Series G22 coupé / G23 cabrio
+	'Y': {"G15", "", "8", false},     // 8 Series G15 coupé / G14 cabrio
+	'Z': {"G16", "", "8", false},     // 8 Series Gran Coupé G16
 }
 
-// bmwEngineCodes maps VIN position 5 to the engine/fuel suffix shown in the model name.
+// bmwEngineCodes maps VIN[5] to the engine/displacement suffix.
 var bmwEngineCodes = map[byte]string{
 	'0': "16i",
 	'1': "18i", '2': "20d", '3': "30d", '4': "35i",
@@ -114,42 +134,73 @@ var bmwEngineCodes = map[byte]string{
 	'Y': "M",   'Z': "60i",
 }
 
-// decodeVIN derives the chassis code (e.g. "F34") and model label
-// (e.g. "F34 320i xDrive") from a 17-char BMW VIN.
+// decodeVIN returns the chassis code, model label, and — when a match is found
+// in the embedded type database — the BMW engine code, body type, and power.
 // Returns empty strings for unrecognised type keys.
-func decodeVIN(vin string) (chassis, model string) {
+func decodeVIN(vin string) (chassis, model, engine, body string, powerKW int) {
 	if len(vin) < 17 {
-		return "", ""
+		return
 	}
 	entry, ok := bmwTypeKeys[vin[3]]
 	if !ok {
-		return "", ""
+		return
 	}
-	chassis = entry.chassis
-	eng := bmwEngineCodes[vin[5]] // "" if unknown engine code
 
+	bodyInfo := bmwBodyCodes[vin[4]] // zero value → sedan, RWD
+
+	// Use touring chassis code when body code indicates estate.
+	chassis = entry.chassis
+	if bodyInfo.touring && entry.tourer != "" {
+		chassis = entry.tourer
+	}
+
+	eng := bmwEngineCodes[vin[5]] // "" if unknown
+
+	// Drivetrain string used for DB lookup.
+	driveDB := "Rear-Wheel Drive"
+	switch {
+	case bodyInfo.xdrive:
+		driveDB = "All Wheel-Drive"
+	case entry.fwd:
+		driveDB = "Front-Wheel Drive"
+	}
+
+	// Type-database lookup: try with engine suffix, then without.
+	var dbMatch *VINVariant
+	if eng != "" {
+		dbMatch = lookupVariant(chassis, driveDB, eng)
+	}
+	if dbMatch == nil {
+		dbMatch = lookupVariant(chassis, driveDB, "")
+	}
+	if dbMatch != nil {
+		engine = dbMatch.Engine
+		powerKW = dbMatch.PowerKW
+		body = dbMatch.Body
+		model = chassis + " " + dbMatch.Model
+		return
+	}
+
+	// Fallback: build model string from hand-coded tables.
 	var drive string
-	if vin[4] == 'X' {
+	if bodyInfo.xdrive {
 		drive = "xDrive"
 	}
-
 	if len(entry.series) == 1 {
-		// Single-digit series: "F34 3" + "20i" = "F34 320i"
 		model = chassis + " " + entry.series
 		if eng != "" {
 			model += eng
 		}
 	} else {
-		// Named model (X1–X7, Z4, M3, M4, 8 Series…): always space-separated.
 		model = chassis + " " + entry.series
-		if eng != "" && eng != "M" { // M3/M4 already carry the M name; skip redundant engine tag
+		if eng != "" && eng != "M" {
 			model += " " + eng
 		}
 	}
 	if drive != "" {
 		model += " " + drive
 	}
-	return chassis, model
+	return
 }
 
 // diagadrToTarget converts the DIAGADR hex string from the ZGW response to the
@@ -166,11 +217,16 @@ func diagadrToTarget(hexStr string) string {
 // Info holds the result of a discovery step.
 // VIN == "" means the 169.254 interface was found but ZGW has not responded yet.
 type Info struct {
-	IP      string
-	VIN     string
-	Model   string // e.g. "F34 320i xDrive"; empty until ZGW responds
-	Chassis string // e.g. "F34"; empty until ZGW responds
-	Target  string // e.g. "F020"; derived from DIAGADR in ZGW response
+	IP      string // ZGW IP, e.g. "169.254.138.176"
+	MAC     string // ZGW MAC, e.g. "48:C5:8D:90:51:5C"; empty until ZGW responds
+	VIN     string // 17-char VIN; empty until ZGW responds
+	Model   string // e.g. "G30 530i xDrive"; empty if not recognised
+	Chassis string // e.g. "G30"; empty if not recognised
+	Target  string // ISTA target, e.g. "F020"; from DIAGADR in ZGW response
+	// From the embedded type database — empty/0 if car is not in DB:
+	Engine  string // BMW engine code, e.g. "B57D30O0"
+	PowerKW int    // engine output in kW, e.g. 195
+	Body    string // body type, e.g. "Sedan", "Touring"
 }
 
 func (i *Info) String() string {
@@ -307,17 +363,24 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 		}
 		vin := string(m[1])
 
-		var target, chassis, model string
+		var target, mac string
 		if dm := diagadrRe.FindSubmatch(buf); dm != nil {
 			target = diagadrToTarget(string(dm[1]))
 		}
-		chassis, model = decodeVIN(vin)
+		if mm := macRe.FindSubmatch(buf); mm != nil {
+			mac = formatMAC(string(mm[1]))
+		}
+		chassis, model, engine, body, powerKW := decodeVIN(vin)
 
 		log.Printf("zgw: ZGW at %s  VIN=%s  target=%s  model=%s", addr.IP, vin, target, model)
 		mu.Lock()
 		lastSeen = time.Now()
 		mu.Unlock()
-		notify(&Info{IP: addr.IP.String(), VIN: vin, Model: model, Chassis: chassis, Target: target})
+		notify(&Info{
+			IP: addr.IP.String(), MAC: mac, VIN: vin,
+			Model: model, Chassis: chassis, Target: target,
+			Engine: engine, PowerKW: powerKW, Body: body,
+		})
 	}
 
 	// Stage 1: report interface immediately, before any UDP exchange.
@@ -422,14 +485,32 @@ func Discover(localIP string) *Info {
 		}
 		if m := vinRe.FindSubmatch(buf[:n]); m != nil {
 			vin := string(m[1])
-			var target, chassis, model string
+			var target, mac string
 			if dm := diagadrRe.FindSubmatch(buf[:n]); dm != nil {
 				target = diagadrToTarget(string(dm[1]))
 			}
-			chassis, model = decodeVIN(vin)
-			return &Info{IP: remoteAddr.IP.String(), VIN: vin, Model: model, Chassis: chassis, Target: target}
+			if mm := macRe.FindSubmatch(buf[:n]); mm != nil {
+				mac = formatMAC(string(mm[1]))
+			}
+			chassis, model, engine, body, powerKW := decodeVIN(vin)
+			return &Info{
+				IP: remoteAddr.IP.String(), MAC: mac, VIN: vin,
+				Model: model, Chassis: chassis, Target: target,
+				Engine: engine, PowerKW: powerKW, Body: body,
+			}
 		}
 	}
+}
+
+// macRe extracts the raw 12-hex-char MAC from "BMWMAC<12hex>BMWVIN".
+var macRe = regexp.MustCompile(`BMWMAC([0-9A-Fa-f]{12})`)
+
+// formatMAC inserts colons into a raw 12-char hex string.
+func formatMAC(s string) string {
+	if len(s) != 12 {
+		return s
+	}
+	return s[0:2] + ":" + s[2:4] + ":" + s[4:6] + ":" + s[6:8] + ":" + s[8:10] + ":" + s[10:12]
 }
 
 func equal(a, b *Info) bool {
@@ -439,7 +520,8 @@ func equal(a, b *Info) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.IP == b.IP && a.VIN == b.VIN && a.Target == b.Target && a.Model == b.Model
+	return a.IP == b.IP && a.VIN == b.VIN && a.Target == b.Target &&
+		a.Model == b.Model && a.Engine == b.Engine && a.PowerKW == b.PowerKW
 }
 
 // FormatBMW returns the display string for the UI label.
@@ -456,6 +538,12 @@ func FormatBMW(info *Info) string {
 	}
 	if info.Target != "" {
 		s += "  " + info.Target
+	}
+	if info.PowerKW > 0 {
+		s += fmt.Sprintf("  %dkW", info.PowerKW)
+	}
+	if info.Body != "" {
+		s += "  " + info.Body
 	}
 	return s
 }
