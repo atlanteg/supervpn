@@ -387,6 +387,7 @@ func (ui *winUI) connectionPage() TabPage {
 					AssignTo: &ui.bmwLabel,
 					Text:     "",
 					Font:     Font{PointSize: 9},
+					MinSize:  Size{Height: 32}, // room for 2 lines (IP/VIN + model detail)
 				},
 				Label{
 					AssignTo: &ui.disconnectLabel,

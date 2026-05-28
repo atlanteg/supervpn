@@ -524,7 +524,14 @@ func equal(a, b *Info) bool {
 		a.Model == b.Model && a.Engine == b.Engine && a.PowerKW == b.PowerKW
 }
 
-// FormatBMW returns the display string for the UI label.
+// FormatBMW returns a display-ready string for the UI label.
+// When DB-enriched data is available the result spans two lines so that
+// it fits comfortably on narrow Walk/Win32 labels:
+//
+//	Line 1: "BMW: <IP>  <VIN>"
+//	Line 2: "<Model>  <Target>  <N>kW  <Body>"
+//
+// Without DB data the second line is omitted and everything stays on one line.
 func FormatBMW(info *Info) string {
 	if info == nil {
 		return "BMW: not found"
@@ -532,18 +539,35 @@ func FormatBMW(info *Info) string {
 	if info.VIN == "" {
 		return fmt.Sprintf("BMW: %s (no ZGW response)", info.IP)
 	}
-	s := fmt.Sprintf("BMW: %s  %s", info.IP, info.VIN)
+
+	line1 := fmt.Sprintf("BMW: %s  %s", info.IP, info.VIN)
+
+	// Build the detail line from decoded/DB fields.
+	var line2 string
 	if info.Model != "" {
-		s += "  " + info.Model
+		line2 = info.Model
 	}
 	if info.Target != "" {
-		s += "  " + info.Target
+		if line2 != "" {
+			line2 += "  "
+		}
+		line2 += info.Target
 	}
 	if info.PowerKW > 0 {
-		s += fmt.Sprintf("  %dkW", info.PowerKW)
+		if line2 != "" {
+			line2 += "  "
+		}
+		line2 += fmt.Sprintf("%dkW", info.PowerKW)
 	}
 	if info.Body != "" {
-		s += "  " + info.Body
+		if line2 != "" {
+			line2 += "  "
+		}
+		line2 += info.Body
 	}
-	return s
+
+	if line2 == "" {
+		return line1
+	}
+	return line1 + "\n" + line2
 }

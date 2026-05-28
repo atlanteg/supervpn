@@ -390,6 +390,7 @@ func run() {
 				AssignTo: &a.bmwLabel,
 				Text:     "",
 				Font:     Font{PointSize: 9},
+				MinSize:  Size{Height: 32}, // room for 2 lines (IP/VIN + model detail)
 			},
 			Label{
 				AssignTo: &a.disconnectLabel,
