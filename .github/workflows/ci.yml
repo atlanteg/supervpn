@@ -526,6 +526,8 @@ jobs:
           cd releases-repo
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/atlanteg/supervpn-releases.git"
           git add README-user.md README-user.pdf
           if ! git diff --cached --quiet; then
             VER="${{ needs.setup.outputs.ver }}"
