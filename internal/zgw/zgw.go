@@ -329,7 +329,6 @@ func scanIfaces(skipName string) *Info {
 			continue // skip our own VPN tunnel adapter
 		}
 		if iface.Addr != nil {
-			log.Printf("zgw: 169.254 interface found: %s (%s)", iface.Name, iface.Addr)
 			return &Info{IP: iface.Addr.String()}
 		}
 	}
@@ -373,7 +372,6 @@ func doProbes(rx *net.UDPConn, skipName string, onPacket func([]byte, *net.UDPAd
 		_ = sc.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 		_, _ = sc.WriteToUDP(probe, bcastLimited)
 		_, _ = sc.WriteToUDP(probe, bcastDirected)
-		log.Printf("zgw: broadcast from %s", iface.Addr)
 
 		// Keep the socket open for probeRecvWindow so the ZGW's unicast reply
 		// (directed to this socket's ephemeral source port) is not lost.
@@ -384,13 +382,8 @@ func doProbes(rx *net.UDPConn, skipName string, onPacket func([]byte, *net.UDPAd
 			for {
 				n, addr, err := conn.ReadFromUDP(buf)
 				if err != nil {
-					return // deadline expired or closed
+					return
 				}
-				preview := n
-				if preview > 32 {
-					preview = 32
-				}
-				log.Printf("zgw: recv(ep) %d bytes from %s: % x", n, addr, buf[:preview])
 				onPacket(buf[:n], addr)
 			}
 		}(sc)
@@ -427,7 +420,6 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 	processPacket := func(buf []byte, addr *net.UDPAddr) {
 		m := vinRe.FindSubmatch(buf)
 		if m == nil {
-			log.Printf("zgw: no VIN in packet from %s", addr)
 			return
 		}
 		vin := string(m[1])
@@ -442,7 +434,6 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 		chassis, model, engine, body, powerKW := decodeVIN(vin)
 		platform := chassisPlatform[chassis]
 
-		log.Printf("zgw: ZGW at %s  VIN=%s  target=%s  model=%s  platform=%s", addr.IP, vin, target, model, platform)
 		mu.Lock()
 		lastSeen = time.Now()
 		mu.Unlock()
@@ -471,7 +462,6 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 			}
 		}
 	}
-	log.Printf("zgw: listening on 0.0.0.0:%d", zgwPort)
 
 	go func() {
 		<-ctx.Done()
@@ -490,11 +480,6 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 				}
 				continue
 			}
-			preview := n
-			if preview > 32 {
-				preview = 32
-			}
-			log.Printf("zgw: recv %d bytes from %s: % x", n, addr, buf[:preview])
 			processPacket(buf[:n], addr)
 		}
 	}()
@@ -520,8 +505,6 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 			mu.Unlock()
 
 			if !seen.IsZero() && time.Since(seen) > zgwSilenceTimeout {
-				// ZGW was found before but went silent — fall back to interface-only.
-				log.Printf("zgw: ZGW silent for >%v — reverting to interface-only", zgwSilenceTimeout)
 				notify(ifaceInfo)
 			} else if seen.IsZero() {
 				// Never got a ZGW response — keep showing interface if present.
