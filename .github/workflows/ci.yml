@@ -478,8 +478,9 @@ jobs:
               echo "::warning::Asset not found, skipping: $f"
             fi
           done
-          # Delete stale release with the same tag if it exists (idempotent).
-          gh release delete "$VER" --repo atlanteg/supervpn-releases --yes 2>/dev/null || true
+          # Delete stale release + git tag if they exist (idempotent).
+          gh release delete "$VER" --repo atlanteg/supervpn-releases --yes --cleanup-tag 2>&1 || \
+            echo "::notice::No existing release to delete (or delete failed) — proceeding with create"
           gh release create "$VER" "${FILES[@]}" \
             --repo atlanteg/supervpn-releases \
             --title "supervpn $VER" \
