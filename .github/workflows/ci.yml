@@ -496,11 +496,21 @@ jobs:
             --title "supervpn $VER" \
             --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
             --latest || true
-          # Verify the release was actually published (gh can exit non-zero even on success).
-          if gh release view "$VER" --repo atlanteg/supervpn-releases > /dev/null 2>&1; then
-            echo "Release $VER published successfully."
-          else
-            echo "::error::Release $VER was NOT created — gh release create failed."
+          # Verify the release was published — gh can exit non-zero even when it
+          # succeeds (false "workflow scope" warning); GitHub API may also take a
+          # few seconds to reflect the new release, so retry up to ~15 s.
+          VERIFIED=false
+          for i in 1 2 3 4 5; do
+            sleep 3
+            if gh release view "$VER" --repo atlanteg/supervpn-releases > /dev/null 2>&1; then
+              echo "Release $VER published successfully (attempt $i)."
+              VERIFIED=true
+              break
+            fi
+            echo "Release not visible yet (attempt $i) — retrying..."
+          done
+          if [ "$VERIFIED" = "false" ]; then
+            echo "::error::Release $VER was NOT created after retries."
             exit 1
           fi
 
