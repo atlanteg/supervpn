@@ -71,7 +71,8 @@ type bmwBodyInfo struct {
 // bmwBodyCodes maps VIN[4] to body style and drivetrain.
 // Absent codes → standard sedan/coupé body, rear-wheel drive.
 var bmwBodyCodes = map[byte]bmwBodyInfo{
-	'X': {false, true},  // xDrive sedan (all series)
+	'X': {false, true}, // xDrive sedan (all series, all generations)
+	'W': {false, true}, // xDrive SAC/SAV body (X4 F26 and similar non-DE plants)
 	'B': {true, false},  // F31/F11 Touring RWD
 	'D': {true, true},   // F31/F11 Touring xDrive
 	'E': {true, false},  // G21/G31 Touring RWD
@@ -90,8 +91,11 @@ var bmwBodyCodes = map[byte]bmwBodyInfo{
 //	A=2010 B=2011 C=2012 D=2013 E=2014 F=2015 G=2016
 //	H=2017 J=2018 K=2019 L=2020 M=2021 N=2022 P=2023 R=2024
 var gseriesIntroMY = map[byte]byte{
-	// Key 'L': G01 X3 from MY2018 ('J'); before that it was the 6 Series F13 Coupé.
+	// 'L': G01 X3 from MY2018 ('J'); before that it was the 6 Series F13 Coupé.
 	'L': 'J',
+	// 'X': G22 4-series from MY2021 ('M'); before that it was the X4 F26.
+	//      Confirmed: VIN X4XXW394X00P64042 (BMW SA, 2016) = F26 X4 xDrive28i.
+	'X': 'M',
 }
 
 // fseriesAltKeys holds the F-series meaning of type-key letters that were
@@ -100,6 +104,9 @@ var gseriesIntroMY = map[byte]byte{
 var fseriesAltKeys = map[byte]bmwModelEntry{
 	// 6 Series Coupé F13 (predecessor of G01 X3 on key 'L').
 	'L': {"F13", "", "6", false},
+	// X4 F26 (predecessor of G22 4-series on key 'X').
+	// Confirmed via BMW SA VIN (WMI X4X); German F26 VINs use key 'D'.
+	'X': {"F26", "", "X4", false},
 }
 
 // bmwTypeKeys maps VIN[3] (BMW Baumuster / type key) to chassis + series.
