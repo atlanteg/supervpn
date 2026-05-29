@@ -134,6 +134,39 @@ var bmwEngineCodes = map[byte]string{
 	'Y': "M",   'Z': "60i",
 }
 
+// chassisPlatform maps a chassis code to the ISTA software platform identifier.
+// Used by the diagnostics software (ISTA/D, ISTA/P) to select the correct
+// vehicle tree.  Kept in sync with the standalone/bmwzgw module.
+var chassisPlatform = map[string]string{
+	"F01": "F001",
+	"F10": "F010", "F11": "F010", "F12": "F010",
+	"F15": "F025", "F16": "F025", "F25": "F025", "F26": "F025",
+	"F20": "F020", "F21": "F020",
+	"F22": "F020", "F23": "F020",
+	"F30": "F020", "F31": "F020", "F32": "F020", "F33": "F020",
+	"F34": "F020", "F35": "F020", "F36": "F020",
+	"F39": "F056", "F45": "F056", "F46": "F056",
+	"F47": "F056", "F48": "F056", "F49": "F056",
+	"G01": "S15A", "G02": "S15A",
+	"G11": "S15A", "G12": "S15A",
+	"G30": "S15A", "G31": "S15A", "G32": "S15A",
+	"G38": "S15C",
+	"G20": "S18A", "G21": "S18A",
+	"G22": "S18A", "G23": "S18A", "G24": "S18A", "G26": "S18A",
+	"G42": "S18A",
+	"G05": "S18A", "G06": "S18A", "G07": "S18A", "G09": "S18A",
+	"G14": "S18A", "G15": "S18A", "G16": "S18A",
+	"G29": "S18A",
+	"G80": "S18A", "G81": "S18A",
+	"G82": "S18A", "G83": "S18A",
+	"G87": "S18A",
+	"G45": "G045", "G46": "G045", "G48": "G045",
+	"G60": "G070", "G61": "G070",
+	"G68": "G070", "G70": "G070", "G71": "G070",
+	"G72": "G070", "G73": "G070",
+	"G84": "G070", "G90": "G070", "G99": "G070",
+}
+
 // decodeVIN returns the chassis code, model label, and — when a match is found
 // in the embedded type database — the BMW engine code, body type, and power.
 // Returns empty strings for unrecognised type keys.
@@ -217,12 +250,13 @@ func diagadrToTarget(hexStr string) string {
 // Info holds the result of a discovery step.
 // VIN == "" means the 169.254 interface was found but ZGW has not responded yet.
 type Info struct {
-	IP      string // ZGW IP, e.g. "169.254.138.176"
-	MAC     string // ZGW MAC, e.g. "48:C5:8D:90:51:5C"; empty until ZGW responds
-	VIN     string // 17-char VIN; empty until ZGW responds
-	Model   string // e.g. "G30 530i xDrive"; empty if not recognised
-	Chassis string // e.g. "G30"; empty if not recognised
-	Target  string // ISTA target, e.g. "F020"; from DIAGADR in ZGW response
+	IP       string // ZGW IP, e.g. "169.254.138.176"
+	MAC      string // ZGW MAC, e.g. "48:C5:8D:90:51:5C"; empty until ZGW responds
+	VIN      string // 17-char VIN; empty until ZGW responds
+	Model    string // e.g. "G30 530i xDrive"; empty if not recognised
+	Chassis  string // e.g. "G30"; empty if not recognised
+	Platform string // ISTA software platform, e.g. "S15A", "S18A", "F020"; from chassisPlatform
+	Target   string // ISTA ECU target, e.g. "F020"; from DIAGADR×2 in ZGW response
 	// From the embedded type database — empty/0 if car is not in DB:
 	Engine  string // BMW engine code, e.g. "B57D30O0"
 	PowerKW int    // engine output in kW, e.g. 195
@@ -240,8 +274,8 @@ func (i *Info) String() string {
 	if i.Model != "" {
 		s += "  " + i.Model
 	}
-	if i.Target != "" {
-		s += "  " + i.Target
+	if i.Platform != "" {
+		s += "  " + i.Platform
 	}
 	return s
 }
@@ -371,14 +405,15 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 			mac = formatMAC(string(mm[1]))
 		}
 		chassis, model, engine, body, powerKW := decodeVIN(vin)
+		platform := chassisPlatform[chassis]
 
-		log.Printf("zgw: ZGW at %s  VIN=%s  target=%s  model=%s", addr.IP, vin, target, model)
+		log.Printf("zgw: ZGW at %s  VIN=%s  target=%s  model=%s  platform=%s", addr.IP, vin, target, model, platform)
 		mu.Lock()
 		lastSeen = time.Now()
 		mu.Unlock()
 		notify(&Info{
 			IP: addr.IP.String(), MAC: mac, VIN: vin,
-			Model: model, Chassis: chassis, Target: target,
+			Model: model, Chassis: chassis, Platform: platform, Target: target,
 			Engine: engine, PowerKW: powerKW, Body: body,
 		})
 	}
@@ -495,7 +530,7 @@ func Discover(localIP string) *Info {
 			chassis, model, engine, body, powerKW := decodeVIN(vin)
 			return &Info{
 				IP: remoteAddr.IP.String(), MAC: mac, VIN: vin,
-				Model: model, Chassis: chassis, Target: target,
+				Model: model, Chassis: chassis, Platform: chassisPlatform[chassis], Target: target,
 				Engine: engine, PowerKW: powerKW, Body: body,
 			}
 		}
@@ -520,8 +555,9 @@ func equal(a, b *Info) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.IP == b.IP && a.VIN == b.VIN && a.Target == b.Target &&
-		a.Model == b.Model && a.Engine == b.Engine && a.PowerKW == b.PowerKW
+	return a.IP == b.IP && a.VIN == b.VIN && a.Platform == b.Platform &&
+		a.Target == b.Target && a.Model == b.Model &&
+		a.Engine == b.Engine && a.PowerKW == b.PowerKW
 }
 
 // FormatBMW returns a display-ready string for the UI label.
@@ -547,11 +583,11 @@ func FormatBMW(info *Info) string {
 	if info.Model != "" {
 		line2 = info.Model
 	}
-	if info.Target != "" {
+	if info.Platform != "" {
 		if line2 != "" {
 			line2 += "  "
 		}
-		line2 += info.Target
+		line2 += info.Platform
 	}
 	if info.PowerKW > 0 {
 		if line2 != "" {
