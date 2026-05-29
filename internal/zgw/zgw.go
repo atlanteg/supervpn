@@ -80,6 +80,28 @@ var bmwBodyCodes = map[byte]bmwBodyInfo{
 	'G': {true, true},   // G81 M3 Touring xDrive
 }
 
+// gseriesIntroMY maps a VIN[3] type-key letter to the VIN[10] model-year
+// character at which G-series production for that key began.  Only letters
+// that were provably used for a different (F-series) model beforehand are
+// listed here; the corresponding F-series meaning is in fseriesAltKeys.
+//
+// VIN[10] model-year encoding (I/O/Q omitted):
+//
+//	A=2010 B=2011 C=2012 D=2013 E=2014 F=2015 G=2016
+//	H=2017 J=2018 K=2019 L=2020 M=2021 N=2022 P=2023 R=2024
+var gseriesIntroMY = map[byte]byte{
+	// Key 'L': G01 X3 from MY2018 ('J'); before that it was the 6 Series F13 Coupé.
+	'L': 'J',
+}
+
+// fseriesAltKeys holds the F-series meaning of type-key letters that were
+// later reused for G-series models.  Used by decodeVIN when VIN[10] indicates
+// the car predates the G-series introduction for that key.
+var fseriesAltKeys = map[byte]bmwModelEntry{
+	// 6 Series Coupé F13 (predecessor of G01 X3 on key 'L').
+	'L': {"F13", "", "6", false},
+}
+
 // bmwTypeKeys maps VIN[3] (BMW Baumuster / type key) to chassis + series.
 // Covers E-series (pre-2011), F-series (2011–2019), and G-series (2019–).
 var bmwTypeKeys = map[byte]bmwModelEntry{
@@ -174,7 +196,20 @@ func decodeVIN(vin string) (chassis, model, engine, body string, powerKW int) {
 	if len(vin) < 17 {
 		return
 	}
-	entry, ok := bmwTypeKeys[vin[3]]
+
+	// Resolve type key — BMW reuses the same VIN[3] letter across generations.
+	// VIN[10] carries the model-year character and disambiguates which generation
+	// the car belongs to.  If the model year predates the G-series introduction
+	// for this key, fall back to the F-series meaning.
+	typeKey := vin[3]
+	myChar := vin[10]
+	var entry bmwModelEntry
+	var ok bool
+	if introMY, reused := gseriesIntroMY[typeKey]; reused && myChar < introMY {
+		entry, ok = fseriesAltKeys[typeKey]
+	} else {
+		entry, ok = bmwTypeKeys[typeKey]
+	}
 	if !ok {
 		return
 	}
