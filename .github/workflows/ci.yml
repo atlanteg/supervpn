@@ -479,8 +479,19 @@ jobs:
             fi
           done
           # Delete stale release + git tag if they exist (idempotent).
-          gh release delete "$VER" --repo atlanteg/supervpn-releases --yes --cleanup-tag 2>&1 || \
-            echo "::notice::No existing release to delete (or delete failed) — proceeding with create"
+          # Use the API directly: look up the current release ID, delete it, then
+          # delete the tag — avoids 404s from stale IDs cached by gh CLI.
+          RELEASE_ID=$(gh api repos/atlanteg/supervpn-releases/releases/tags/"$VER" \
+            --jq '.id // empty' 2>/dev/null || true)
+          if [ -n "$RELEASE_ID" ]; then
+            echo "Deleting existing release $VER (id=$RELEASE_ID)..."
+            gh api --method DELETE repos/atlanteg/supervpn-releases/releases/"$RELEASE_ID" \
+              && echo "  release deleted" || echo "::warning::Release delete failed (id=$RELEASE_ID)"
+            gh api --method DELETE repos/atlanteg/supervpn-releases/git/refs/tags/"$VER" \
+              && echo "  tag deleted" || echo "::warning::Tag delete failed ($VER)"
+          else
+            echo "No existing release $VER — proceeding with create"
+          fi
           gh release create "$VER" "${FILES[@]}" \
             --repo atlanteg/supervpn-releases \
             --title "supervpn $VER" \
