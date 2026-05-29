@@ -455,7 +455,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           VER="${{ needs.setup.outputs.ver }}"
-          gh release create "$VER" \
+          # Build file list dynamically — skip any asset that wasn't produced
+          # (build job skipped and previous release didn't have it either).
+          FILES=()
+          for f in \
             supervpn-dist.zip \
             supervpn-linux.zip \
             supervpn-windows.zip \
@@ -468,7 +471,14 @@ jobs:
             dist/supervpn-client-gui-darwin-arm64 \
             dist/superVPN-macos.zip \
             dist/supervpn-seema-windows-amd64.exe \
-            dist/README-user.pdf \
+            dist/README-user.pdf; do
+            if [ -f "$f" ]; then
+              FILES+=("$f")
+            else
+              echo "::warning::Asset not found, skipping: $f"
+            fi
+          done
+          gh release create "$VER" "${FILES[@]}" \
             --repo atlanteg/supervpn-releases \
             --title "supervpn $VER" \
             --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
