@@ -479,11 +479,10 @@ jobs:
             fi
           done
           # Delete stale release + git tag if they exist (idempotent).
-          # Use the API directly: look up the current release ID, delete it, then
-          # delete the tag — avoids 404s from stale IDs cached by gh CLI.
-          RELEASE_ID=$(gh api repos/atlanteg/supervpn-releases/releases/tags/"$VER" \
-            --jq '.id // empty' 2>/dev/null || true)
-          if [ -n "$RELEASE_ID" ]; then
+          # Check API exit code separately to avoid capturing error JSON in RELEASE_ID.
+          if gh api repos/atlanteg/supervpn-releases/releases/tags/"$VER" \
+              > /tmp/existing_release.json 2>/dev/null; then
+            RELEASE_ID=$(jq -r '.id // empty' /tmp/existing_release.json)
             echo "Deleting existing release $VER (id=$RELEASE_ID)..."
             gh api --method DELETE repos/atlanteg/supervpn-releases/releases/"$RELEASE_ID" \
               && echo "  release deleted" || echo "::warning::Release delete failed (id=$RELEASE_ID)"
@@ -496,7 +495,14 @@ jobs:
             --repo atlanteg/supervpn-releases \
             --title "supervpn $VER" \
             --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
-            --latest
+            --latest || true
+          # Verify the release was actually published (gh can exit non-zero even on success).
+          if gh release view "$VER" --repo atlanteg/supervpn-releases > /dev/null 2>&1; then
+            echo "Release $VER published successfully."
+          else
+            echo "::error::Release $VER was NOT created — gh release create failed."
+            exit 1
+          fi
 
       - name: Sync user guide to supervpn-releases repo
         env:
