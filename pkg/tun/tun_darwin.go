@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"sync"
 	"unsafe"
 
@@ -143,9 +144,9 @@ var (
 // rest of the client, matching what Windows TAP and bridge clients send/receive.
 type darwinL2 struct {
 	tun    *darwinTUN
-	mac    [6]byte   // our virtual MAC (randomly generated)
-	myIP   [4]byte   // learned from first outgoing IPv4 packet
-	arp    sync.Map  // string(4-byte IP) → [6]byte MAC
+	mac    [6]byte    // our virtual MAC (randomly generated)
+	myIP   [4]byte    // set from NIC config or learned from first outgoing IPv4 packet
+	arp    sync.Map   // [4]byte IP → [6]byte MAC
 	inject chan []byte // frames to return from ReadFrame (ARP replies)
 }
 
@@ -153,7 +154,39 @@ func newDarwinL2(t *darwinTUN) *darwinL2 {
 	var mac [6]byte
 	rand.Read(mac[:])
 	mac[0] = (mac[0] &^ 0x01) | 0x02 // locally administered, unicast
-	return &darwinL2{tun: t, mac: mac, inject: make(chan []byte, 16)}
+	d := &darwinL2{tun: t, mac: mac, inject: make(chan []byte, 16)}
+	// Pre-populate myIP from the utun interface so ARP requests from remote
+	// machines are answered immediately, without waiting for the first outgoing
+	// packet (which may never come if the remote machine initiates contact first).
+	d.myIP = ifaceIP(t.IfName())
+	return d
+}
+
+// ifaceIP returns the first IPv4 address configured on ifaceName, or zero.
+func ifaceIP(ifaceName string) [4]byte {
+	iface, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return [4]byte{}
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return [4]byte{}
+	}
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP.To4()
+		case *net.IPAddr:
+			ip = v.IP.To4()
+		}
+		if ip != nil {
+			var out [4]byte
+			copy(out[:], ip)
+			return out
+		}
+	}
+	return [4]byte{}
 }
 
 // ReadFrame returns an Ethernet frame to send to the hub.
