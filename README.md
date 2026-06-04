@@ -184,7 +184,7 @@ password      = "mypassword"
 # mode      = "auto"   # auto (default) | direct | bridge
 
 [tls]
-sni = "cdnjs.cloudflare.com"   # SNI in TLS ClientHello (optional; defaults to cdnjs.cloudflare.com)
+sni = "www.googleapis.com"   # SNI in TLS ClientHello (optional; defaults to www.googleapis.com)
 
 # Reality transport — set transport = "reality" above to use it.
 # Zero-config: sni defaults to www.gstatic.com, server addr to <server>:443,
