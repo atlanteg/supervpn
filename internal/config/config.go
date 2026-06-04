@@ -43,13 +43,14 @@ type ServerConfig struct {
 //     static CDN: ubiquitous, no redirects, an excellent Reality front.
 //   DefaultTLSSNI — wire-only camouflage for the plain-TLS ClientHello (the
 //     server's TLS listener ignores SNI / uses a self-signed cert), so it need
-//     not be reachable by the server. s3.amazonaws.com is a different provider.
+//     not be reachable by the server. cdnjs.cloudflare.com is a different
+//     provider (Cloudflare) loaded by a huge share of websites.
 //
 // Override per side if needed, keeping the Reality client SNI coherent with the
 // server dest/server_names.
 const (
 	DefaultRealitySNI = "www.gstatic.com"
-	DefaultTLSSNI     = "s3.amazonaws.com"
+	DefaultTLSSNI     = "cdnjs.cloudflare.com"
 )
 
 // RealityServerConfig configures the Reality (VLESS+Reality-style) listener.
