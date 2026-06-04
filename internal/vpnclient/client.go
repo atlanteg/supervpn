@@ -585,8 +585,9 @@ func (c *Client) connectReality(ctx context.Context) (transport.Transport, authR
 	}
 	addr := rc.Addr
 	if addr == "" {
-		// Derive from the top-level server host with the default Reality port.
-		addr = net.JoinHostPort(ServerHost(c.Cfg.Server), "8443")
+		// Derive from the top-level server host with the default Reality port
+		// (:443 — Reality is the stealth front on the standard HTTPS port).
+		addr = net.JoinHostPort(ServerHost(c.Cfg.Server), "443")
 	}
 	sni := rc.SNI
 	if sni == "" {

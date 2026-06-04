@@ -60,6 +60,28 @@ type RealityServerConfig struct {
 	// TimeWindow is the ± tolerance in seconds for the timestamp embedded in
 	// the client auth blob (default 90).
 	TimeWindow int `toml:"time_window"`
+	// Disable turns the Reality listener off. It is enabled by default (a
+	// zero-config server runs Reality on :443 with the built-in key pool).
+	Disable bool `toml:"disable"`
+}
+
+// WithDefaults fills zero-config-friendly defaults so the Reality listener
+// works out of the box on :443 with the built-in key pool. Reality is the
+// stealth front on the standard HTTPS port; plain TLS lives on :8443.
+func (r RealityServerConfig) WithDefaults() RealityServerConfig {
+	if r.Listen == "" {
+		r.Listen = "0.0.0.0:443"
+	}
+	if r.Dest == "" {
+		r.Dest = "www.microsoft.com:443"
+	}
+	if len(r.ServerNames) == 0 {
+		r.ServerNames = []string{"www.microsoft.com"}
+	}
+	if r.TimeWindow == 0 {
+		r.TimeWindow = 90
+	}
+	return r
 }
 
 // HubConfig defines one hub instance.
@@ -243,6 +265,13 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		return nil, fmt.Errorf("config: decode %s: %w", path, err)
 	}
 	cfg.FEC = cfg.FEC.WithDefaults()
+	cfg.Reality = cfg.Reality.WithDefaults()
+	// Port layout: Reality (stealth VLESS+Reality) on the standard HTTPS :443,
+	// plain TLS/TCP on :8443. Defaulting listen_tcp keeps the plain fallback
+	// available out of the box without colliding with Reality on :443.
+	if cfg.ListenTCP == "" {
+		cfg.ListenTCP = "0.0.0.0:8443"
+	}
 	return &cfg, cfg.Validate()
 }
 
@@ -335,6 +364,10 @@ type RealityClientConfig struct {
 func (r RealityClientConfig) WithDefaults() RealityClientConfig {
 	if r.Fingerprint == "" {
 		r.Fingerprint = "chrome"
+	}
+	if r.SNI == "" {
+		// Coherent with the server's default dest / server_names.
+		r.SNI = "www.microsoft.com"
 	}
 	return r
 }

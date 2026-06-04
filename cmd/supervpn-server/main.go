@@ -231,7 +231,7 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.runTCPListener(ctx)
 		go s.runTCPListener2(ctx)
 	}
-	if s.cfg.Reality.Listen != "" {
+	if !s.cfg.Reality.Disable {
 		go s.runRealityListener(ctx)
 	}
 	if s.cfg.StatusListen != "" {
@@ -388,6 +388,11 @@ func (s *Server) runRealityListener(ctx context.Context) {
 		privs = append(privs, rc.PrivateKey)
 	}
 	privs = append(privs, rc.PrivateKeys...)
+	if len(privs) == 0 {
+		// Zero-config: fall back to the built-in default pool that matches the
+		// public pool embedded in stock clients.
+		privs = defaultRealityPrivatePool
+	}
 	params, err := transport.BuildRealityServerParams(
 		privs, rc.Dest, rc.ServerNames, rc.ShortIDs, rc.TimeWindow,
 		s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
@@ -428,6 +433,7 @@ func (s *Server) runRealityListener(ctx context.Context) {
 func runRealityGenpool(args []string) {
 	n := 64
 	goFile := "internal/transport/reality_pool.go"
+	srvFile := "cmd/supervpn-server/reality_default_pool.go"
 	privFile := "reality-private-pool.toml"
 	if len(args) >= 1 && args[0] != "" {
 		v, err := strconv.Atoi(args[0])
@@ -472,6 +478,31 @@ func runRealityGenpool(args []string) {
 		log.Fatalf("reality-genpool: write %s: %v", goFile, err)
 	}
 
+	// Server-side default private pool (package main), matching the public pool.
+	var sb strings.Builder
+	sb.WriteString("package main\n\n")
+	sb.WriteString("// defaultRealityPrivatePool is the built-in Reality private-key pool used when\n")
+	sb.WriteString("// the server config specifies no private_key / private_keys. It matches the\n")
+	sb.WriteString("// PUBLIC pool embedded in clients (internal/transport/reality_pool.go), so a\n")
+	sb.WriteString("// zero-config server and a stock client interoperate out of the box.\n")
+	sb.WriteString("//\n")
+	sb.WriteString("// SECURITY NOTE: this default pool is committed to the (public) repo and shipped\n")
+	sb.WriteString("// in the server binary, so it is effectively public. It protects against generic\n")
+	sb.WriteString("// active probing only. For a hardened deployment, regenerate a private pool with\n")
+	sb.WriteString("// `supervpn-server reality-genpool N`, set it in [reality].private_keys, and ship\n")
+	sb.WriteString("// the matching client build. Inner supervpn password auth always protects VPN\n")
+	sb.WriteString("// access regardless.\n")
+	sb.WriteString("//\n")
+	sb.WriteString("// This file is generated; edit via reality-genpool rather than by hand.\n")
+	sb.WriteString("var defaultRealityPrivatePool = []string{\n")
+	for _, p := range privs {
+		fmt.Fprintf(&sb, "\t%q,\n", p)
+	}
+	sb.WriteString("}\n")
+	if err := os.WriteFile(srvFile, []byte(sb.String()), 0644); err != nil {
+		log.Fatalf("reality-genpool: write %s: %v", srvFile, err)
+	}
+
 	var t strings.Builder
 	t.WriteString("# Reality private-key pool — DEPLOY TO SERVERS ONLY.\n")
 	t.WriteString("# Paste under [reality] in each server's config. NEVER commit this file or\n")
@@ -486,8 +517,9 @@ func runRealityGenpool(args []string) {
 	}
 
 	fmt.Printf("Generated %d Reality keypairs.\n", n)
-	fmt.Printf("  public pool  → %s   (commit; embedded in clients)\n", goFile)
-	fmt.Printf("  private pool → %s   (deploy to servers; DO NOT commit)\n", privFile)
+	fmt.Printf("  public pool   → %s   (commit; embedded in clients)\n", goFile)
+	fmt.Printf("  server default → %s   (commit; built-in server pool)\n", srvFile)
+	fmt.Printf("  private pool  → %s   (optional; for [reality].private_keys — DO NOT commit)\n", privFile)
 }
 
 func (s *Server) handleRealityConn(ctx context.Context, conn net.Conn, params transport.RealityServerParams) {

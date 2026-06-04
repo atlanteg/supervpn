@@ -69,6 +69,19 @@ func GenerateRealityPool(n int) (pubs, privs []string, err error) {
 	return pubs, privs, nil
 }
 
+// RealityPublicPoolSize returns the number of keys in the embedded client pool.
+func RealityPublicPoolSize() int { return len(realityPublicPool) }
+
+// RealityPublicPoolContains reports whether pubB64 is in the embedded client pool.
+func RealityPublicPoolContains(pubB64 string) bool {
+	for _, p := range realityPublicPool {
+		if p == pubB64 {
+			return true
+		}
+	}
+	return false
+}
+
 // RandomPoolPublicKey returns a random public key from the embedded client pool,
 // or "" if the pool is empty. Selection uses crypto/rand so no global seed is
 // needed and the choice is unbiased.
