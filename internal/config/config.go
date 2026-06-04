@@ -29,6 +29,27 @@ type ServerConfig struct {
 	Hubs         []HubConfig     `toml:"hub"`
 	FEC          FECConfig       `toml:"fec"`
 	TLS          TLSServerConfig `toml:"tls"`
+	Reality      RealityServerConfig `toml:"reality"`
+}
+
+// RealityServerConfig configures the Reality (VLESS+Reality-style) listener.
+// When Listen is empty the listener is disabled.
+type RealityServerConfig struct {
+	// Listen is the TCP address for the Reality listener, e.g. "0.0.0.0:8443".
+	// Point port 443 at it to blend in with HTTPS.
+	Listen string `toml:"listen"`
+	// Dest is the real site probers are transparently proxied to, given as
+	// host:port, e.g. "www.microsoft.com:443". It should match the SNI clients
+	// send so active probes see a coherent, genuine TLS endpoint.
+	Dest string `toml:"dest"`
+	// PrivateKey is the base64 X25519 private key (generate with -reality-keygen).
+	PrivateKey string `toml:"private_key"`
+	// ShortIDs is the set of accepted shortID identifiers (≤8 bytes each).
+	// Empty means accept a single all-zero shortID.
+	ShortIDs []string `toml:"short_ids"`
+	// TimeWindow is the ± tolerance in seconds for the timestamp embedded in
+	// the client auth blob (default 90).
+	TimeWindow int `toml:"time_window"`
 }
 
 // HubConfig defines one hub instance.
@@ -56,6 +77,7 @@ type ClientConfig struct {
 	//   "auto" (default) — try UDP first, fall back to TCP/TLS if server_tcp is set
 	//   "udp"            — UDP only, never fall back to TCP
 	//   "tcp"            — TCP/TLS only, skip UDP entirely
+	//   "reality"        — Reality (VLESS+Reality-style) only; uses [reality]
 	Transport string `toml:"transport"`
 	// Mode controls adapter selection:
 	//   "auto"   (default) — bridge if a 169.254.0.0/16 interface is found, otherwise direct TUN
@@ -65,10 +87,11 @@ type ClientConfig struct {
 	// TunName is the WinTun/utun adapter name used in direct mode (no 169.254.x.x interface
 	// detected). Defaults to "supervpn".
 	TunName string          `toml:"tun_name"`
-	FEC     FECConfig       `toml:"fec"`
-	TLS     TLSClientConfig `toml:"tls"`
-	UDP     UDPConfig       `toml:"udp"`
-	Bridge  BridgeConfig    `toml:"bridge"`
+	FEC     FECConfig           `toml:"fec"`
+	TLS     TLSClientConfig     `toml:"tls"`
+	UDP     UDPConfig           `toml:"udp"`
+	Bridge  BridgeConfig        `toml:"bridge"`
+	Reality RealityClientConfig `toml:"reality"`
 	// UpdateMirrors is a list of fallback base URLs tried in order when GitHub
 	// is unreachable. Each must serve GET {base}/version → plain-text "bN"
 	// and GET {base}/{asset} → binary. Example: supervpn-server status port.
@@ -237,6 +260,7 @@ func ParseClientConfig(path string) (*ClientConfig, error) {
 	cfg.FEC = cfg.FEC.WithDefaults()
 	cfg.UDP = cfg.UDP.WithDefaults()
 	cfg.Bridge = cfg.Bridge.WithDefaults()
+	cfg.Reality = cfg.Reality.WithDefaults()
 	return &cfg, nil
 }
 
@@ -278,6 +302,31 @@ type TLSServerConfig struct {
 	// If both are empty, a self-signed ECDSA cert is generated at startup.
 	CertFile string `toml:"cert_file"`
 	KeyFile  string `toml:"key_file"`
+}
+
+// RealityClientConfig configures the client-side Reality dialer.
+type RealityClientConfig struct {
+	// Addr is the Reality server host:port. When empty, the client falls back
+	// to the top-level `server` host with port 8443.
+	Addr string `toml:"addr"`
+	// SNI is the fronting server name sent in the ClientHello, e.g.
+	// "www.microsoft.com". It should match the server's dest site.
+	SNI string `toml:"sni"`
+	// PublicKey is the base64 X25519 server Reality public key.
+	PublicKey string `toml:"public_key"`
+	// ShortID is this client's shortID identifier (≤8 bytes); must be in the
+	// server's short_ids list.
+	ShortID string `toml:"short_id"`
+	// Fingerprint selects the browser ClientHello to mimic:
+	// "chrome" (default), "firefox", "safari", "edge", "ios", "random".
+	Fingerprint string `toml:"fingerprint"`
+}
+
+func (r RealityClientConfig) WithDefaults() RealityClientConfig {
+	if r.Fingerprint == "" {
+		r.Fingerprint = "chrome"
+	}
+	return r
 }
 
 // TLSClientConfig configures the client-side TLS dialer.

@@ -61,6 +61,16 @@ func main() {
 		return
 	}
 
+	if len(os.Args) >= 2 && os.Args[1] == "reality-keygen" {
+		priv, pub, err := transport.GenerateRealityKeyPair()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("private_key = %q\n", transport.EncodeRealityKey(priv))
+		fmt.Printf("public_key  = %q\n", transport.EncodeRealityKey(pub))
+		return
+	}
+
 	cfg, err := config.LoadServerConfig(*cfgPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -216,6 +226,9 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.runTCPListener(ctx)
 		go s.runTCPListener2(ctx)
 	}
+	if s.cfg.Reality.Listen != "" {
+		go s.runRealityListener(ctx)
+	}
 	if s.cfg.StatusListen != "" {
 		go s.runStatusServer(ctx)
 	}
@@ -330,7 +343,12 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 		tr.Close()
 		log.Printf("TCP %s: connection closed", remoteAddr)
 	}()
+	s.serveStream(ctx, tr, remoteAddr, "tls")
+}
 
+// serveStream runs the per-connection auth+data loop for a stream transport
+// (TLS or Reality). It returns when the connection errors or ctx is cancelled.
+func (s *Server) serveStream(ctx context.Context, tr transport.Transport, remoteAddr, mode string) {
 	sendReply := func(pkt []byte) error {
 		return tr.Send(transport.Frame{Data: pkt})
 	}
@@ -342,20 +360,76 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 		if err != nil {
 			if sessionID != 0 {
 				s.removeSession(sessionID)
-				log.Printf("TCP %s: session %d lost: %v", remoteAddr, sessionID, err)
+				log.Printf("%s %s: session %d lost: %v", mode, remoteAddr, sessionID, err)
 			} else {
-				log.Printf("TCP %s: pre-auth error (TLS or read): %v", remoteAddr, err)
+				log.Printf("%s %s: pre-auth error: %v", mode, remoteAddr, err)
 			}
 			return
 		}
-		if sessionID == 0 {
-			log.Printf("TCP %s: received %d bytes (pre-auth)", remoteAddr, len(f.Data))
-		}
-		if sid := s.handlePacket(ctx, f.Data, sendReply, remoteAddr, "tls", closeConn, false); sid != 0 {
+		if sid := s.handlePacket(ctx, f.Data, sendReply, remoteAddr, mode, closeConn, false); sid != 0 {
 			sessionID = sid
-			log.Printf("TCP %s: session %d established", remoteAddr, sessionID)
+			log.Printf("%s %s: session %d established", mode, remoteAddr, sessionID)
 		}
 	}
+}
+
+// runRealityListener accepts Reality (VLESS+Reality-style) connections.
+// Authorized clients are served like TLS clients; probers are transparently
+// proxied to the configured dest site by AcceptReality.
+func (s *Server) runRealityListener(ctx context.Context) {
+	rc := s.cfg.Reality
+	params, err := transport.BuildRealityServerParams(
+		rc.PrivateKey, rc.Dest, rc.ShortIDs, rc.TimeWindow,
+		s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+	if err != nil {
+		log.Printf("Reality listener disabled: %v", err)
+		return
+	}
+	ln, err := net.Listen("tcp", rc.Listen)
+	if err != nil {
+		log.Printf("Reality listen %s FAILED: %v", rc.Listen, err)
+		return
+	}
+	log.Printf("listening Reality %s (dest=%s pub=%s)", rc.Listen, rc.Dest, params.PublicKeyBase64())
+
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				log.Printf("Reality accept error: %v", err)
+				continue
+			}
+		}
+		go s.handleRealityConn(ctx, conn, params)
+	}
+}
+
+func (s *Server) handleRealityConn(ctx context.Context, conn net.Conn, params transport.RealityServerParams) {
+	remoteAddr := conn.RemoteAddr().String()
+	tr, authorized, err := transport.AcceptReality(ctx, conn, params)
+	if err != nil {
+		log.Printf("Reality %s: %v", remoteAddr, err)
+		return
+	}
+	if !authorized {
+		// Prober/invalid auth: AcceptReality already spliced to dest and closed.
+		log.Printf("Reality %s: unauthenticated — proxied to dest", remoteAddr)
+		return
+	}
+	log.Printf("Reality %s: authorized", remoteAddr)
+	defer func() {
+		tr.Close()
+		log.Printf("Reality %s: connection closed", remoteAddr)
+	}()
+	s.serveStream(ctx, tr, remoteAddr, "reality")
 }
 
 // handlePacket dispatches one wire packet. secondary=true means the packet arrived

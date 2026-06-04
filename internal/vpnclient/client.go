@@ -265,7 +265,7 @@ func (c *Client) runSession(ctx context.Context) error {
 				c.Logf("transport: secondary UDP dial %s failed: %v", sec2Addr, e)
 			}
 		}
-	} else {
+	} else if tr.Mode() == "tls" {
 		tcpAddr := resolveTCPAddr(c.Cfg)
 		if sec2Addr := deriveSecondaryAddr(tcpAddr); sec2Addr != "" {
 			sni := c.Cfg.TLS.SNI
@@ -493,6 +493,10 @@ func (c *Client) connectWithFallback(ctx context.Context) (transport.Transport, 
 		mode = "auto"
 	}
 
+	if mode == "reality" {
+		return c.connectReality(ctx)
+	}
+
 	tcpAddr := resolveTCPAddr(c.Cfg)
 
 	if mode == "tcp" {
@@ -566,6 +570,49 @@ func (c *Client) connectTLS(ctx context.Context, tcpAddr string) (transport.Tran
 
 	c.Logf("transport: TLS connected via %s session=%d", tcpAddr, ar.sessionID)
 	return tlsTr, ar, nil
+}
+
+func (c *Client) connectReality(ctx context.Context) (transport.Transport, authResult, error) {
+	rc := c.Cfg.Reality
+	if rc.PublicKey == "" {
+		return nil, authResult{}, fmt.Errorf("transport=reality but reality.public_key is not configured")
+	}
+	addr := rc.Addr
+	if addr == "" {
+		// Derive from the top-level server host with the default Reality port.
+		addr = net.JoinHostPort(ServerHost(c.Cfg.Server), "8443")
+	}
+	sni := rc.SNI
+	if sni == "" {
+		return nil, authResult{}, fmt.Errorf("transport=reality but reality.sni is not configured")
+	}
+	c.Logf("transport: dialing Reality %s (sni=%s fp=%s)", addr, sni, rc.Fingerprint)
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
+	tr, err := transport.DialReality(dialCtx, transport.RealityClientParams{
+		Addr:        addr,
+		SNI:         sni,
+		PublicKey:   rc.PublicKey,
+		ShortID:     rc.ShortID,
+		Fingerprint: rc.Fingerprint,
+	})
+	dialCancel()
+	if err != nil {
+		c.Logf("transport: Reality dial %s failed: %v", addr, err)
+		return nil, authResult{}, fmt.Errorf("reality dial: %w", err)
+	}
+	c.Logf("transport: Reality handshake ok, authenticating")
+
+	authCtx, authCancel := context.WithTimeout(ctx, 10*time.Second)
+	ar, err := authenticate(authCtx, tr, c.Cfg)
+	authCancel()
+	if err != nil {
+		tr.Close()
+		c.Logf("transport: Reality auth failed: %v", err)
+		return nil, authResult{}, fmt.Errorf("reality auth: %w", err)
+	}
+	c.Logf("transport: Reality connected via %s session=%d", addr, ar.sessionID)
+	return tr, ar, nil
 }
 
 func resolveTCPAddr(cfg config.ClientConfig) string {

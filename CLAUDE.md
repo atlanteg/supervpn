@@ -16,7 +16,7 @@ combines the bridge + client roles.
 
 | Topic | Decision | Reason |
 |---|---|---|
-| Transport | UDP primary + TCP fallback | FEC requires UDP; TCP fallback for restrictive firewalls/ТСПУ |
+| Transport | UDP primary + TCP fallback + Reality | FEC over UDP; TCP/TLS fallback; Reality (VLESS+Reality-style, uTLS browser fingerprint + dest fallback) for ТСПУ-grade DPI |
 | Encryption | AES-128-GCM from internal/crypto | Taken verbatim from myvpn. Speed over strength. Works through ТСПУ. |
 | FEC | Reed-Solomon/XOR matrix (SMPTE 2022-1 style) | Recovers from ≤5% random packet loss without retransmit |
 | FEC negotiation | Server advertises K/R in AuthOK (+2 bytes) | Client auto-adopts server params; no manual config alignment needed |
@@ -108,7 +108,9 @@ pkg/
 - **Never modify internal/crypto/** — it is taken verbatim from myvpn and must stay identical.
 - After every commit: `git push origin main` (public mirror). **Never push to `new-origin` without asking the user** — it triggers CI and costs build minutes.
 - No external dependencies except: `golang.org/x/crypto`, `golang.org/x/sys`,
-  `golang.zx2c4.com/wintun`, `github.com/pelletier/go-toml` (or BurntSushi/toml).
+  `golang.zx2c4.com/wintun`, `github.com/pelletier/go-toml` (or BurntSushi/toml),
+  and `github.com/refraction-networking/utls` (Reality client ClientHello fingerprint;
+  approved by user for the Reality transport — pulls brotli/klauspost-compress/x-net transitively).
 - Do not add comments explaining WHAT the code does — only WHY when non-obvious.
 - Server targets Linux amd64. Client targets Windows amd64 (macOS is secondary).
 - FEC parameters K and R must be configurable at runtime, not compile-time constants.
