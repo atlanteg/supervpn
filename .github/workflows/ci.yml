@@ -533,6 +533,10 @@ jobs:
           fi
 
       - name: Sync user guide to supervpn-releases repo
+        # Auxiliary: the user guide is already a release asset (README-user.pdf).
+        # This copies it into the releases repo root for convenience. A push
+        # permission hiccup here must NOT fail the job — the release is published.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
@@ -550,5 +554,5 @@ jobs:
           if ! git diff --cached --quiet; then
             VER="${{ needs.setup.outputs.ver }}"
             git commit -m "docs: sync user guide $VER"
-            git push
+            git push || echo "::warning::user-guide sync push failed (non-fatal; PDF is still a release asset)"
           fi
