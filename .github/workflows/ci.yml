@@ -509,8 +509,11 @@ jobs:
           RECREATED=false
           for i in $(seq 1 24); do          # 24 × 5 s ≈ 120 s
             sleep 5
+            # `|| echo ""` keeps the command substitution exit status 0 — under
+            # `bash -e` a failing `gh release view` (release not visible yet)
+            # would otherwise abort the whole step on the first poll.
             CNT=$(gh release view "$VER" --repo atlanteg/supervpn-releases \
-                    --json assets --jq '.assets | length' 2>/dev/null)
+                    --json assets --jq '.assets | length' 2>/dev/null || echo "")
             CNT=${CNT:-0}
             if [ "$CNT" -gt 0 ]; then
               echo "Release $VER published with $CNT assets (attempt $i)."
