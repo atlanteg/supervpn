@@ -533,11 +533,22 @@ func (c *Client) connectWithFallback(ctx context.Context) (transport.Transport, 
 	}
 
 	if mode == "udp" {
-		return nil, authResult{}, fmt.Errorf("UDP unreachable after %d attempts (transport=udp, no TCP fallback)", udpCfg.Attempts)
+		return nil, authResult{}, fmt.Errorf("UDP unreachable after %d attempts (transport=udp, no fallback)", udpCfg.Attempts)
+	}
+
+	// auto fallback chain: UDP (above) → Reality (:443, stealth) → plain TLS (:8443).
+	// Reality is tried before plain TLS because it is the hardest to block; it is
+	// zero-config (embedded key pool + default SNI), so it works even without a
+	// [reality] section.
+	c.Logf("transport: UDP unavailable — falling back to Reality")
+	if tr, ar, err := c.connectReality(ctx); err == nil {
+		return tr, ar, nil
+	} else {
+		c.Logf("transport: Reality fallback failed: %v — trying plain TLS", err)
 	}
 
 	if tcpAddr == "" {
-		return nil, authResult{}, fmt.Errorf("UDP unreachable after %d attempts and server_tcp is not configured", udpCfg.Attempts)
+		return nil, authResult{}, fmt.Errorf("UDP and Reality unreachable, and server_tcp is not configured for TLS")
 	}
 	return c.connectTLS(ctx, tcpAddr)
 }
