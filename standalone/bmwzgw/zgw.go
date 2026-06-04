@@ -229,6 +229,8 @@ var gseriesIntroMY = map[byte]byte{
 	// 'W': G26 4-series Gran Coupé from MY2022 ('N'); before that it was the X3 F25.
 	//      F25 VINs show vin[10]='L' or digit '0'; G26 starts at 'N' range.
 	'W': 'N',
+	// '5': G-series (G20 3er etc.) from MY2019 ('K'); before that the 5 Series F10/F11.
+	'5': 'K',
 }
 
 var fseriesAltKeys = map[byte]bmwModelEntry{
@@ -239,6 +241,8 @@ var fseriesAltKeys = map[byte]bmwModelEntry{
 	'K': {"F15", "", "X5", false},
 	// X3 F25 (predecessor of G26 4GC on key 'W').
 	'W': {"F25", "", "X3", false},
+	// 5 Series F10/F11 (predecessor of the G-series on key '5', pre-MY2019).
+	'5': {"F10", "F11", "5", false},
 }
 
 // bmwTypeKeys maps VIN[3] (BMW Baumuster / type key) to chassis + series.
@@ -266,9 +270,10 @@ var bmwTypeKeys = map[byte]bmwModelEntry{
 	'3': {"F33", "", "4", false}, // 4 Series Convertible F33
 	// '4' confirmed = F36 4-series Gran Coupé (typeKey 4F11, series F036).
 	'4': {"F36", "", "4", false}, // 4 Series Gran Coupé F36
-	// '5' is reused: F10/F11 (Germany), F07 5GT, G01/G20/G22 (various plants).
-	// Default to F10/F11 as the most common European case.
-	'5': {"F10", "F11", "5", false}, // 5 Series F10 sedan / F11 Touring (also G01/G20/G22)
+	// '5' is reused across generations. In the G era (MY2019+) it is the
+	// 3 Series G20/G21 (most common; also G22 4er, G01 X3); before that the
+	// 5 Series F10/F11 (see gseriesIntroMY['5'] + fseriesAltKeys['5']).
+	'5': {"G20", "G21", "3", false}, // 3 Series G20 sedan / G21 Touring (pre-2019: F10/F11)
 	'6': {"F12", "", "6", false},    // 6 Series F12 cabrio / F06 Gran Coupé
 	// '7' confirmed = G11/G12 7-series G-gen (typeKey 7C21/7C41, series G011).
 	// F01/F02 7-series F-gen use 'K' (not '7') per FA XML data.
@@ -357,10 +362,11 @@ func decodeVIN(vin string) (chassis, model, engine, body string, powerKW int) {
 	}
 
 	// Resolve type key — accounting for BMW reusing the same VIN[3] letter
-	// across generations.  VIN[10] carries the model-year character and lets
-	// us determine which generation the car belongs to.
+	// across generations.  VIN[9] is the ISO 3779 model-year character (VIN[8]
+	// is the check digit) and lets us determine which generation the car
+	// belongs to.
 	typeKey := vin[3]
-	myChar := vin[10]
+	myChar := vin[9]
 	var entry bmwModelEntry
 	var ok bool
 	if introMY, reused := gseriesIntroMY[typeKey]; reused && myChar < introMY {
