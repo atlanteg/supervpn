@@ -99,10 +99,10 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.20'
+          go-version: '1.24'
 
-      - name: Pin go directive to 1.20
-        run: sed -i 's/^go .*/go 1.20/' go.mod
+      - name: Pin go directive to 1.24
+        run: sed -i 's/^go .*/go 1.24/' go.mod
 
       - name: Download dependencies
         run: go mod download
@@ -172,10 +172,10 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.20'
+          go-version: '1.24'
 
-      - name: Pin go directive to 1.20
-        run: sed -i '' 's/^go .*/go 1.20/' go.mod
+      - name: Pin go directive to 1.24
+        run: sed -i '' 's/^go .*/go 1.24/' go.mod
 
       - name: Download dependencies
         run: go mod download
@@ -227,11 +227,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.20'
+          go-version: '1.24'
 
-      - name: Pin go directive to 1.20
+      - name: Pin go directive to 1.24
         shell: pwsh
-        run: (Get-Content go.mod) -replace '^go .*', 'go 1.20' | Set-Content go.mod
+        run: (Get-Content go.mod) -replace '^go .*', 'go 1.24' | Set-Content go.mod
 
       - name: Download dependencies
         run: go mod download
