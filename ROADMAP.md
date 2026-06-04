@@ -120,6 +120,17 @@
 - 💡 Имитация TLS Application Data record structure
 - 💡 Configurable SNI для TCP режима
 
+### 3.5 Reality (VLESS+Reality-style stealth) ✅
+- ✅ Третий транспорт `reality` рядом с UDP/TCP; стандартный порт :443 (TLS на :8443)
+- ✅ Клиент: uTLS-отпечаток Chrome (v1.6.3, Go 1.20/Win7), auth-блоб в session_id (X25519+AES-GCM)
+- ✅ Сервер: парсинг ClientHello, проверка auth, dest-fallback на реальный сайт для зондов
+- ✅ Anti-replay (повторный ClientHello → fallback)
+- ✅ SNI-allowlist (server_names), FEC отключён на Reality
+- ✅ Пул ключей: клиент берёт случайный публичный из вшитого пула, сервер перебирает приватный пул; `reality-genpool N`
+- ✅ Zero-config: Reality включён по умолчанию на :443 со встроенным дефолтным пулом
+- ✅ Выбор `reality` в выпадающем меню GUI (Walk + Fyne)
+- 💡 Cert-stealing (полный Reality) и padding/jitter — отложено
+
 ---
 
 ## Фаза 4 — Управление и мониторинг

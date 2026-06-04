@@ -46,8 +46,9 @@ supervpn is a custom L2 VPN system. It combines the roles of SoftEther VPN Bridg
 
 **Transport:**
 - **UDP** (primary) with Reed-Solomon FEC (SMPTE 2022-1 style). For every K data packets, R repair packets are added; any ≤ R losses in a block are recovered without retransmit.
-- **TCP/TLS 1.3** (fallback) for restrictive firewalls and ТСПУ. The client probes UDP every 5 minutes and switches back automatically.
-- **Dual-path** — two parallel connections (port N and N+1) for both protocols. Data and repair symbols are duplicated across both paths. The FEC decoder deduplicates via a `done` flag — no duplicates at the application layer.
+- **TCP/TLS 1.3** (fallback) for restrictive firewalls and ТСПУ. The client probes UDP every 5 minutes and switches back automatically. Defaults to port **8443**.
+- **Reality** (VLESS+Reality-style stealth) on the standard HTTPS port **443**. A uTLS browser-fingerprinted ClientHello carries a Reality auth blob in the `session_id`; unauthenticated / replayed / wrong-SNI connections are transparently proxied to a real `dest` site so active probes see a genuine TLS endpoint. The supervpn AES-GCM stream rides inside (FEC disabled — TCP is reliable). Default-on; clients pick a server public key at random from an embedded pool, so no key is distributed manually.
+- **Dual-path** — two parallel connections (port N and N+1) for UDP and TLS. Data and repair symbols are duplicated across both paths. The FEC decoder deduplicates via a `done` flag — no duplicates at the application layer. (Reality is single-path.)
 
 **Authentication:** Login + password. The wire sends `hex(SHA-256(password))`; the server stores `bcrypt(wire_hash)`.
 
@@ -61,7 +62,7 @@ supervpn is a custom L2 VPN system. It combines the roles of SoftEther VPN Bridg
 
 | Topic | Decision | Reason |
 |---|---|---|
-| Transport | UDP primary + TCP/TLS fallback | FEC requires UDP; TCP fallback for restrictive firewalls/ТСПУ |
+| Transport | UDP primary + TCP/TLS (:8443) + Reality (:443) | FEC over UDP; TLS fallback; Reality (uTLS fingerprint + dest fallback) as stealth front for ТСПУ-grade DPI |
 | Encryption | AES-128-GCM | Speed over strength. Works through ТСПУ. |
 | FEC | Reed-Solomon/XOR matrix (SMPTE 2022-1 style) | Recovers from ≤5% random packet loss without retransmit |
 | FEC negotiation | Server advertises K/R in AuthOK (2 extra bytes) | Client auto-adopts server params; no manual config alignment needed |
@@ -117,13 +118,22 @@ Config at `/etc/supervpn/server.toml`:
 
 ```toml
 listen        = "0.0.0.0:5555"
-listen_tcp    = "0.0.0.0:443"
+listen_tcp    = "0.0.0.0:8443"     # plain TLS/TCP fallback (Reality holds :443)
 status_listen = "127.0.0.1:9090"   # admin API — loopback only
 update_listen = "0.0.0.0:80"       # client update mirror
 
 [fec]
 k = 20
 r = 6
+
+# Reality (stealth VLESS+Reality) is ENABLED BY DEFAULT on :443 with a built-in
+# key pool — this whole section is optional. Override only to harden:
+# [reality]
+# listen       = "0.0.0.0:443"
+# dest         = "www.microsoft.com:443"   # real site shown to probes
+# server_names = ["www.microsoft.com"]
+# private_keys = [ ... ]                    # from `supervpn-server reality-genpool N`
+# disable      = false                      # set true to turn Reality off
 
 [[hub]]
 id   = 1
@@ -151,8 +161,9 @@ Open firewall ports:
 ```bash
 ufw allow 5555/udp   # VPN UDP primary
 ufw allow 5556/udp   # VPN UDP secondary (dual-path)
-ufw allow 443/tcp    # VPN TLS primary
-ufw allow 444/tcp    # VPN TLS secondary (dual-path)
+ufw allow 443/tcp    # VPN Reality (stealth VLESS+Reality, default front)
+ufw allow 8443/tcp   # VPN TLS primary (plain fallback)
+ufw allow 8444/tcp   # VPN TLS secondary (dual-path)
 ufw allow 80/tcp     # update mirror for clients
 # 9090/tcp — admin API, loopback only — do not expose externally
 ```
@@ -169,11 +180,19 @@ hub_id        = 1
 login         = "alice"
 password      = "mypassword"
 
-# transport = "auto"   # auto (default) | udp | tcp
+# transport = "auto"   # auto (default) | udp | tcp | reality
 # mode      = "auto"   # auto (default) | direct | bridge
 
 [tls]
 sni = "microsoft.com"   # SNI in TLS ClientHello (optional)
+
+# Reality transport — set transport = "reality" above to use it.
+# Zero-config: sni defaults to www.microsoft.com, server addr to <server>:443,
+# and the public key is picked at random from the embedded pool.
+# [reality]
+# sni        = "www.microsoft.com"   # must match the server's dest / server_names
+# public_key = "..."                 # optional; default = embedded pool
+# fingerprint = "chrome"             # chrome | firefox | safari | edge | ios | random
 ```
 
 The `[fec]` section is optional. Since v2, the server advertises its K/R in the AuthOK message — the client adopts the server's parameters automatically without any manual alignment.
