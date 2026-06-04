@@ -120,9 +120,9 @@ pkg/
   requires go 1.23 and will break the Win7 build.
 - **Reality is zero-config & default-on:** an empty server config runs Reality
   (stealth VLESS+Reality) on **:443** with the built-in default key pool, dest
-  `www.microsoft.com:443`. Plain TLS/TCP defaults to **:8443**. Disable Reality
+  `www.apple.com:443`. Plain TLS/TCP defaults to **:8443**. Disable Reality
   with `[reality].disable = true`. Client `transport="reality"` defaults SNI to
-  `www.microsoft.com` and the server addr to `<server>:443`; `public_key` is
+  `www.apple.com` and the server addr to `<server>:443`; `public_key` is
   optional (random pick from the embedded pool).
 - **Reality key pool:** the client embeds a pool of server **public** keys
   (`internal/transport/reality_pool.go`, committed) and picks one at random per

@@ -34,6 +34,13 @@ type ServerConfig struct {
 	Reality      RealityServerConfig `toml:"reality"`
 }
 
+// DefaultSNI is the camouflage server name used by default for both the Reality
+// front and the plain-TLS fallback (and the Reality dest the server proxies
+// probes to). A high-traffic, TLS-1.3 consumer site that is rarely blocked, so
+// connections blend into ordinary HTTPS. Override per side if needed, keeping
+// the client SNI coherent with the server dest/server_names.
+const DefaultSNI = "www.apple.com"
+
 // RealityServerConfig configures the Reality (VLESS+Reality-style) listener.
 // When Listen is empty the listener is disabled.
 type RealityServerConfig struct {
@@ -75,10 +82,10 @@ func (r RealityServerConfig) WithDefaults() RealityServerConfig {
 		r.Listen = "0.0.0.0:443"
 	}
 	if r.Dest == "" {
-		r.Dest = "www.microsoft.com:443"
+		r.Dest = DefaultSNI + ":443"
 	}
 	if len(r.ServerNames) == 0 {
-		r.ServerNames = []string{"www.microsoft.com"}
+		r.ServerNames = []string{DefaultSNI}
 	}
 	if r.TimeWindow == 0 {
 		r.TimeWindow = 90
@@ -421,7 +428,7 @@ func (r RealityClientConfig) WithDefaults() RealityClientConfig {
 	}
 	if r.SNI == "" {
 		// Coherent with the server's default dest / server_names.
-		r.SNI = "www.microsoft.com"
+		r.SNI = DefaultSNI
 	}
 	return r
 }

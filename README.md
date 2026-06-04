@@ -130,8 +130,8 @@ r = 6
 # key pool — this whole section is optional. Override only to harden:
 # [reality]
 # listen       = "0.0.0.0:443"
-# dest         = "www.microsoft.com:443"   # real site shown to probes
-# server_names = ["www.microsoft.com"]
+# dest         = "www.apple.com:443"   # real site shown to probes
+# server_names = ["www.apple.com"]
 # private_keys = [ ... ]                    # from `supervpn-server reality-genpool N`
 # disable      = false                      # set true to turn Reality off
 
@@ -184,13 +184,13 @@ password      = "mypassword"
 # mode      = "auto"   # auto (default) | direct | bridge
 
 [tls]
-sni = "microsoft.com"   # SNI in TLS ClientHello (optional)
+sni = "www.apple.com"   # SNI in TLS ClientHello (optional; defaults to www.apple.com)
 
 # Reality transport — set transport = "reality" above to use it.
-# Zero-config: sni defaults to www.microsoft.com, server addr to <server>:443,
+# Zero-config: sni defaults to www.apple.com, server addr to <server>:443,
 # and the public key is picked at random from the embedded pool.
 # [reality]
-# sni        = "www.microsoft.com"   # must match the server's dest / server_names
+# sni        = "www.apple.com"   # must match the server's dest / server_names
 # public_key = "..."                 # optional; default = embedded pool
 # fingerprint = "chrome"             # chrome | firefox | safari | edge | ios | random
 ```
