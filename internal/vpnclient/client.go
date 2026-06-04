@@ -270,7 +270,7 @@ func (c *Client) runSession(ctx context.Context) error {
 		if sec2Addr := deriveSecondaryAddr(tcpAddr); sec2Addr != "" {
 			sni := c.Cfg.TLS.SNI
 			if sni == "" {
-				sni = config.DefaultSNI
+				sni = config.DefaultTLSSNI
 			}
 			dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
 			t2, e := transport.DialTLS(dialCtx, sec2Addr, sni)
@@ -556,7 +556,7 @@ func (c *Client) connectTLS(ctx context.Context, tcpAddr string) (transport.Tran
 	if sni == "" {
 		// Default to a camouflage SNI instead of leaking the server host in the
 		// cleartext ClientHello.
-		sni = config.DefaultSNI
+		sni = config.DefaultTLSSNI
 	}
 	c.Logf("transport: dialing TLS %s (sni=%s)", tcpAddr, sni)
 
@@ -602,7 +602,7 @@ func (c *Client) connectReality(ctx context.Context) (transport.Transport, authR
 	sni := rc.SNI
 	if sni == "" {
 		// Coherent with the server's default dest / server_names.
-		sni = config.DefaultSNI
+		sni = config.DefaultRealitySNI
 	}
 	fp := rc.Fingerprint
 	if fp == "" {

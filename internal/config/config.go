@@ -34,12 +34,23 @@ type ServerConfig struct {
 	Reality      RealityServerConfig `toml:"reality"`
 }
 
-// DefaultSNI is the camouflage server name used by default for both the Reality
-// front and the plain-TLS fallback (and the Reality dest the server proxies
-// probes to). A high-traffic, TLS-1.3 consumer site that is rarely blocked, so
-// connections blend into ordinary HTTPS. Override per side if needed, keeping
-// the client SNI coherent with the server dest/server_names.
-const DefaultSNI = "www.apple.com"
+// Default camouflage server names. Reality and plain TLS use DIFFERENT, real,
+// high-traffic TLS-1.3 hosts from unrelated providers so the two paths don't
+// share a fingerprint and each blends into ordinary HTTPS.
+//
+//   DefaultRealitySNI — also the Reality dest the server proxies probes to, so
+//     it MUST be a genuinely reachable TLS-1.3 host. www.gstatic.com is Google's
+//     static CDN: ubiquitous, no redirects, an excellent Reality front.
+//   DefaultTLSSNI — wire-only camouflage for the plain-TLS ClientHello (the
+//     server's TLS listener ignores SNI / uses a self-signed cert), so it need
+//     not be reachable by the server. s3.amazonaws.com is a different provider.
+//
+// Override per side if needed, keeping the Reality client SNI coherent with the
+// server dest/server_names.
+const (
+	DefaultRealitySNI = "www.gstatic.com"
+	DefaultTLSSNI     = "s3.amazonaws.com"
+)
 
 // RealityServerConfig configures the Reality (VLESS+Reality-style) listener.
 // When Listen is empty the listener is disabled.
@@ -82,10 +93,10 @@ func (r RealityServerConfig) WithDefaults() RealityServerConfig {
 		r.Listen = "0.0.0.0:443"
 	}
 	if r.Dest == "" {
-		r.Dest = DefaultSNI + ":443"
+		r.Dest = DefaultRealitySNI + ":443"
 	}
 	if len(r.ServerNames) == 0 {
-		r.ServerNames = []string{DefaultSNI}
+		r.ServerNames = []string{DefaultRealitySNI}
 	}
 	if r.TimeWindow == 0 {
 		r.TimeWindow = 90
@@ -428,7 +439,7 @@ func (r RealityClientConfig) WithDefaults() RealityClientConfig {
 	}
 	if r.SNI == "" {
 		// Coherent with the server's default dest / server_names.
-		r.SNI = DefaultSNI
+		r.SNI = DefaultRealitySNI
 	}
 	return r
 }
