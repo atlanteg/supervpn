@@ -356,8 +356,39 @@ var bmwEngineCodes = map[byte]string{
 //	"WBA3B51090F123456" → chassis "F31", model "F31 320i"   (Touring)
 //	"WBAHE510X0H12345"  → chassis "G20", model "G20 318i xDrive"
 //	"WBAHE5100EH12345"  → chassis "G21", model "G21 318i"   (Touring)
+// platformForChassis returns the ISTA platform for a chassis, preferring the
+// FA-learned map (real I-Step data) over the hand-curated chassisPlatform.
+func platformForChassis(chassis string) string {
+	if p, ok := faChassisPlatform[chassis]; ok {
+		return p
+	}
+	return chassisPlatform[chassis]
+}
+
 func decodeVIN(vin string) (chassis, model, engine, body string, powerKW int) {
 	if len(vin) < 17 {
+		return
+	}
+
+	// FA-learned exact 4-char type-key lookup (VIN[3:7]) — authoritative for the
+	// ~650 type keys seen in real BMW FA backups (~99% chassis accuracy vs ~43%
+	// for the single-char heuristic). Falls through for unknown keys.
+	if fa, ok := faTypeKeys[vin[3:7]]; ok {
+		chassis = fa.chassis
+		model = fa.chassis
+		if fa.model != "" {
+			model += " " + fa.model
+		}
+		drive := "Rear-Wheel Drive"
+		if fa.xdrive {
+			model += " xDrive"
+			drive = "All Wheel-Drive"
+		}
+		if dm := lookupVariant(chassis, drive, ""); dm != nil {
+			engine = dm.Engine
+			powerKW = dm.PowerKW
+			body = dm.Body
+		}
 		return
 	}
 
@@ -567,7 +598,7 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 		var engine, body string
 		var powerKW int
 		chassis, model, engine, body, powerKW = decodeVIN(vin)
-		platform := chassisPlatform[chassis]
+		platform := platformForChassis(chassis)
 
 		log.Printf("bmwzgw: ZGW at %s  VIN=%s  target=%s  platform=%s  model=%s", addr.IP, vin, target, platform, model)
 		mu.Lock()
@@ -709,7 +740,7 @@ func Discover(localIP string) *Info {
 			Model:    model,
 			Chassis:  chassis,
 			Target:   target,
-			Platform: chassisPlatform[chassis],
+			Platform: platformForChassis(chassis),
 			Engine:   engine,
 			PowerKW:  powerKW,
 			Body:     body,
