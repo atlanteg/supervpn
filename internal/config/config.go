@@ -233,15 +233,24 @@ func (u UDPConfig) WithDefaults() UDPConfig {
 }
 
 // FECConfig controls redundancy parameters.
+//
+// The default K=4/R=2 emits 6 packets per 4 data frames (×1.5 FEC overhead) and
+// recovers any 2 losses per 6-packet block (33%). With the dual-path transport
+// duplicating every packet across both channels, a frame is lost only when
+// dropped on BOTH paths in the same block — so this is highly loss-resilient at
+// ×3 total overhead, vs the old K=1/R=2 which cost ×6 (per-frame repair) for
+// little extra resilience once dual-path is in play. Raising K spreads the
+// repair cost over more frames without adding data latency (data packets are
+// sent immediately; only the 2 repair packets wait for the block to fill).
 type FECConfig struct {
-	K           int `toml:"k"`            // data packets per block (default 1)
+	K           int `toml:"k"`            // data packets per block (default 4)
 	R           int `toml:"r"`            // repair packets per block (default 2)
 	RepairDelay int `toml:"repair_delay"` // ms to delay repair packets after data (default 50)
 }
 
 func (f FECConfig) WithDefaults() FECConfig {
 	if f.K == 0 {
-		f.K = 1
+		f.K = 4
 	}
 	if f.R == 0 {
 		f.R = 2
