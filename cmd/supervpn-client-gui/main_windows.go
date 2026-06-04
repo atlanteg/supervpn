@@ -12,18 +12,21 @@ import (
 )
 
 func main() {
-	// Single-instance guard: if another copy is already running, bring its
-	// window to the foreground and exit. Must run before ensureAdmin so that
-	// the non-elevated launcher releases the mutex before the elevated
-	// re-launch acquires it.
+	// Request administrator privileges FIRST — required for WinTun/TAP adapter
+	// creation, pnputil driver install, netsh IP assignment, and Npcap capture.
+	// If not elevated, relaunches via UAC and exits this instance. Doing this
+	// before the single-instance guard means the throw-away non-elevated
+	// launcher never touches the mutex, so the elevated instance acquires it
+	// cleanly with no race (which previously left no window on slower hosts).
+	ensureAdmin()
+
+	// Single-instance guard (per-session): if another copy is already running
+	// IN THIS SESSION, bring its window to the foreground and exit. The mutex is
+	// session-local, so separate RDP sessions on a terminal server (e.g. Windows
+	// Server 2008 R2) each run their own instance instead of blocking each other.
 	if !acquireSingleInstance() {
 		return
 	}
-
-	// Request administrator privileges — required for WinTun/TAP adapter
-	// creation, pnputil driver install, netsh IP assignment, and Npcap capture.
-	// If not elevated, relaunches via UAC and exits this instance.
-	ensureAdmin()
 
 	// Windows GUI apps have no console — writing to os.Stderr returns an error
 	// which causes io.MultiWriter to short-circuit and drop subsequent writers.

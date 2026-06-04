@@ -22,7 +22,10 @@ func getWindowText(hwnd win.HWND) string {
 	return syscall.UTF16ToString(buf[:])
 }
 
-const _singleInstanceMutexName = "Global\\superVPN-supervpn-client-gui"
+// Session-local namespace (not Global\): on a terminal server each RDP session
+// gets its own instance instead of one session's mutex blocking every other
+// session (which left the window failing to appear on Windows Server 2008 R2).
+const _singleInstanceMutexName = "Local\\superVPN-supervpn-client-gui"
 
 var _singleInstanceMutexHandle windows.Handle
 
