@@ -638,7 +638,8 @@ func resolveTCPAddr(cfg config.ClientConfig) string {
 	if err != nil {
 		return ""
 	}
-	return net.JoinHostPort(host, "443")
+	// Plain TLS/TCP lives on :8443 (Reality holds the standard :443).
+	return net.JoinHostPort(host, "8443")
 }
 
 // authResult bundles the values returned by authenticate so callers don't need

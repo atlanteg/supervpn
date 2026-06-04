@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -272,7 +273,20 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 	if cfg.ListenTCP == "" {
 		cfg.ListenTCP = "0.0.0.0:8443"
 	}
+	// Reality owns :443 by design. If plain TLS was left on the same port
+	// (e.g. an old config with listen_tcp = ":443"), move it to :8443 so the
+	// two listeners don't fight over the port — otherwise one fails to bind.
+	if !cfg.Reality.Disable && samePort(cfg.ListenTCP, cfg.Reality.Listen) {
+		cfg.ListenTCP = "0.0.0.0:8443"
+	}
 	return &cfg, cfg.Validate()
+}
+
+// samePort reports whether two host:port addresses share the same port.
+func samePort(a, b string) bool {
+	_, pa, ea := net.SplitHostPort(a)
+	_, pb, eb := net.SplitHostPort(b)
+	return ea == nil && eb == nil && pa == pb
 }
 
 // LoadClientConfig reads and validates a client config from a TOML file.

@@ -174,7 +174,7 @@ Config `client.toml`:
 
 ```toml
 server        = "vpn.example.com:5555"
-server_tcp    = "vpn.example.com:443"
+server_tcp    = "vpn.example.com:8443"   # plain TLS fallback (Reality holds :443)
 status_listen = "127.0.0.1:9191"
 hub_id        = 1
 login         = "alice"
