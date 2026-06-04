@@ -591,9 +591,14 @@ func (c *Client) connectReality(ctx context.Context) (transport.Transport, authR
 	}
 	sni := rc.SNI
 	if sni == "" {
-		return nil, authResult{}, fmt.Errorf("transport=reality but reality.sni is not configured")
+		// Coherent with the server's default dest / server_names.
+		sni = "www.microsoft.com"
 	}
-	c.Logf("transport: dialing Reality %s (sni=%s fp=%s)", addr, sni, rc.Fingerprint)
+	fp := rc.Fingerprint
+	if fp == "" {
+		fp = "chrome"
+	}
+	c.Logf("transport: dialing Reality %s (sni=%s fp=%s)", addr, sni, fp)
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
 	tr, err := transport.DialReality(dialCtx, transport.RealityClientParams{
@@ -601,7 +606,7 @@ func (c *Client) connectReality(ctx context.Context) (transport.Transport, authR
 		SNI:         sni,
 		PublicKey:   pubKey,
 		ShortID:     rc.ShortID,
-		Fingerprint: rc.Fingerprint,
+		Fingerprint: fp,
 	})
 	dialCancel()
 	if err != nil {

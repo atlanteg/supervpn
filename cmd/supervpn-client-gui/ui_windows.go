@@ -325,7 +325,7 @@ func (ui *winUI) connectionPage() TabPage {
 						Label{Text: "Transport:"},
 						ComboBox{
 							AssignTo:     &ui.transportCombo,
-							Model:        []string{"auto", "udp", "tcp"},
+							Model:        []string{"auto", "udp", "tcp", "reality"},
 							CurrentIndex: 0,
 						},
 					},
@@ -990,7 +990,7 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 		modeVal = modeItems[idx]
 	}
 
-	transportItems := []string{"auto", "udp", "tcp"}
+	transportItems := []string{"auto", "udp", "tcp", "reality"}
 	transportVal := ""
 	if idx := ui.transportCombo.CurrentIndex(); idx > 0 && idx < len(transportItems) {
 		transportVal = transportItems[idx]
@@ -1060,7 +1060,7 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 		}
 	}
 
-	transportItems := []string{"auto", "udp", "tcp"}
+	transportItems := []string{"auto", "udp", "tcp", "reality"}
 	transport := cfg.Transport
 	if transport == "" {
 		transport = "auto"

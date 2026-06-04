@@ -210,7 +210,7 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 	ui.modeSelect = widget.NewSelect([]string{"auto", "direct", "bridge"}, nil)
 	ui.modeSelect.SetSelected("auto")
 
-	ui.transportSelect = widget.NewSelect([]string{"auto", "udp", "tcp"}, nil)
+	ui.transportSelect = widget.NewSelect([]string{"auto", "udp", "tcp", "reality"}, nil)
 	ui.transportSelect.SetSelected("auto")
 
 	form := widget.NewForm(
