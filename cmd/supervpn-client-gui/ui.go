@@ -456,10 +456,11 @@ func (ui *mainUI) onRunConnTest() {
 
 func formatTestResults(rows []ServerTestResult) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%-20s  %-26s  %-14s  %s\n", "Server", "Address", "UDP", "TCP"))
-	sb.WriteString(strings.Repeat("─", 78) + "\n")
+	const f = "%-16s  %-22s  %-10s  %-10s  %-10s  %-10s  %s\n"
+	sb.WriteString(fmt.Sprintf(f, "Server", "Address", "UDP", "UDP+1", "TCP:8443", "TCP:8444", "Reality:443"))
+	sb.WriteString(strings.Repeat("─", 100) + "\n")
 	for _, r := range rows {
-		sb.WriteString(fmt.Sprintf("%-20s  %-26s  %-14s  %s\n", r.Name, r.Addr, r.UDP, r.TCP))
+		sb.WriteString(fmt.Sprintf(f, r.Name, r.Addr, r.UDP, r.UDP2, r.TCP, r.TCP2, r.Reality))
 	}
 	return sb.String()
 }

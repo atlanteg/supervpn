@@ -1161,10 +1161,11 @@ func (ui *winUI) onRunConnTest() {
 }
 
 func (ui *winUI) formatTestResults(results []ServerTestResult) string {
-	out := fmt.Sprintf("%-6s  %-24s  %-14s  %s\r\n", "Name", "Address", "UDP :5555", "TCP :443")
-	out += strings.Repeat("─", 62) + "\r\n"
+	const f = "%-6s  %-22s  %-9s  %-9s  %-9s  %-9s  %s\r\n"
+	out := fmt.Sprintf(f, "Name", "Address", "UDP", "UDP+1", "TCP8443", "TCP8444", "Reality443")
+	out += strings.Repeat("─", 92) + "\r\n"
 	for _, r := range results {
-		out += fmt.Sprintf("%-6s  %-24s  %-14s  %s\r\n", r.Name, r.Addr, r.UDP, r.TCP)
+		out += fmt.Sprintf(f, r.Name, r.Addr, r.UDP, r.UDP2, r.TCP, r.TCP2, r.Reality)
 	}
 	return out
 }
