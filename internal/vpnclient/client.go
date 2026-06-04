@@ -574,8 +574,14 @@ func (c *Client) connectTLS(ctx context.Context, tcpAddr string) (transport.Tran
 
 func (c *Client) connectReality(ctx context.Context) (transport.Transport, authResult, error) {
 	rc := c.Cfg.Reality
-	if rc.PublicKey == "" {
-		return nil, authResult{}, fmt.Errorf("transport=reality but reality.public_key is not configured")
+	pubKey := rc.PublicKey
+	if pubKey == "" {
+		// No explicit key: pick one at random from the embedded pool per
+		// connection, so the client needs no manually-distributed key.
+		pubKey = transport.RandomPoolPublicKey()
+	}
+	if pubKey == "" {
+		return nil, authResult{}, fmt.Errorf("transport=reality but no public_key configured and the embedded pool is empty")
 	}
 	addr := rc.Addr
 	if addr == "" {
@@ -592,7 +598,7 @@ func (c *Client) connectReality(ctx context.Context) (transport.Transport, authR
 	tr, err := transport.DialReality(dialCtx, transport.RealityClientParams{
 		Addr:        addr,
 		SNI:         sni,
-		PublicKey:   rc.PublicKey,
+		PublicKey:   pubKey,
 		ShortID:     rc.ShortID,
 		Fingerprint: rc.Fingerprint,
 	})

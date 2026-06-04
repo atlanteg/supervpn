@@ -71,6 +71,11 @@ func main() {
 		return
 	}
 
+	if len(os.Args) >= 2 && os.Args[1] == "reality-genpool" {
+		runRealityGenpool(os.Args[2:])
+		return
+	}
+
 	cfg, err := config.LoadServerConfig(*cfgPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -378,8 +383,13 @@ func (s *Server) serveStream(ctx context.Context, tr transport.Transport, remote
 // proxied to the configured dest site by AcceptReality.
 func (s *Server) runRealityListener(ctx context.Context) {
 	rc := s.cfg.Reality
+	var privs []string
+	if rc.PrivateKey != "" {
+		privs = append(privs, rc.PrivateKey)
+	}
+	privs = append(privs, rc.PrivateKeys...)
 	params, err := transport.BuildRealityServerParams(
-		rc.PrivateKey, rc.Dest, rc.ServerNames, rc.ShortIDs, rc.TimeWindow,
+		privs, rc.Dest, rc.ServerNames, rc.ShortIDs, rc.TimeWindow,
 		s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
 	if err != nil {
 		log.Printf("Reality listener disabled: %v", err)
@@ -390,7 +400,7 @@ func (s *Server) runRealityListener(ctx context.Context) {
 		log.Printf("Reality listen %s FAILED: %v", rc.Listen, err)
 		return
 	}
-	log.Printf("listening Reality %s (dest=%s pub=%s)", rc.Listen, rc.Dest, params.PublicKeyBase64())
+	log.Printf("listening Reality %s (dest=%s keys=%d pub=%s)", rc.Listen, rc.Dest, params.PoolSize(), params.PublicKeyBase64())
 
 	go func() {
 		<-ctx.Done()
@@ -410,6 +420,74 @@ func (s *Server) runRealityListener(ctx context.Context) {
 		}
 		go s.handleRealityConn(ctx, conn, params)
 	}
+}
+
+// runRealityGenpool generates a matched Reality key pool: the public keys are
+// written as a Go source file for embedding in the client, the private keys as
+// a TOML snippet to deploy to servers. Usage: reality-genpool [N] [goFile] [privFile]
+func runRealityGenpool(args []string) {
+	n := 64
+	goFile := "internal/transport/reality_pool.go"
+	privFile := "reality-private-pool.toml"
+	if len(args) >= 1 && args[0] != "" {
+		v, err := strconv.Atoi(args[0])
+		if err != nil || v <= 0 {
+			log.Fatalf("reality-genpool: invalid N %q", args[0])
+		}
+		n = v
+	}
+	if len(args) >= 2 {
+		goFile = args[1]
+	}
+	if len(args) >= 3 {
+		privFile = args[2]
+	}
+
+	pubs, privs, err := transport.GenerateRealityPool(n)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var b strings.Builder
+	b.WriteString("package transport\n\n")
+	b.WriteString("// realityPublicPool is the embedded set of server Reality public keys (base64\n")
+	b.WriteString("// X25519). When a client has no explicit [reality].public_key, it picks one of\n")
+	b.WriteString("// these at random per connection, so no key needs to be distributed to clients\n")
+	b.WriteString("// manually. The matching PRIVATE keys are deployed to servers via\n")
+	b.WriteString("// [reality].private_keys (see `supervpn-server reality-genpool`).\n")
+	b.WriteString("//\n")
+	b.WriteString("// SECURITY NOTE: these are PUBLIC keys, but in the Reality scheme the server's\n")
+	b.WriteString("// public key is the client-side credential. Shipping it in the (public) client\n")
+	b.WriteString("// binary protects against generic active probing, yet a targeted adversary who\n")
+	b.WriteString("// extracts the pool can defeat the dest fallback. The inner supervpn password\n")
+	b.WriteString("// auth still fully protects VPN access.\n")
+	b.WriteString("//\n")
+	b.WriteString("// This file is generated; edit via reality-genpool rather than by hand.\n")
+	b.WriteString("var realityPublicPool = []string{\n")
+	for _, p := range pubs {
+		fmt.Fprintf(&b, "\t%q,\n", p)
+	}
+	b.WriteString("}\n")
+	if err := os.WriteFile(goFile, []byte(b.String()), 0644); err != nil {
+		log.Fatalf("reality-genpool: write %s: %v", goFile, err)
+	}
+
+	var t strings.Builder
+	t.WriteString("# Reality private-key pool — DEPLOY TO SERVERS ONLY.\n")
+	t.WriteString("# Paste under [reality] in each server's config. NEVER commit this file or\n")
+	t.WriteString("# ship it in any binary; the matching public keys are embedded in clients.\n")
+	t.WriteString("private_keys = [\n")
+	for _, p := range privs {
+		fmt.Fprintf(&t, "  %q,\n", p)
+	}
+	t.WriteString("]\n")
+	if err := os.WriteFile(privFile, []byte(t.String()), 0600); err != nil {
+		log.Fatalf("reality-genpool: write %s: %v", privFile, err)
+	}
+
+	fmt.Printf("Generated %d Reality keypairs.\n", n)
+	fmt.Printf("  public pool  → %s   (commit; embedded in clients)\n", goFile)
+	fmt.Printf("  private pool → %s   (deploy to servers; DO NOT commit)\n", privFile)
 }
 
 func (s *Server) handleRealityConn(ctx context.Context, conn net.Conn, params transport.RealityServerParams) {

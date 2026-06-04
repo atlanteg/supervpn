@@ -105,7 +105,7 @@ func realityEchoOnce(t *testing.T, ln net.Listener, params RealityServerParams) 
 
 func TestRealityAuthorizedEndToEnd(t *testing.T) {
 	privB64, pubB64 := mustKeyPair(t)
-	params, err := BuildRealityServerParams(privB64, "127.0.0.1:9", nil, []string{"test"}, 90, "", "")
+	params, err := BuildRealityServerParams([]string{privB64}, "127.0.0.1:9", nil, []string{"test"}, 90, "", "")
 	if err != nil {
 		t.Fatalf("params: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestRealityProberFallbackToDest(t *testing.T) {
 	}()
 
 	privB64, _ := mustKeyPair(t)
-	params, err := BuildRealityServerParams(privB64, dest.Addr().String(), nil, []string{"test"}, 90, "", "")
+	params, err := BuildRealityServerParams([]string{privB64}, dest.Addr().String(), nil, []string{"test"}, 90, "", "")
 	if err != nil {
 		t.Fatalf("params: %v", err)
 	}
@@ -235,6 +235,62 @@ func TestRealitySNIAllowlist(t *testing.T) {
 	}
 	if sniAllowed("evil.example", []string{"www.microsoft.com"}) {
 		t.Error("unlisted SNI must be rejected")
+	}
+}
+
+func TestRealityKeyPoolEndToEnd(t *testing.T) {
+	pubs, privs, err := GenerateRealityPool(8)
+	if err != nil {
+		t.Fatalf("genpool: %v", err)
+	}
+	// Server holds the whole private pool and brute-forces it per connection.
+	params, err := BuildRealityServerParams(privs, "127.0.0.1:9", nil, nil, 90, "", "")
+	if err != nil {
+		t.Fatalf("params: %v", err)
+	}
+	if params.PoolSize() != 8 {
+		t.Fatalf("pool size = %d, want 8", params.PoolSize())
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go realityEchoOnce(t, ln, params)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Client picks a non-first pool key to prove the server's brute-force works.
+	tr, err := DialReality(ctx, RealityClientParams{
+		Addr:        ln.Addr().String(),
+		SNI:         "www.microsoft.com",
+		PublicKey:   pubs[5],
+		Fingerprint: "chrome",
+	})
+	if err != nil {
+		t.Fatalf("DialReality: %v", err)
+	}
+	defer tr.Close()
+	payload := []byte("pool-ok")
+	if err := tr.Send(Frame{Data: payload}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	got, err := tr.Recv(ctx)
+	if err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if !bytes.Equal(got.Data, payload) {
+		t.Errorf("echo mismatch: %q != %q", got.Data, payload)
+	}
+}
+
+func TestRandomPoolPublicKey(t *testing.T) {
+	k := RandomPoolPublicKey()
+	if k == "" {
+		t.Skip("embedded pool empty")
+	}
+	if _, err := DecodeRealityPublicKey(k); err != nil {
+		t.Errorf("embedded pool key is invalid: %v", err)
 	}
 }
 

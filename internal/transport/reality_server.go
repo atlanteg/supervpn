@@ -25,9 +25,9 @@ import (
 
 // RealityServerParams is the runtime configuration for the Reality listener.
 type RealityServerParams struct {
-	priv        *ecdh.PrivateKey
-	dest        string   // real site to proxy probers to, e.g. "www.microsoft.com:443"
-	serverNames []string // allowed SNIs; empty = accept any
+	privs       []*ecdh.PrivateKey // one or more Reality private keys (pool); tried in order
+	dest        string             // real site to proxy probers to, e.g. "www.microsoft.com:443"
+	serverNames []string           // allowed SNIs; empty = accept any
 	shortIDs    [][realityShortIDLen]byte
 	timeWindow  time.Duration
 	tlsConfig   *tls.Config
@@ -35,14 +35,23 @@ type RealityServerParams struct {
 }
 
 // BuildRealityServerParams assembles the runtime params from config primitives.
+// privKeysB64 is one or more base64 X25519 private keys: a single key for a
+// classic deployment, or a pool that matches the public keys embedded in the
+// client. The server tries each key when authenticating a ClientHello.
 // certFile/keyFile may be empty to use a generated self-signed certificate.
 // serverNames, when non-empty, restricts which SNI an authorized client may
 // send (it should be coherent with dest); any other SNI is treated as a prober.
-func BuildRealityServerParams(privKeyB64, dest string, serverNames, shortIDs []string, timeWindowSec int, certFile, keyFile string) (RealityServerParams, error) {
+func BuildRealityServerParams(privKeysB64 []string, dest string, serverNames, shortIDs []string, timeWindowSec int, certFile, keyFile string) (RealityServerParams, error) {
 	var p RealityServerParams
-	priv, err := DecodeRealityPrivateKey(privKeyB64)
-	if err != nil {
-		return p, err
+	if len(privKeysB64) == 0 {
+		return p, fmt.Errorf("reality: no private key configured (set private_key or private_keys)")
+	}
+	for _, s := range privKeysB64 {
+		priv, err := DecodeRealityPrivateKey(s)
+		if err != nil {
+			return p, err
+		}
+		p.privs = append(p.privs, priv)
 	}
 	if dest == "" {
 		return p, fmt.Errorf("reality: dest is required (real fallback site, e.g. \"www.microsoft.com:443\")")
@@ -57,7 +66,6 @@ func BuildRealityServerParams(privKeyB64, dest string, serverNames, shortIDs []s
 	if timeWindowSec <= 0 {
 		timeWindowSec = realityTimeWindowDefault
 	}
-	p.priv = priv
 	p.dest = dest
 	p.serverNames = serverNames
 	p.timeWindow = time.Duration(timeWindowSec) * time.Second
@@ -109,10 +117,17 @@ func (c *replayCache) fresh(key []byte, now int64) bool {
 	return true
 }
 
-// PublicKeyBase64 returns the base64 X25519 public key clients must configure.
+// PublicKeyBase64 returns the base64 X25519 public key for the first configured
+// private key (for logging). With a pool, only the first is shown.
 func (p RealityServerParams) PublicKeyBase64() string {
-	return EncodeRealityKey(p.priv.PublicKey().Bytes())
+	if len(p.privs) == 0 {
+		return ""
+	}
+	return EncodeRealityKey(p.privs[0].PublicKey().Bytes())
 }
+
+// PoolSize returns the number of configured Reality private keys.
+func (p RealityServerParams) PoolSize() int { return len(p.privs) }
 
 // AcceptReality handles one freshly-accepted raw TCP connection.
 //
@@ -166,27 +181,32 @@ func (p RealityServerParams) authenticate(ch parsedClientHello) bool {
 	if err != nil {
 		return false
 	}
-	shared, err := p.priv.ECDH(clientPub)
-	if err != nil {
-		return false
-	}
-	shortID, t, ok := openRealityAuth(shared, ch.random, ch.sessionID)
-	if !ok {
-		return false
-	}
-	if !shortIDAllowed(shortID, p.shortIDs) {
-		return false
-	}
 	now := time.Now().Unix()
-	skew := now - t
-	if skew < 0 {
-		skew = -skew
+	// Try each private key in the pool: the client picked one public key, and we
+	// don't know which, so we find the matching private key by trial decryption.
+	for _, priv := range p.privs {
+		shared, err := priv.ECDH(clientPub)
+		if err != nil {
+			continue
+		}
+		shortID, t, ok := openRealityAuth(shared, ch.random, ch.sessionID)
+		if !ok {
+			continue // wrong key for this client — try next
+		}
+		if !shortIDAllowed(shortID, p.shortIDs) {
+			return false
+		}
+		skew := now - t
+		if skew < 0 {
+			skew = -skew
+		}
+		if time.Duration(skew)*time.Second > p.timeWindow {
+			return false
+		}
+		// Anti-replay: a re-sent ClientHello carries the same auth blob.
+		return p.replay.fresh(ch.sessionID, now)
 	}
-	if time.Duration(skew)*time.Second > p.timeWindow {
-		return false
-	}
-	// Anti-replay: a re-sent ClientHello carries the same auth blob.
-	return p.replay.fresh(ch.sessionID, now)
+	return false
 }
 
 func sniAllowed(sni string, allowed []string) bool {

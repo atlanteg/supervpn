@@ -47,8 +47,13 @@ type RealityServerConfig struct {
 	// using any other SNI is treated as a prober and proxied to Dest. Empty =
 	// accept any SNI.
 	ServerNames []string `toml:"server_names"`
-	// PrivateKey is the base64 X25519 private key (generate with -reality-keygen).
+	// PrivateKey is the base64 X25519 private key (generate with reality-keygen).
 	PrivateKey string `toml:"private_key"`
+	// PrivateKeys is the private-key pool matching the public keys embedded in
+	// clients (generate with `supervpn-server reality-genpool`). Deploy this to
+	// every server; clients pick a public key at random per connection. When set,
+	// it is combined with PrivateKey. Keep this OUT of any public repo/binary.
+	PrivateKeys []string `toml:"private_keys"`
 	// ShortIDs is the set of accepted shortID identifiers (≤8 bytes each).
 	// Empty means accept a single all-zero shortID.
 	ShortIDs []string `toml:"short_ids"`

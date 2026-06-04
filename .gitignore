@@ -24,3 +24,4 @@ dist/windows/supervpn-client.exe
 dist/*.zip
 dist/superVPN.app/
 dist/README-user.pdf
+reality-private-pool.toml

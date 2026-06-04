@@ -118,6 +118,12 @@ pkg/
 - **Go 1.20 is a hard floor — keep all golang.org/x/* deps at go-1.20-compatible
   versions** (x/crypto ≤ v0.33.0, x/sys ≤ v0.30.0, etc.). Newer x/crypto (v0.36+)
   requires go 1.23 and will break the Win7 build.
+- **Reality key pool:** the client embeds a pool of server **public** keys
+  (`internal/transport/reality_pool.go`, committed) and picks one at random per
+  connection. The matching **private** keys live only in `reality-private-pool.toml`
+  (gitignored) and are deployed to servers via `[reality].private_keys`. **NEVER
+  commit private keys or ship them in any binary.** Regenerate with
+  `supervpn-server reality-genpool N`.
 - Do not add comments explaining WHAT the code does — only WHY when non-obvious.
 - Server targets Linux amd64. Client targets Windows amd64 (macOS is secondary).
 - FEC parameters K and R must be configurable at runtime, not compile-time constants.

@@ -29,6 +29,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 )
 
 const (
@@ -52,6 +53,35 @@ func GenerateRealityKeyPair() (priv, pub []byte, err error) {
 		return nil, nil, err
 	}
 	return k.Bytes(), k.PublicKey().Bytes(), nil
+}
+
+// GenerateRealityPool returns n base64 keypairs: pubs for embedding in the
+// client, privs for deploying to servers. pubs[i] matches privs[i].
+func GenerateRealityPool(n int) (pubs, privs []string, err error) {
+	for i := 0; i < n; i++ {
+		priv, pub, e := GenerateRealityKeyPair()
+		if e != nil {
+			return nil, nil, e
+		}
+		pubs = append(pubs, EncodeRealityKey(pub))
+		privs = append(privs, EncodeRealityKey(priv))
+	}
+	return pubs, privs, nil
+}
+
+// RandomPoolPublicKey returns a random public key from the embedded client pool,
+// or "" if the pool is empty. Selection uses crypto/rand so no global seed is
+// needed and the choice is unbiased.
+func RandomPoolPublicKey() string {
+	if len(realityPublicPool) == 0 {
+		return ""
+	}
+	max := big.NewInt(int64(len(realityPublicPool)))
+	idx, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		return realityPublicPool[0]
+	}
+	return realityPublicPool[idx.Int64()]
 }
 
 // EncodeRealityKey base64(std)-encodes a raw key for storage in TOML.
