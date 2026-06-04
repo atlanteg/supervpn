@@ -7,12 +7,31 @@ package tun
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"log"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wintun"
 )
+
+// adapterGUID derives a stable GUID from the adapter name so every connect
+// reuses the SAME WinTun device instead of creating a new one each time.
+// Passing nil to CreateAdapter generates a fresh GUID per call, which — because
+// the friendly name "supervpn" lingers briefly in the registry after removal —
+// makes Windows append an incrementing suffix (supervpn 2, 3, …) and leaves a
+// trail of ghost adapters. A fixed GUID keeps it to one device with one name.
+func adapterGUID(name string) *windows.GUID {
+	h := sha256.Sum256([]byte("supervpn-wintun-v1:" + name))
+	g := &windows.GUID{
+		Data1: binary.LittleEndian.Uint32(h[0:4]),
+		Data2: binary.LittleEndian.Uint16(h[4:6]),
+		Data3: binary.LittleEndian.Uint16(h[6:8]),
+	}
+	copy(g.Data4[:], h[8:16])
+	return g
+}
 
 type windowsTUN struct {
 	adapter *wintun.Adapter
@@ -35,7 +54,9 @@ func openWinTUN(name string) (*windowsTUN, error) {
 		// Non-fatal: log and continue — the DLL may already be on the system.
 		log.Printf("tun/windows: wintun.dll setup: %v", err)
 	}
-	adapter, err := wintun.CreateAdapter(name, "supervpn", nil)
+	// Reuse a stable GUID so reconnects reuse the same device (no "supervpn N"
+	// name growth, no ghost-adapter accumulation in the registry/PnP).
+	adapter, err := wintun.CreateAdapter(name, "supervpn", adapterGUID(name))
 	if err != nil {
 		adapter, err = wintun.OpenAdapter(name)
 		if err != nil {
