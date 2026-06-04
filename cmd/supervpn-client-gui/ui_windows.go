@@ -228,6 +228,11 @@ func (ui *winUI) runApp() {
 			})
 		}
 	}()
+	// First-launch Npcap check: if missing, prompt and install the embedded
+	// installer on confirmation. Posted via Synchronize so it shows after the
+	// window is up; runs before any auto-connect because the MsgBox is modal.
+	ui.form.Synchronize(ui.maybeInstallNpcap)
+
 	// Auto-connect: post to the message queue so onConnect runs after the
 	// message loop starts (Synchronize uses PostMessage, safe before Run).
 	if ui.autoConnectCheck != nil && ui.autoConnectCheck.Checked() {
@@ -1189,6 +1194,22 @@ func (ui *winUI) updateNpcapButton() {
 
 // onInstallNpcap runs in a goroutine: disables the button, runs the installer,
 // then refreshes the button state to reflect the result.
+// maybeInstallNpcap prompts on first launch when Npcap is missing and, if the
+// user agrees, runs the embedded installer. Npcap is only needed for bridge
+// mode (direct/WinTun works without it), so it is offered, not forced.
+func (ui *winUI) maybeInstallNpcap() {
+	if pkgtun.NpcapInstalled() {
+		return
+	}
+	if walk.MsgBox(ui.form, "superVPN — Npcap",
+		"Npcap не установлен — он нужен для режима моста (bridge).\n\n"+
+			"Установить сейчас? (для direct-режима Npcap не требуется)",
+		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != win.IDYES {
+		return
+	}
+	go ui.onInstallNpcap()
+}
+
 func (ui *winUI) onInstallNpcap() {
 	ui.form.Synchronize(func() {
 		_ = ui.npcapBtn.SetText("Installing…")
