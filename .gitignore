@@ -25,3 +25,4 @@ dist/*.zip
 dist/superVPN.app/
 dist/README-user.pdf
 reality-private-pool.toml
+tests_FA_all/

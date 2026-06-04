@@ -171,13 +171,13 @@ var bmwTypeKeys = map[byte]bmwModelEntry{
 	// ── G-series ─────────────────────────────────────────────────────────────
 	// 'H' confirmed = G29 Z4 (typeKey HF51, series G029).
 	// F48 X1 also uses 'H'; disambiguated via gseriesIntroMY['H']='K'.
-	'H': {"G29", "", "Z4", false}, // Z4 G29 (before MY2019: X1 F48 FWD via fseriesAltKeys)
+	'H': {"G29", "", "Z4", false},   // Z4 G29 (before MY2019: X1 F48 FWD via fseriesAltKeys)
 	'J': {"G30", "G31", "5", false}, // 5 Series G30 sedan / G31 Touring (also F90 M5)
 	// 'K' confirmed = G11 for MY>=2016; F15/F16/F85 for earlier MY (via gseriesIntroMY).
 	'K': {"G11", "G12", "7", false}, // 7 Series G11/G12 (before MY2016: X5 F15 via fseriesAltKeys)
 	// 'L' confirmed = F13 6-series (typeKey LX51, series F013) and F15 X5 (typeKey LS01).
 	// G01 X3 uses 'T'/'U'/'5' in FA XML data — NOT 'L'.
-	'L': {"F13", "", "6", false}, // 6 Series Coupé F13 (also F15 X5 on same key)
+	'L': {"F13", "", "6", false},  // 6 Series Coupé F13 (also F15 X5 on same key)
 	'M': {"G02", "", "X4", false}, // X4 G02
 	'N': {"G05", "", "X5", false}, // X5 G05 (unverified secondary key)
 	'P': {"G06", "", "X6", false}, // X6 G06
@@ -186,7 +186,7 @@ var bmwTypeKeys = map[byte]bmwModelEntry{
 	// 'T' confirmed = G01 X3 (typeKey TS31/TX71/TY53, series G001).
 	'T': {"G01", "", "X3", false}, // X3 G01 (also G05 X5 with VIN[4]='A')
 	// 'U' confirmed = G01 X3 (typeKey UZ31, series G001).
-	'U': {"G01", "", "X3", false}, // X3 G01 (alternative type key)
+	'U': {"G01", "", "X3", false},    // X3 G01 (alternative type key)
 	'V': {"G82", "G83", "M4", false}, // M4 G82 coupé / G83 cabrio
 	// 'W' confirmed = F25 X3 (typeKey WX71/WX39/WZ59, series F025).
 	// G26 4GC is the G-series successor; disambiguated via gseriesIntroMY['W']='N'.
@@ -206,11 +206,21 @@ var bmwEngineCodes = map[byte]string{
 	'5': "20i", '6': "40i", '7': "35d", '8': "40d",
 	'9': "50i",
 	'A': "16d", 'B': "18d", 'C': "20d", 'D': "25d",
-	'E': "30i", 'F': "M",   'G': "M",   'H': "25e",
+	'E': "30i", 'F': "M", 'G': "M", 'H': "25e",
 	'J': "30e", 'K': "45e", 'L': "25i", 'N': "28i",
-	'P': "35i", 'R': "28d", 'S': "M",   'T': "30i",
+	'P': "35i", 'R': "28d", 'S': "M", 'T': "30i",
 	'U': "30i", 'V': "40i", 'W': "50e", 'X': "45e",
-	'Y': "M",   'Z': "60i",
+	'Y': "M", 'Z': "60i",
+}
+
+// platformForChassis returns the ISTA software platform for a chassis code,
+// preferring the FA-learned map (faChassisPlatform, real I-Step data) and
+// falling back to the hand-curated chassisPlatform.
+func platformForChassis(chassis string) string {
+	if p, ok := faChassisPlatform[chassis]; ok {
+		return p
+	}
+	return chassisPlatform[chassis]
 }
 
 // chassisPlatform maps a chassis code to the ISTA software platform identifier.
@@ -252,6 +262,30 @@ var chassisPlatform = map[string]string{
 // Returns empty strings for unrecognised type keys.
 func decodeVIN(vin string) (chassis, model, engine, body string, powerKW int) {
 	if len(vin) < 17 {
+		return
+	}
+
+	// FA-learned exact 4-char type-key lookup (VIN[3:7]) — authoritative for the
+	// ~650 type keys seen in real BMW FA backups (~99% chassis accuracy vs ~43%
+	// for the single-char heuristic). Falls through to the heuristic for unknown
+	// keys.
+	if fa, ok := faTypeKeys[vin[3:7]]; ok {
+		chassis = fa.chassis
+		model = fa.chassis
+		if fa.model != "" {
+			model += " " + fa.model
+		}
+		drive := "Rear-Wheel Drive"
+		if fa.xdrive {
+			model += " xDrive"
+			drive = "All Wheel-Drive"
+		}
+		// Enrich engine/power/body from the embedded type DB when available.
+		if dm := lookupVariant(chassis, drive, ""); dm != nil {
+			engine = dm.Engine
+			powerKW = dm.PowerKW
+			body = dm.Body
+		}
 		return
 	}
 
@@ -402,7 +436,7 @@ func doProbes(rx *net.UDPConn, skipName string, onPacket func([]byte, *net.UDPAd
 	// Both broadcast forms: limited (255.255.255.255) and directed link-local
 	// subnet broadcast (169.254.255.255).  Some ZGW firmware only responds to
 	// the directed form.
-	bcastLimited  := &net.UDPAddr{IP: net.IPv4(255, 255, 255, 255), Port: zgwPort}
+	bcastLimited := &net.UDPAddr{IP: net.IPv4(255, 255, 255, 255), Port: zgwPort}
 	bcastDirected := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
 	probe := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x11} // 0x0011 = 17 = VIN length, ZGW ignores probe without it
 
@@ -491,7 +525,7 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 			mac = formatMAC(string(mm[1]))
 		}
 		chassis, model, engine, body, powerKW := decodeVIN(vin)
-		platform := chassisPlatform[chassis]
+		platform := platformForChassis(chassis)
 
 		mu.Lock()
 		lastSeen = time.Now()
@@ -607,7 +641,7 @@ func Discover(localIP string) *Info {
 			chassis, model, engine, body, powerKW := decodeVIN(vin)
 			return &Info{
 				IP: remoteAddr.IP.String(), MAC: mac, VIN: vin,
-				Model: model, Chassis: chassis, Platform: chassisPlatform[chassis], Target: target,
+				Model: model, Chassis: chassis, Platform: platformForChassis(chassis), Target: target,
 				Engine: engine, PowerKW: powerKW, Body: body,
 			}
 		}
