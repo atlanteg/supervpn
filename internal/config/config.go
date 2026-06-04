@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -289,6 +290,44 @@ func samePort(a, b string) bool {
 	return ea == nil && eb == nil && pa == pb
 }
 
+// MigrateClientConfig rewrites settings saved under older port conventions to
+// the current layout — Reality on the standard HTTPS :443, plain TLS/TCP on
+// :8443 — so a stale config keeps working without manual editing. Returns true
+// if anything changed.
+//
+// Older configs commonly have server_tcp = "host:443" (TLS used to live on 443
+// before Reality took it) or reality.addr = "host:8443" (Reality's first
+// suggested port). Both are corrected here.
+func MigrateClientConfig(cfg *ClientConfig) bool {
+	changed := false
+	if newAddr, ok := remapPort(cfg.ServerTCP, "443", "8443"); ok {
+		cfg.ServerTCP = newAddr
+		changed = true
+	}
+	if newAddr, ok := remapPort(cfg.Reality.Addr, "8443", "443"); ok {
+		cfg.Reality.Addr = newAddr
+		changed = true
+	}
+	if changed {
+		log.Printf("config: migrated stale ports to current layout (plain TLS→8443, Reality→443)")
+	}
+	return changed
+}
+
+// remapPort returns addr with its port changed from oldPort to newPort, and ok
+// = true if a remap happened. Leaves addr untouched (ok=false) when it is empty,
+// unparseable, or on a different port.
+func remapPort(addr, oldPort, newPort string) (string, bool) {
+	if addr == "" {
+		return addr, false
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port != oldPort {
+		return addr, false
+	}
+	return net.JoinHostPort(host, newPort), true
+}
+
 // LoadClientConfig reads and validates a client config from a TOML file.
 // Returns an error if parsing fails or if required fields (server, login,
 // password) are missing. Use ParseClientConfig in GUI contexts where you
@@ -314,6 +353,7 @@ func ParseClientConfig(path string) (*ClientConfig, error) {
 	cfg.UDP = cfg.UDP.WithDefaults()
 	cfg.Bridge = cfg.Bridge.WithDefaults()
 	cfg.Reality = cfg.Reality.WithDefaults()
+	MigrateClientConfig(&cfg)
 	return &cfg, nil
 }
 
