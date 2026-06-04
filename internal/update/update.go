@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,14 +36,19 @@ var knownServerIPs = []string{
 	"49.13.4.85",
 }
 
-// DefaultMirrors returns the list of all known server mirror base URLs.
+// DefaultMirrors returns the known server mirror base URLs in RANDOM order.
 // Each server exposes GET /update/version and GET /update/{asset}.
-// Clients use these as fallback when GitHub is unreachable.
+// Clients use these as fallback when GitHub is unreachable. The order is
+// shuffled on every call (i.e. every launch) so clients try a different mirror
+// first each time — spreading load across servers and avoiding always hitting
+// (or being blocked on) the same one. Go 1.20+ auto-seeds the global rand
+// source, so no explicit Seed is needed.
 func DefaultMirrors() []string {
 	m := make([]string, len(knownServerIPs))
 	for i, ip := range knownServerIPs {
 		m[i] = "http://" + ip + "/update"
 	}
+	rand.Shuffle(len(m), func(i, j int) { m[i], m[j] = m[j], m[i] })
 	return m
 }
 
