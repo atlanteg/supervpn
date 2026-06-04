@@ -19,21 +19,26 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
 // RealityServerParams is the runtime configuration for the Reality listener.
 type RealityServerParams struct {
-	priv       *ecdh.PrivateKey
-	dest       string // real site to proxy probers to, e.g. "www.microsoft.com:443"
-	shortIDs   [][realityShortIDLen]byte
-	timeWindow time.Duration
-	tlsConfig  *tls.Config
+	priv        *ecdh.PrivateKey
+	dest        string   // real site to proxy probers to, e.g. "www.microsoft.com:443"
+	serverNames []string // allowed SNIs; empty = accept any
+	shortIDs    [][realityShortIDLen]byte
+	timeWindow  time.Duration
+	tlsConfig   *tls.Config
+	replay      *replayCache // anti-replay: rejects re-sent ClientHellos
 }
 
 // BuildRealityServerParams assembles the runtime params from config primitives.
 // certFile/keyFile may be empty to use a generated self-signed certificate.
-func BuildRealityServerParams(privKeyB64, dest string, shortIDs []string, timeWindowSec int, certFile, keyFile string) (RealityServerParams, error) {
+// serverNames, when non-empty, restricts which SNI an authorized client may
+// send (it should be coherent with dest); any other SNI is treated as a prober.
+func BuildRealityServerParams(privKeyB64, dest string, serverNames, shortIDs []string, timeWindowSec int, certFile, keyFile string) (RealityServerParams, error) {
 	var p RealityServerParams
 	priv, err := DecodeRealityPrivateKey(privKeyB64)
 	if err != nil {
@@ -54,8 +59,12 @@ func BuildRealityServerParams(privKeyB64, dest string, shortIDs []string, timeWi
 	}
 	p.priv = priv
 	p.dest = dest
+	p.serverNames = serverNames
 	p.timeWindow = time.Duration(timeWindowSec) * time.Second
 	p.tlsConfig = tlsCfg
+	// Remember auth blobs for 2× the time window: anything older is rejected by
+	// the timestamp check anyway, so the cache never needs a longer memory.
+	p.replay = newReplayCache(int64(2 * timeWindowSec))
 	for _, s := range shortIDs {
 		p.shortIDs = append(p.shortIDs, ParseShortID(s))
 	}
@@ -65,6 +74,39 @@ func BuildRealityServerParams(privKeyB64, dest string, shortIDs []string, timeWi
 		p.shortIDs = append(p.shortIDs, [realityShortIDLen]byte{})
 	}
 	return p, nil
+}
+
+// replayCache rejects ClientHellos whose auth blob (session_id) was already
+// seen within the TTL.  A genuine client generates a fresh random ephemeral and
+// nonce on every connection, so its session_id is unique; an active prober that
+// captures and re-sends a recorded ClientHello reuses the exact session_id and
+// is detected here — it then falls through to the dest fallback, making a replay
+// indistinguishable from any other probe.
+type replayCache struct {
+	mu   sync.Mutex
+	seen map[string]int64 // session_id → unix time first seen
+	ttl  int64            // seconds
+}
+
+func newReplayCache(ttlSec int64) *replayCache {
+	return &replayCache{seen: make(map[string]int64), ttl: ttlSec}
+}
+
+// fresh records key and returns true if it was not seen within the TTL.
+func (c *replayCache) fresh(key []byte, now int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, t := range c.seen {
+		if now-t > c.ttl {
+			delete(c.seen, k)
+		}
+	}
+	k := string(key)
+	if t, ok := c.seen[k]; ok && now-t <= c.ttl {
+		return false
+	}
+	c.seen[k] = now
+	return true
 }
 
 // PublicKeyBase64 returns the base64 X25519 public key clients must configure.
@@ -113,6 +155,13 @@ func AcceptReality(ctx context.Context, raw net.Conn, p RealityServerParams) (tr
 }
 
 func (p RealityServerParams) authenticate(ch parsedClientHello) bool {
+	// SNI coherence: when an allowlist is configured, the client must use one of
+	// the expected server names (kept consistent with dest). Any other SNI is a
+	// prober → fallback.
+	if len(p.serverNames) > 0 && !sniAllowed(ch.serverName, p.serverNames) {
+		return false
+	}
+
 	clientPub, err := ecdh.X25519().NewPublicKey(ch.x25519Pub)
 	if err != nil {
 		return false
@@ -128,11 +177,25 @@ func (p RealityServerParams) authenticate(ch parsedClientHello) bool {
 	if !shortIDAllowed(shortID, p.shortIDs) {
 		return false
 	}
-	skew := time.Now().Unix() - t
+	now := time.Now().Unix()
+	skew := now - t
 	if skew < 0 {
 		skew = -skew
 	}
-	return time.Duration(skew)*time.Second <= p.timeWindow
+	if time.Duration(skew)*time.Second > p.timeWindow {
+		return false
+	}
+	// Anti-replay: a re-sent ClientHello carries the same auth blob.
+	return p.replay.fresh(ch.sessionID, now)
+}
+
+func sniAllowed(sni string, allowed []string) bool {
+	for _, a := range allowed {
+		if sni == a {
+			return true
+		}
+	}
+	return false
 }
 
 // readFirstTLSRecord reads the first TLS record from conn.  It returns the full

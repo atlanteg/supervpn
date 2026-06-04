@@ -379,7 +379,7 @@ func (s *Server) serveStream(ctx context.Context, tr transport.Transport, remote
 func (s *Server) runRealityListener(ctx context.Context) {
 	rc := s.cfg.Reality
 	params, err := transport.BuildRealityServerParams(
-		rc.PrivateKey, rc.Dest, rc.ShortIDs, rc.TimeWindow,
+		rc.PrivateKey, rc.Dest, rc.ServerNames, rc.ShortIDs, rc.TimeWindow,
 		s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
 	if err != nil {
 		log.Printf("Reality listener disabled: %v", err)
@@ -556,6 +556,13 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 	}
 
 	fecCfg := s.cfg.FEC.WithDefaults()
+	// FEC over the Reality transport is pointless: it rides on reliable TCP
+	// (TLS), so repair packets only waste bandwidth and add a distinctive
+	// data:repair volume ratio to the flow. Disable repair for Reality sessions.
+	if mode == "reality" {
+		fecCfg.R = 0
+		fecCfg.RepairDelay = 0
+	}
 	now := time.Now()
 
 	sess := &Session{

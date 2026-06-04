@@ -42,6 +42,11 @@ type RealityServerConfig struct {
 	// host:port, e.g. "www.microsoft.com:443". It should match the SNI clients
 	// send so active probes see a coherent, genuine TLS endpoint.
 	Dest string `toml:"dest"`
+	// ServerNames, when non-empty, is the allowlist of SNIs an authorized client
+	// may send (keep coherent with Dest, e.g. ["www.microsoft.com"]). A client
+	// using any other SNI is treated as a prober and proxied to Dest. Empty =
+	// accept any SNI.
+	ServerNames []string `toml:"server_names"`
 	// PrivateKey is the base64 X25519 private key (generate with -reality-keygen).
 	PrivateKey string `toml:"private_key"`
 	// ShortIDs is the set of accepted shortID identifiers (≤8 bytes each).

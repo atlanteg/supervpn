@@ -105,7 +105,7 @@ func realityEchoOnce(t *testing.T, ln net.Listener, params RealityServerParams) 
 
 func TestRealityAuthorizedEndToEnd(t *testing.T) {
 	privB64, pubB64 := mustKeyPair(t)
-	params, err := BuildRealityServerParams(privB64, "127.0.0.1:9", []string{"test"}, 90, "", "")
+	params, err := BuildRealityServerParams(privB64, "127.0.0.1:9", nil, []string{"test"}, 90, "", "")
 	if err != nil {
 		t.Fatalf("params: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestRealityProberFallbackToDest(t *testing.T) {
 	}()
 
 	privB64, _ := mustKeyPair(t)
-	params, err := BuildRealityServerParams(privB64, dest.Addr().String(), []string{"test"}, 90, "", "")
+	params, err := BuildRealityServerParams(privB64, dest.Addr().String(), nil, []string{"test"}, 90, "", "")
 	if err != nil {
 		t.Fatalf("params: %v", err)
 	}
@@ -203,6 +203,38 @@ func TestRealityProberFallbackToDest(t *testing.T) {
 	}
 	if string(buf) != banner {
 		t.Errorf("prober got %q, want dest banner %q", buf, banner)
+	}
+}
+
+func TestRealityReplayCache(t *testing.T) {
+	c := newReplayCache(90)
+	blob := make([]byte, 32)
+	rand.Read(blob)
+	now := int64(1_000_000)
+	if !c.fresh(blob, now) {
+		t.Fatal("first sight must be fresh")
+	}
+	if c.fresh(blob, now+10) {
+		t.Error("replay within TTL must be rejected")
+	}
+	// After the TTL elapses, the same blob is no longer remembered.
+	if !c.fresh(blob, now+91) {
+		t.Error("blob past TTL must be accepted again")
+	}
+	// A different blob is always fresh.
+	other := make([]byte, 32)
+	rand.Read(other)
+	if !c.fresh(other, now+10) {
+		t.Error("distinct blob must be fresh")
+	}
+}
+
+func TestRealitySNIAllowlist(t *testing.T) {
+	if !sniAllowed("www.microsoft.com", []string{"www.microsoft.com", "dl.google.com"}) {
+		t.Error("listed SNI must be allowed")
+	}
+	if sniAllowed("evil.example", []string{"www.microsoft.com"}) {
+		t.Error("unlisted SNI must be rejected")
 	}
 }
 
