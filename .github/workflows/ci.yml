@@ -491,26 +491,41 @@ jobs:
           else
             echo "No existing release $VER — proceeding with create"
           fi
-          gh release create "$VER" "${FILES[@]}" \
-            --repo atlanteg/supervpn-releases \
-            --title "supervpn $VER" \
-            --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
-            --latest || true
-          # Verify the release was published — gh can exit non-zero even when it
-          # succeeds (false "workflow scope" warning); GitHub API may also take a
-          # few seconds to reflect the new release, so retry up to ~15 s.
+          publish() {
+            gh release create "$VER" "${FILES[@]}" \
+              --repo atlanteg/supervpn-releases \
+              --title "supervpn $VER" \
+              --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
+              --latest 2>&1 || true
+          }
+          # gh release create can print a false "workflow scope may be required"
+          # error and exit non-zero even when it actually succeeds, and the new
+          # release routinely takes longer than a few seconds to become visible
+          # via the API. Verify by polling the asset count for up to ~2 minutes;
+          # if it is still missing past the half-way mark, retry create once in
+          # case the first attempt genuinely failed.
+          publish
           VERIFIED=false
-          for i in 1 2 3 4 5; do
-            sleep 3
-            if gh release view "$VER" --repo atlanteg/supervpn-releases > /dev/null 2>&1; then
-              echo "Release $VER published successfully (attempt $i)."
+          RECREATED=false
+          for i in $(seq 1 24); do          # 24 × 5 s ≈ 120 s
+            sleep 5
+            CNT=$(gh release view "$VER" --repo atlanteg/supervpn-releases \
+                    --json assets --jq '.assets | length' 2>/dev/null)
+            CNT=${CNT:-0}
+            if [ "$CNT" -gt 0 ]; then
+              echo "Release $VER published with $CNT assets (attempt $i)."
               VERIFIED=true
               break
             fi
-            echo "Release not visible yet (attempt $i) — retrying..."
+            echo "Release not visible yet (attempt $i, assets=$CNT) — retrying..."
+            if [ "$i" -eq 12 ] && [ "$RECREATED" = "false" ]; then
+              echo "Still missing after ~60 s — retrying create once."
+              publish
+              RECREATED=true
+            fi
           done
           if [ "$VERIFIED" = "false" ]; then
-            echo "::error::Release $VER was NOT created after retries."
+            echo "::error::Release $VER was NOT created after retries (~2 min)."
             exit 1
           fi
 
