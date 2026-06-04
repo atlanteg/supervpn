@@ -98,12 +98,12 @@ func DialReality(ctx context.Context, p RealityClientParams) (*RealityTransport,
 		return nil, fmt.Errorf("reality: build handshake: %w", err)
 	}
 
-	ks := uconn.HandshakeState.State13.KeyShareKeys
-	if ks == nil || ks.Ecdhe == nil {
+	ecdheKey := uconn.HandshakeState.State13.EcdheKey
+	if ecdheKey == nil {
 		uconn.Close()
 		return nil, fmt.Errorf("reality: fingerprint %q offers no X25519 key share", p.Fingerprint)
 	}
-	shared, err := ks.Ecdhe.ECDH(serverPub)
+	shared, err := ecdheKey.ECDH(serverPub)
 	if err != nil {
 		uconn.Close()
 		return nil, fmt.Errorf("reality: ECDH: %w", err)

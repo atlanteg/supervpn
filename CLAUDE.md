@@ -109,8 +109,15 @@ pkg/
 - After every commit: `git push origin main` (public mirror). **Never push to `new-origin` without asking the user** — it triggers CI and costs build minutes.
 - No external dependencies except: `golang.org/x/crypto`, `golang.org/x/sys`,
   `golang.zx2c4.com/wintun`, `github.com/pelletier/go-toml` (or BurntSushi/toml),
-  and `github.com/refraction-networking/utls` (Reality client ClientHello fingerprint;
-  approved by user for the Reality transport — pulls brotli/klauspost-compress/x-net transitively).
+  and `github.com/refraction-networking/utls` **pinned to v1.6.3** (Reality client
+  ClientHello fingerprint; approved by user). **Do NOT upgrade utls past v1.6.3** —
+  v1.6.4+ require `go 1.21+`, and Go 1.21 dropped Windows 7 support. The whole project
+  is pinned to **Go 1.20** for Win7 compatibility (last Go release supporting Win7/8/
+  Server 2008/2012). utls v1.6.3 mimics Chrome 120 and pulls quic-go/circl/brotli/
+  klauspost-compress transitively (all go ≤1.20-compatible).
+- **Go 1.20 is a hard floor — keep all golang.org/x/* deps at go-1.20-compatible
+  versions** (x/crypto ≤ v0.33.0, x/sys ≤ v0.30.0, etc.). Newer x/crypto (v0.36+)
+  requires go 1.23 and will break the Win7 build.
 - Do not add comments explaining WHAT the code does — only WHY when non-obvious.
 - Server targets Linux amd64. Client targets Windows amd64 (macOS is secondary).
 - FEC parameters K and R must be configurable at runtime, not compile-time constants.
