@@ -99,8 +99,13 @@ internal/
   auth/              — login/password auth
   config/            — TOML config structures
   update/            — self-update logic (GitHub + mirror fallback)
+  zgw/               — BMW ZGW discovery + FA-trained VIN decoder (used by clients)
 pkg/
   tun/               — platform TAP/WinTun (linux, windows build tags)
+standalone/
+  bmwzgw/            — standalone BMW ZGW module (own go.mod) for 3rd-party integrations
+tools/
+  vin-retrain/       — retrain the VIN decoder from FA backups (see docs/vin-decoder.md)
 ```
 
 ## Rules for all agents
@@ -130,6 +135,14 @@ pkg/
   (gitignored) and are deployed to servers via `[reality].private_keys`. **NEVER
   commit private keys or ship them in any binary.** Regenerate with
   `supervpn-server reality-genpool N`.
+- **BMW VIN decoder (`internal/zgw` + `standalone/bmwzgw`):** chassis/model/
+  platform are resolved primarily from FA-learned tables (`fa_typekeys.go`,
+  `fa_platform.go`, generated — ~99% accurate), with a single-char `VIN[3]`
+  heuristic fallback. The two locations are kept in sync. To retrain on new FA
+  backups: `python3 tools/vin-retrain/retrain.py <fa-dir>` then
+  `go test ./internal/zgw -run FAAccuracy -v`. Full details + accuracy:
+  **docs/vin-decoder.md**. Raw FA archives are gitignored — never commit them
+  (may contain real customer VINs); commit only the generated tables.
 - Do not add comments explaining WHAT the code does — only WHY when non-obvious.
 - Server targets Linux amd64. Client targets Windows amd64 (macOS is secondary).
 - FEC parameters K and R must be configurable at runtime, not compile-time constants.

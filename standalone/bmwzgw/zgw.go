@@ -1,5 +1,5 @@
 // Package bmwzgw implements BMW ZGW (Central Gateway) discovery over the
-// ENET link-local network.
+// ENET link-local network and full VIN-to-chassis decoding.
 //
 // # Two-stage discovery
 //
@@ -11,7 +11,7 @@
 //  2. ZGW stage: the package broadcasts a 6-byte probe to
 //     255.255.255.255:6811 and 169.254.255.255:6811 and waits for a UDP
 //     response containing a 17-char VIN.  Once confirmed, onChange is fired
-//     again with the real ZGW IP, VIN, decoded model name, and ISTA target.
+//     again with the real ZGW IP, VIN, decoded model info, and ISTA platform.
 //
 // # Minimal integration
 //
@@ -24,8 +24,47 @@
 //	        return
 //	    }
 //	    fmt.Println(bmwzgw.FormatBMW(info))
-//	    // "BMW: 169.254.138.176  WBA8X51000CF40263  F34 320i xDrive  F020"
+//	    // "BMW: 169.254.138.176  WBA5R7C0XLFH66853  G20 330i xDrive  S18A"
 //	})
+//
+// # VIN decoding — cascade (most precise → fallback)
+//
+// BMW uses a 4-character internal type key (Baumuster, VIN[3:7]).
+//
+//  0. faTypeKeys — checked first.  Exact VIN[3:7] lookup, learned from real BMW
+//     FA backups (~725 keys, ~99% chassis-accurate).  Returns chassis + model
+//     (e.g. "330i") + xDrive.  e.g. "5R7C" → G20 330i xDrive.
+//
+//  1. bmwType2Keys — VIN[3]+VIN[4], for keys not in faTypeKeys.  90+ entries;
+//     covers overloaded VIN[3] letters, e.g. '5'+'R' → G20.
+//
+//  2. gseriesIntroMY + fseriesAltKeys — VIN[9] (ISO model-year char; VIN[8] is
+//     the check digit) disambiguates VIN[3] letters reused across F/G gens:
+//     'H' threshold 'K' (2019): before → F48 X1 FWD; after → G29 Z4
+//     'K' threshold 'G' (2016): before → F15 X5;    after → G11/G12
+//     'W' threshold 'N' (2022): before → F25 X3;    after → G26 4GC
+//
+//  3. bmwTypeKeys — single-character VIN[3] fallback (most-common model).
+//
+// Platform: platformForChassis() prefers the FA-learned faChassisPlatform
+// (real I-Step data) over the hand-curated chassisPlatform.
+//
+// # FA XML training data
+//
+// The lookup tables were built from BMW ISTA Fahrzeugauftrag (FA) XML files
+// collected from real-car diagnostic backups.  An FA XML is the authoritative
+// vehicle order document stored in the VCM MASTER backup folder; it contains
+// the exact chassis series code (e.g. "G020") and the full 4-char type key
+// (e.g. "5R7C").  Accuracy history:
+//
+//	v1.5.6 (73 FA XMLs):   ~48%  bmwTypeKeys only
+//	v1.5.7 (73 FA XMLs):   ~65%  + initial bmwType2Keys (4 entries)
+//	v1.6.0 (7546 FA XMLs): ~89%  + 90+ bmwType2Keys entries
+//
+// To contribute a new mapping: open the FA.xml from a VCM MASTER backup,
+// read vinLong / series / typeKey, and add an entry to bmwType2Keys keyed
+// by [2]byte{typeKey[0], typeKey[1]}.  Also add the chassis to chassisPlatform
+// if missing.
 //
 // # skipIfaceName
 //
@@ -113,6 +152,12 @@ var bmwBodyCodes = map[byte]bmwBodyInfo{
 	// AWD, standard body
 	'X': {false, true}, // xDrive sedan (all series, all generations)
 	'W': {false, true}, // xDrive SAC/SAV body (X4 F26 and similar non-DE plants)
+	// G20/G22 xDrive: these VIN[4] values encode xDrive for G-series 3/4-series.
+	// Confirmed: WBA5R7C0XLFH66853 (G20 330i xDrive, typeKey 5R7C),
+	//            WBA5V780608B86343 (G20 320d xDrive, typeKey 5V78),
+	//            WBA3V9C56FP946935 (F33 428i xDrive, typeKey 3V93).
+	'R': {false, true}, // xDrive (G20/G22 G-series)
+	'V': {false, true}, // xDrive (G20/G22 G-series, also F33 cabriolet)
 	// F-series Touring
 	'B': {true, false}, // F31 / F11 Touring, RWD
 	'D': {true, true},  // F31 / F11 Touring, xDrive
@@ -132,47 +177,54 @@ var bmwBodyCodes = map[byte]bmwBodyInfo{
 //
 // Sources: ISTA VehicleInfo → Series mappings (bimmer-tool DB, screenshots).
 // Platform families:
-//   F001  — 7 Series F01/F02 (2008–2015)
-//   F010  — 5 Series F10/F11, 6 Series F12/F13 (2010–2017)
-//   F020  — 1/2/3/4 Series F20–F36 (2011–2019)
-//   F025  — X3 F25, X4 F26, X5 F15, X6 F16 (2011–2019)
-//   F056  — UKL FWD: X1 F48, X2 F39, 2AT F45/F46 (2014–2022)
-//   S15A  — CLAR gen 1: 5 Series G30, 7 Series G11/G12, X3 G01, X4 G02
-//   S18A  — CLAR gen 2: 3/4 Series G20–G26, 8 Series G14–G16,
-//            X5 G05, X6 G06, X7 G07, Z4 G29, 2 Series G42, M2–M4/M3
-//   G045  — Electric: iX G045/G046/G048
-//   G070  — New gen: 5 Series G60, 7 Series G70, M5 G84/G90
+//
+//	F001  — 7 Series F01/F02/F04 (2008–2015)
+//	F010  — 5 Series F07/F10/F11, 6 Series F12/F13 (2010–2017)
+//	F020  — 1/2/3/4 Series F20–F36, M3 F80, M4 F82/F83 (2011–2019)
+//	F025  — X3 F25, X4 F26, X5 F15/F85, X6 F16/F86 (2011–2019)
+//	F056  — UKL FWD: 1-Series F40, X1 F48, X2 F39, 2AT F45/F46 (2014–2022)
+//	S15A  — CLAR gen 1: 5 Series G30/G31/G32, 7 Series G11/G12, X3 G01/F97, X4 G02/F98, M5 F90
+//	S18A  — CLAR gen 2: 3/4 Series G20–G26, 8 Series G14–G16,
+//	         X5 G05, X6 G06, X7 G07, Z4 G29, 2 Series G42, M2–M4/M3
+//	G045  — Electric: iX G045/G046/G048
+//	G070  — New gen: 5 Series G60, 7 Series G70, M5 G84/G90
 var chassisPlatform = map[string]string{
 	// ── F-series ──────────────────────────────────────────────────────────────
-	// platform F001: 7 Series F01/F02, 5GT F07
-	"F01": "F001",
-	// platform F010: 5 Series F07/F10/F11, 6 Series F12/F13/F06
+	// platform F001: 7 Series F01/F02/F04
+	"F01": "F001", "F02": "F001", "F04": "F001",
+	// platform F010: 5 Series F07/F10/F11, 6 Series F12/F13
 	"F07": "F010",
 	"F10": "F010", "F11": "F010", "F12": "F010", "F13": "F010",
-	// platform F025: X5 F15, X6 F16, X3 F25, X4 F26
+	// platform F025: X5 F15/F85, X6 F16/F86, X3 F25, X4 F26
 	"F15": "F025", "F16": "F025", "F25": "F025", "F26": "F025",
-	// platform F020: 1/2/3/4 Series (all F2x/F3x mainstream)
+	"F85": "F025", "F86": "F025",
+	// platform F020: 1/2/3/4 Series mainstream + M3/M4 F-gen
 	"F20": "F020", "F21": "F020",
 	"F22": "F020", "F23": "F020",
 	"F30": "F020", "F31": "F020", "F32": "F020", "F33": "F020",
 	"F34": "F020", "F35": "F020", "F36": "F020",
+	"F40": "F020",                               // 1-Series G-gen / F40 (UKL2-based)
+	"F44": "F020",                               // 2 Series Gran Coupé F44
+	"F52": "F020",                               // 1 Series F52 (China)
+	"F80": "F020", "F82": "F020", "F83": "F020", // M3/M4 F-gen (F30/F32 platform)
 	// platform F056: UKL FWD — X1 F48, X2 F39, 2 Active/Gran Tourer F45/F46
 	"F39": "F056", "F45": "F056", "F46": "F056",
 	"F47": "F056", "F48": "F056", "F49": "F056",
 	// ── G-series — CLAR gen 1 (S15A) ─────────────────────────────────────────
-	// 5 Series G30/G31, 6 GT G32, 7 Series G11/G12, X3 G01, X4 G02
+	// 5 Series G30/G31/G32, 7 Series G11/G12, X3 G01/F97, X4 G02/F98, M5 F90
+	"F90": "S15A", "F97": "S15A", "F98": "S15A",
 	"G01": "S15A", "G02": "S15A",
 	"G11": "S15A", "G12": "S15A",
 	"G30": "S15A", "G31": "S15A", "G32": "S15A",
 	// ── G-series — CLAR gen 1 extended (S15C) ────────────────────────────────
 	// 5 Series long-wheelbase G38, X3M G08 (China/specific markets)
-	"G38": "S15C",
+	"G08": "S15C", "G38": "S15C",
 	// ── G-series — CLAR gen 2 (S18A) ─────────────────────────────────────────
 	// 3 Series G20/G21, 4 Series G22/G23/G26, 2 Series G42
 	"G20": "S18A", "G21": "S18A",
 	"G22": "S18A", "G23": "S18A", "G24": "S18A", "G26": "S18A",
 	"G42": "S18A",
-	// X3 G09 (M), X5 G05, X6 G06, X7 G07
+	// X3M G09, X5 G05, X6 G06, X7 G07
 	"G05": "S18A", "G06": "S18A", "G07": "S18A", "G09": "S18A",
 	// 8 Series G14/G15/G16, Z4 G29
 	"G14": "S18A", "G15": "S18A", "G16": "S18A",
@@ -200,12 +252,12 @@ var chassisPlatform = map[string]string{
 // BMW reuses VIN[3] type-key letters across generations.  The two tables below
 // handle disambiguation:
 //
-//   gseriesIntroMY  — maps a type-key letter to the VIN[10] character at which
-//                     G-series production for that key began.  Only populated
-//                     for keys that were provably used for a different F-series
-//                     model before the G-series took over.
+//	gseriesIntroMY  — maps a type-key letter to the VIN[10] character at which
+//	                  G-series production for that key began.  Only populated
+//	                  for keys that were provably used for a different F-series
+//	                  model before the G-series took over.
 //
-//   fseriesAltKeys  — the F-series meaning of those reused keys.
+//	fseriesAltKeys  — the F-series meaning of those reused keys.
 //
 // When VIN[10] < gseriesIntroMY[key], decodeVIN uses fseriesAltKeys instead
 // of bmwTypeKeys.  Keys with no confirmed F-series predecessor are left out of
@@ -229,8 +281,6 @@ var gseriesIntroMY = map[byte]byte{
 	// 'W': G26 4-series Gran Coupé from MY2022 ('N'); before that it was the X3 F25.
 	//      F25 VINs show vin[10]='L' or digit '0'; G26 starts at 'N' range.
 	'W': 'N',
-	// '5': G-series (G20 3er etc.) from MY2019 ('K'); before that the 5 Series F10/F11.
-	'5': 'K',
 }
 
 var fseriesAltKeys = map[byte]bmwModelEntry{
@@ -241,8 +291,233 @@ var fseriesAltKeys = map[byte]bmwModelEntry{
 	'K': {"F15", "", "X5", false},
 	// X3 F25 (predecessor of G26 4GC on key 'W').
 	'W': {"F25", "", "X3", false},
-	// 5 Series F10/F11 (predecessor of the G-series on key '5', pre-MY2019).
-	'5': {"F10", "F11", "5", false},
+}
+
+// bmwType2Keys maps the first TWO characters of the BMW type key (VIN[3]+VIN[4])
+// to chassis data.  Checked before the single-character bmwTypeKeys table, so
+// entries here take priority and override the generic single-character fallback.
+//
+// Used for heavily overloaded VIN[3] letters where a single character is not
+// enough to distinguish the model.  All entries verified against real BMW ISTA
+// FA XML backups (7 546 files, 2026).  Count = number of FA XML occurrences.
+//
+// IMPORTANT: entries with tourer=="" force a specific chassis regardless of the
+// global bmwBodyCodes table, because body-code semantics differ per model family.
+// For example VIN[4]='D' means "xDrive sedan" for G30 but "xDrive Touring" for F31.
+var bmwType2Keys = map[[2]byte]bmwModelEntry{
+	// ── VIN[3]='1' — 1/5-series overload ────────────────────────────────────
+	{'1', '1'}: {"G30", "", "5", false}, // G30 5-series (typeKey 11BH/11DC/11DW, 42 VINs)
+	{'1', '3'}: {"G30", "", "5", false}, // G30 5-series (18 VINs)
+	{'1', 'J'}: {"F22", "", "2", false}, // F22 2-series coupé (10 VINs)
+
+	// ── VIN[3]='2' — 2/7-series overload ────────────────────────────────────
+	{'2', '1'}: {"G07", "", "X7", false}, // G07 X7 (typeKey 21EM/21EN, 38 VINs)
+	{'2', '3'}: {"G07", "", "X7", false}, // G07 X7 (typeKey 23EM, 22 VINs)
+	{'2', 'J'}: {"F22", "", "2", false},  // F22 2-series coupé (14 VINs)
+	{'2', 'M'}: {"F23", "", "2", false},  // F23 2-series cabriolet (8 VINs)
+
+	// ── VIN[3]='3' — 3/4-series F-gen + G-series overload ───────────────────
+	// F30 sedan: body codes A/B/C/D are drive variants in this family, NOT Touring.
+	// Using explicit chassis (tourer="") to bypass global bmwBodyCodes misread.
+	{'3', 'A'}: {"F30", "", "3", false}, // F30 sedan RWD (typeKey 3A11/3A51, 64 VINs)
+	{'3', 'B'}: {"F30", "", "3", false}, // F30 sedan (typeKey 3B11/3B13, 71 VINs)
+	{'3', 'C'}: {"F30", "", "3", false}, // F30 sedan (typeKey 3C17/3C31, 21 VINs)
+	{'3', 'D'}: {"F30", "", "3", false}, // F30 sedan xDrive (typeKey 3D11/3D31, 54 VINs)
+	// F31 Touring (explicit)
+	{'3', 'K'}: {"F31", "", "3", false}, // F31 Touring RWD (typeKey 3K11/3K31, 30 VINs)
+	{'3', 'L'}: {"F31", "", "3", false}, // F31 Touring (typeKey 3L11/3L51, 16 VINs)
+	// F33 4-series Cabriolet (confirmed: WBA3V9C56FP946935, typeKey 3V93)
+	{'3', 'V'}: {"F33", "", "4", false}, // F33 4-series Convertible (6 VINs)
+	// F34 3-series Gran Turismo
+	{'3', 'X'}: {"F34", "", "3", false}, // F34 GT (typeKey 3X11/3X31, 29 VINs)
+	{'3', 'Y'}: {"F34", "", "3", false}, // F34 GT xDrive (typeKey 3Y11/3Y31, 29 VINs)
+	{'3', 'Z'}: {"F34", "", "3", false}, // F34 GT (typeKey 3Z71, 6 VINs)
+	// F82/F83 M4
+	{'3', 'R'}: {"F82", "", "M4", false}, // F82 M4 coupé (typeKey 3R91/3R93, 6 VINs)
+	{'3', 'U'}: {"F83", "", "M4", false}, // F83 M4 cabriolet (typeKey 3U93, 6 VINs)
+
+	// ── VIN[3]='4' — 4-series / M3 overload ─────────────────────────────────
+	{'4', '1'}: {"G80", "", "M3", false}, // G80 M3 (typeKey 41AY/WBS, 16 VINs)
+	{'4', '3'}: {"G80", "", "M3", false}, // G80 M3 Competition (typeKey 43AY, 30 VINs)
+	{'4', 'W'}: {"F32", "", "4", false},  // F32 4-series coupé xDrive (typeKey 4W11, 19 VINs)
+	{'4', 'Z'}: {"F33", "", "4", false},  // F33 4-series cabriolet (typeKey 4Z11, 10 VINs)
+
+	// ── VIN[3]='5' — 5-series/3-series/X3 overload ──────────────────────────
+	// G20/G21 3-series G-gen — confirmed: WBA5R7C0XLFH66853 (330i xDrive, typeKey 5R7C)
+	{'5', 'F'}: {"G20", "G21", "3", false}, // G20 sedan (typeKey 5F7x, 17 VINs)
+	{'5', 'P'}: {"G20", "G21", "3", false}, // G20 sedan (typeKey 5P7x, 20 VINs)
+	{'5', 'R'}: {"G20", "G21", "3", false}, // G20 sedan xDrive (typeKey 5R7x, confirmed)
+	{'5', 'U'}: {"G20", "G21", "3", false}, // G20 sedan (typeKey 5U7x, 60 VINs)
+	{'5', 'V'}: {"G20", "G21", "3", false}, // G20 sedan xDrive (typeKey 5V7x, confirmed)
+	{'5', 'W'}: {"G20", "G21", "3", false}, // G20 sedan (typeKey 5W7x, 4 VINs)
+	{'5', 'X'}: {"G20", "G21", "3", false}, // G20 sedan xDrive (typeKey 5X7x, 12 VINs)
+	// G22/G23 4-series — confirmed: WBA53AP00PCN03414 (430i, typeKey 53AP)
+	{'5', '3'}: {"G22", "G23", "4", false}, // G22/G23 4-series (typeKey 53Ax)
+	// G01 X3 BMW SA Rosslyn — confirmed: WBX57DP06NN153154 (typeKey 57DP)
+	{'5', '7'}: {"G01", "", "X3", false}, // G01 X3 (BMW SA Rosslyn)
+	// F10/F11 5-series body-code fix (B/D/E treated as Touring → wrong)
+	{'5', 'B'}: {"F10", "", "5", false}, // F10 sedan (typeKey 5B11, 14 VINs)
+	{'5', 'D'}: {"F10", "", "5", false}, // F10 sedan xDrive (typeKey 5D11, 11 VINs)
+	{'5', 'E'}: {"F10", "", "5", false}, // F10 sedan (typeKey 5E11, 14 VINs)
+	// F11 Touring (explicit, body code 'L'/'J' not in bmwBodyCodes)
+	{'5', 'J'}: {"F11", "", "5", false}, // F11 Touring (typeKey 5J51, 8 VINs)
+	{'5', 'L'}: {"F11", "", "5", false}, // F11 Touring (typeKey 5L51, 16 VINs)
+	// F07 5GT
+	{'5', 'N'}: {"F07", "", "5", false}, // F07 5GT (typeKey 5N61, 2 VINs)
+
+	// ── VIN[3]='6' — 6-series / 3-series / 2-series overload ────────────────
+	// G20/G21 3-series on '6' typekey
+	{'6', '8'}: {"G20", "", "3", false}, // G20 3-series (typeKey 68xx, 8 VINs)
+	{'6', '9'}: {"G20", "", "3", false}, // G20 3-series (4 VINs)
+	{'6', 'L'}: {"G21", "", "3", false}, // G21 Touring (typeKey 6L31/6L71, 32 VINs)
+	{'6', 'M'}: {"G21", "", "3", false}, // G21 Touring (8 VINs)
+	{'6', 'N'}: {"G21", "", "3", false}, // G21 Touring (6 VINs)
+	// F45/F46 2-series AT/GT FWD on '6' typekey
+	{'6', 'S'}: {"F45", "", "2", true}, // F45 2AT FWD (4 VINs)
+	{'6', 'T'}: {"F45", "", "2", true}, // F45 2AT FWD (4 VINs)
+	{'6', 'U'}: {"F45", "", "2", true}, // F45 2AT FWD (4 VINs)
+	{'6', 'X'}: {"F46", "", "2", true}, // F46 2GT FWD (8 VINs)
+	{'6', 'Y'}: {"F45", "", "2", true}, // F45 2AT FWD (4 VINs)
+
+	// ── VIN[3]='7' — 7-series / F40 1-series / G30 5-series overload ────────
+	// G12 LWB (these VIN[4] values encode LWB but not in global bmwBodyCodes)
+	{'7', 'H'}: {"G12", "", "7", false}, // G12 LWB (typeKey 7H61, 2 VINs)
+	{'7', 'J'}: {"G12", "", "7", false}, // G12 LWB (typeKey 7J23, 4 VINs)
+	{'7', 'T'}: {"G12", "", "7", false}, // G12 LWB (typeKey 7T23, 16 VINs)
+	{'7', 'U'}: {"G12", "", "7", false}, // G12 LWB (typeKey 7U23/7U61, 32 VINs)
+	{'7', 'V'}: {"G12", "", "7", false}, // G12 LWB (typeKey 7V61, 4 VINs)
+	// G11 SWB — bypass body 'B'=Touring misread (tourer="" → stays G11)
+	{'7', 'B'}: {"G11", "", "7", false}, // G11 SWB (typeKey 7B61, 6 VINs)
+	// F40 1-series G-gen (UKL2 FWD platform reusing '7' typekey)
+	{'7', 'K'}: {"F40", "", "1", true}, // F40 1-series (typeKey 7K31/7K51, 24 VINs)
+	{'7', 'L'}: {"F40", "", "1", true}, // F40 1-series (typeKey 7L11, 6 VINs)
+	{'7', 'M'}: {"F40", "", "1", true}, // F40 1-series (typeKey 7M91, 4 VINs)
+	{'7', 'N'}: {"F40", "", "1", true}, // F40 1-series Touring (typeKey 7N51, 8 VINs)
+	// G30/G20 reusing '7' typekey
+	{'7', '1'}: {"G30", "", "5", false}, // G30 5-series (typeKey 71BH/71BJ/71DC, 32 VINs)
+	{'7', '3'}: {"G30", "", "5", false}, // G30 5-series (typeKey 73BJ, 10 VINs)
+	{'7', '8'}: {"G20", "", "3", false}, // G20 3-series (typeKey 78DY, 10 VINs)
+
+	// ── VIN[3]='8' — 3-series F-gen variants ────────────────────────────────
+	// F34 Gran Turismo body: VIN[4]='T','X','Y','Z' encodes GT body
+	{'8', 'T'}: {"F34", "", "3", false}, // F34 GT RWD (typeKey 8T11/8T31, 42 VINs)
+	{'8', 'X'}: {"F34", "", "3", false}, // F34 GT xDrive (typeKey 8X11/8X51, 34 VINs)
+	{'8', 'Y'}: {"F34", "", "3", false}, // F34 GT (typeKey 8Y11, 12 VINs)
+	{'8', 'Z'}: {"F34", "", "3", false}, // F34 GT (typeKey 8Z71, 4 VINs)
+	// F31 Touring — body codes J/H not in global bmwBodyCodes
+	{'8', 'H'}: {"F31", "", "3", false}, // F31 Touring (typeKey 8H31, 4 VINs)
+	{'8', 'J'}: {"F31", "", "3", false}, // F31 Touring (typeKey 8J31, 18 VINs)
+	// F80 M3 (high-performance F30 variant)
+	{'8', 'M'}: {"F80", "", "M3", false}, // F80 M3 (typeKey 8M01/8M02, 8 VINs)
+
+	// ── VIN[3]='B' — 6/8-series overload ────────────────────────────────────
+	{'B', 'C'}: {"G15", "", "8", false}, // G15 8-series coupé (typeKey BC21/BC41, 52 VINs)
+
+	// ── VIN[3]='C' — X5/X6/X7 disambiguation ────────────────────────────────
+	// G05 X5 on CV/CR is already correct (default 'C'→G05)
+	{'C', 'W'}: {"G07", "", "X7", false}, // G07 X7 (typeKey CW21/CW81, 228 VINs — biggest fix)
+	{'C', 'X'}: {"G07", "", "X7", false}, // G07 X7 xDrive (typeKey CX61, 8 VINs)
+	{'C', 'Y'}: {"G06", "", "X6", false}, // G06 X6 (typeKey CY61/CY81, 68 VINs)
+
+	// ── VIN[3]='F' — X1 F48 vs F10 5-series BMW SA disambiguation ───────────
+	// BMW SA (WMI X4X/WBAFW) uses 'F' typekey prefix for F10 5-series
+	{'F', 'P'}: {"F10", "F11", "5", false}, // F10/F11 BMW SA (typeKey FP15/FP31, 26 VINs)
+	{'F', 'R'}: {"F10", "F11", "5", false}, // F10/F11 BMW SA (typeKey FR11/FR73, 10 VINs)
+	{'F', 'U'}: {"F10", "F11", "5", false}, // F10/F11 BMW SA (typeKey FU71/FU91, 14 VINs)
+	{'F', 'V'}: {"F10", "F11", "5", false}, // F10/F11 BMW SA (typeKey FV15, 9 VINs)
+	{'F', 'W'}: {"F10", "F11", "5", false}, // F10/F11 BMW SA (typeKey FW11/FW31, 31 VINs)
+
+	// ── VIN[3]='G' — X2 F39 vs X6 G06 vs 8-series G16 disambiguation ────────
+	{'G', 'T'}: {"G06", "", "X6", false}, // G06 X6 (typeKey GT21/GT61/GT81, 108 VINs)
+	{'G', 'V'}: {"G16", "", "8", false},  // G16 8-series GC (typeKey GV41/GV43, 22 VINs)
+	{'G', 'W'}: {"G16", "", "8", false},  // G16 8-series GC xDrive (typeKey GW41, 20 VINs)
+
+	// ── VIN[3]='H' — Z4 G29 vs X1 F48 (precise, overrides gseriesIntroMY) ───
+	// Confirmed: WBAHF51090WX29248 (G29 Z4 M40i, typeKey HF51)
+	{'H', 'F'}: {"G29", "", "Z4", false}, // G29 Z4 (typeKey HF51, confirmed)
+	// Confirmed: WBAHS120205F03712 (F48 X1 sDrive18i, typeKey HS12)
+	{'H', 'S'}: {"F48", "", "X1", true}, // F48 X1 FWD (typeKey HS12/HS13, confirmed)
+	{'H', 'Y'}: {"F48", "", "X1", true}, // F48 X1 FWD (typeKey HY31/HY51, 8 VINs)
+
+	// ── VIN[3]='J' — G30/G31/G32/G05/F48 disambiguation ────────────────────
+	// G30 sedan: VIN[4] is drive/engine variant, NOT body style in G-gen.
+	// Using tourer="" so body codes B/D/E/F/K are ignored (they'd wrongly give G31).
+	{'J', 'B'}: {"G30", "", "5", false}, // G30 sedan (typeKey JB13/JB31/JB91, 77 VINs)
+	{'J', 'D'}: {"G30", "", "5", false}, // G30 sedan xDrive (typeKey JD11/JD51, 191 VINs)
+	{'J', 'E'}: {"G30", "", "5", false}, // G30 sedan (typeKey JE31/JE53, 84 VINs)
+	{'J', 'F'}: {"G30", "", "5", false}, // G30 sedan (typeKey JF31/JF51, 142 VINs)
+	{'J', 'K'}: {"G30", "", "5", false}, // G30 sedan (typeKey JK51, 4 VINs)
+	// G31 Touring (explicit)
+	{'J', 'L'}: {"G31", "", "5", false}, // G31 Touring (typeKey JL51, 4 VINs)
+	{'J', 'M'}: {"G31", "", "5", false}, // G31 Touring (typeKey JM31/JM51, 12 VINs)
+	{'J', 'P'}: {"G31", "", "5", false}, // G31 Touring (typeKey JP11/JP31/JP51, 26 VINs)
+	// G32 6-series Gran Turismo
+	{'J', 'V'}: {"G32", "", "6", false}, // G32 6GT (typeKey JV11/JV31, 14 VINs)
+	{'J', 'W'}: {"G32", "", "6", false}, // G32 6GT xDrive (typeKey JW11/JW31, 20 VINs)
+	{'J', 'X'}: {"G32", "", "6", false}, // G32 6GT (typeKey JX31, 12 VINs)
+	// G05 X5 (reuses J typekey family)
+	{'J', 'U'}: {"G05", "", "X5", false}, // G05 X5 (typeKey JU23/JU43/JU81, 38 VINs)
+	// F48 X1 (reuses J typekey family)
+	{'J', 'G'}: {"F48", "", "X1", true}, // F48 X1 FWD (typeKey JG12/JG51, 34 VINs)
+	{'J', 'H'}: {"F48", "", "X1", true}, // F48 X1 FWD (typeKey JH31, 10 VINs)
+	{'J', 'J'}: {"F48", "", "X1", true}, // F48 X1 FWD (typeKey JJ51, 8 VINs)
+
+	// ── VIN[3]='K' — F-series overload (gseriesIntroMY catches G11, but not all F variants) ─
+	// F02 7-series LWB
+	{'K', 'B'}: {"F02", "", "7", false}, // F02 750Li xDrive (typeKey KB21/KB81, 24 VINs)
+	{'K', 'C'}: {"F01", "", "7", false}, // F01 7-series (typeKey KC01/KC61, 21 VINs)
+	{'K', 'M'}: {"F01", "", "7", false}, // F01 7-series (typeKey KM21, 20 VINs)
+	// G01 X3 (TX/KJ prefix = Texas or European G01)
+	{'K', 'J'}: {"G01", "", "X3", false}, // G01 X3 (typeKey KJ31/KJ71 ≈ TX, 36 VINs)
+	// F10/F11 5-series reusing 'K' key
+	{'K', 'N'}: {"F10", "F11", "5", false}, // F10 5-series (typeKey KN93, 4 VINs)
+	{'K', 'P'}: {"F10", "F11", "5", false}, // F10 5-series (typeKey KP91, 4 VINs)
+	// F15 X5 post-G11-intro (vin[10]>='G' but still F15 for these VIN[4] values)
+	{'K', 'R'}: {"F15", "", "X5", false}, // F15 X5 (typeKey KR01/KR03, 20 VINs)
+	// F85/F86 X5M/X6M
+	{'K', 'T'}: {"F85", "", "X5", false}, // F85 X5M (typeKey KT61, 24 VINs)
+	{'K', 'U'}: {"F16", "", "X6", false}, // F16 X6 (typeKey KU03/KU21, 26 VINs)
+	{'K', 'V'}: {"F16", "", "X6", false}, // F16 X6 (typeKey KV21/KV61, 58 VINs)
+	{'K', 'W'}: {"F86", "", "X6", false}, // F86 X6M (typeKey KW61, 14 VINs)
+
+	// ── VIN[3]='L' — F15 X5 BMW SA (additional to default F13) ─────────────
+	{'L', 'S'}: {"F15", "", "X5", false}, // F15 X5 BMW SA (typeKey LS01/LS61, 19 VINs)
+
+	// ── VIN[3]='M' — F11 5-series Touring (override G02 default) ───────────
+	{'M', 'X'}: {"F11", "", "5", false}, // F11 Touring (typeKey MX51/MX71, 31 VINs)
+
+	// ── VIN[3]='S' — F07 5GT (override G29 Z4 default) ─────────────────────
+	{'S', 'N'}: {"F07", "", "5", false}, // F07 5-series GT (typeKey SN61, 4 VINs)
+	{'S', 'P'}: {"F07", "", "5", false}, // F07 5-series GT (typeKey SP21/SP61/SP81, 27 VINs)
+
+	// ── VIN[3]='T' — X3/X5/X6/X7/M car disambiguation ──────────────────────
+	// Default 'T'→G01 X3 is correct for TS31/TX71/TY53/TZ31 typekeys.
+	// But some 'T' typekeys encode different G-series models:
+	{'T', 'A'}: {"G05", "", "X5", false}, // G05 X5 (typeKey TA61, 14 VINs)
+	{'T', 'B'}: {"G07", "", "X7", false}, // G07 X7 (typeKey TB31, 4 VINs)
+	{'T', 'C'}: {"G06", "", "X6", false}, // G06 X6 (typeKey TC21/TC61, 8 VINs)
+	// NOTE: {'T','S'} removed — TS31/TX71 typekeys are G01 X3 M40i (Sport, not M-car),
+	// while TS01/TS03 are F97 X3M; cannot disambiguate without WMI (WBA vs WBS).
+
+	// ── VIN[3]='U' — F98 X4M (override G01 X3 default) ─────────────────────
+	{'U', 'J'}: {"F98", "", "X4", false}, // F98 X4M (typeKey UJ01/UJ03, 12 VINs)
+
+	// ── VIN[3]='V' — G02 X4 (override G82 M4 default) ──────────────────────
+	{'V', 'J'}: {"G02", "", "X4", false}, // G02 X4 (typeKey VJ11/VJ31/VJ51, 38 VINs)
+
+	// ── VIN[3]='X' — BMW SA 5-series (override F26 X4 default) ─────────────
+	// WMI X4X/WBAFX = BMW SA 5-series F10 using 'X' typekey prefix
+	{'X', 'A'}: {"F10", "F11", "5", false}, // F10/F11 BMW SA (typeKey XA11/XA31, 16 VINs)
+	{'X', 'G'}: {"F10", "F11", "5", false}, // F10/F11 BMW SA (typeKey XG75, confirmed F010)
+	{'X', 'H'}: {"F10", "F11", "5", false}, // F10/F11 BMW SA (typeKey XH15, confirmed F010)
+
+	// ── VIN[3]='Y' — F01/F02/F12/F13 overload (overrides F39 X2 default) ───
+	{'Y', 'B'}: {"F01", "", "7", false}, // F01 7-series (typeKey YB21/YB41, 16 VINs)
+	{'Y', 'C'}: {"F01", "", "7", false}, // F01 7-series (typeKey YC41, 21 VINs)
+	{'Y', 'E'}: {"F02", "", "7", false}, // F02 7-series LWB (typeKey YE41, 2 VINs)
+	{'Y', 'F'}: {"F02", "", "7", false}, // F02 7-series LWB (typeKey YF41, 8 VINs)
+	{'Y', 'M'}: {"F13", "", "6", false}, // F13 6-series coupé (typeKey YM11/YM61, 10 VINs)
+	{'Y', 'P'}: {"F12", "", "6", false}, // F12 6-series cabriolet (typeKey YP11/YP61, 8 VINs)
 }
 
 // bmwTypeKeys maps VIN[3] (BMW Baumuster / type key) to chassis + series.
@@ -255,6 +530,7 @@ var fseriesAltKeys = map[byte]bmwModelEntry{
 // VIN[3] here, so some models sharing the same first character can't be
 // distinguished without also inspecting VIN[4] and/or the WMI (VIN[0:3]).
 // The entry for each ambiguous key is the most-common European model.
+// Use bmwType2Keys above for cases where VIN[3]+VIN[4] is needed.
 var bmwTypeKeys = map[byte]bmwModelEntry{
 	// ── E-series ──────────────────────────────────────────────────────────────
 	'9': {"E90", "E91", "3", false}, // 3 Series E90 sedan / E91 Touring
@@ -265,15 +541,16 @@ var bmwTypeKeys = map[byte]bmwModelEntry{
 	'1': {"F20", "F21", "1", false}, // 1 Series F20/F21 (also G30/G08/F44 — see note)
 	// '2' is reused: F45/F46 FWD, F52/F98 China, G02/G20/G32 — default F45 FWD.
 	'2': {"F45", "F46", "2", true}, // 2 Active/Gran Tourer F45/F46 (FWD; also G02/G20 — see note)
-	// '3' confirmed = F33 4-series Convertible (typeKey 3V93, series F033).
-	// F30 3-series sedan uses '8', not '3'.
-	'3': {"F33", "", "4", false}, // 4 Series Convertible F33
+	// '3': dominant use is F30/F31/F34 3-series.  F33 4-series Cabriolet also uses
+	// '3' but is handled via bmwType2Keys['3','V'].  Rare VIN[4] values not in
+	// type2Keys fall back here (e.g. '3N'/'3P' → F32 coupé — close enough, same platform).
+	'3': {"F30", "F31", "3", false}, // 3 Series F30 sedan / F31 Touring (default)
 	// '4' confirmed = F36 4-series Gran Coupé (typeKey 4F11, series F036).
-	'4': {"F36", "", "4", false}, // 4 Series Gran Coupé F36
-	// '5' is reused across generations. In the G era (MY2019+) it is the
-	// 3 Series G20/G21 (most common; also G22 4er, G01 X3); before that the
-	// 5 Series F10/F11 (see gseriesIntroMY['5'] + fseriesAltKeys['5']).
-	'5': {"G20", "G21", "3", false}, // 3 Series G20 sedan / G21 Touring (pre-2019: F10/F11)
+	// F32 coupé and F33 cabriolet handled via bmwType2Keys entries.
+	'4': {"F36", "", "4", false}, // 4 Series Gran Coupé F36 (default)
+	// '5' is reused: F10/F11 (Germany), F07 5GT, G01/G20/G22 (various plants).
+	// Default to F10/F11 as the most common European case.
+	'5': {"F10", "F11", "5", false}, // 5 Series F10 sedan / F11 Touring (also G01/G20/G22)
 	'6': {"F12", "", "6", false},    // 6 Series F12 cabrio / F06 Gran Coupé
 	// '7' confirmed = G11/G12 7-series G-gen (typeKey 7C21/7C41, series G011).
 	// F01/F02 7-series F-gen use 'K' (not '7') per FA XML data.
@@ -294,13 +571,13 @@ var bmwTypeKeys = map[byte]bmwModelEntry{
 	// ── G-series ─────────────────────────────────────────────────────────────
 	// 'H' confirmed = G29 Z4 (typeKey HF51, series G029).
 	// F48 X1 also uses 'H'; disambiguated via gseriesIntroMY['H']='K'.
-	'H': {"G29", "", "Z4", false}, // Z4 G29 (before MY2019: X1 F48 FWD via fseriesAltKeys)
+	'H': {"G29", "", "Z4", false},   // Z4 G29 (before MY2019: X1 F48 FWD via fseriesAltKeys)
 	'J': {"G30", "G31", "5", false}, // 5 Series G30 sedan / G31 Touring (also F90 M5)
 	// 'K' confirmed = G11 for MY>=2016; F15/F16/F85 for earlier MY (via gseriesIntroMY).
 	'K': {"G11", "G12", "7", false}, // 7 Series G11/G12 (before MY2016: X5 F15 via fseriesAltKeys)
 	// 'L' confirmed = F13 6-series (typeKey LX51, series F013) and F15 X5 (typeKey LS01).
 	// G01 X3 uses 'T'/'U'/'5' in FA XML data — NOT 'L'.
-	'L': {"F13", "", "6", false}, // 6 Series Coupé F13 (also F15 X5 on same key)
+	'L': {"F13", "", "6", false},  // 6 Series Coupé F13 (also F15 X5 on same key)
 	'M': {"G02", "", "X4", false}, // X4 G02 (unverified — no G02 with 'M' in test set)
 	'N': {"G05", "", "X5", false}, // X5 G05 (unverified secondary key)
 	'P': {"G06", "", "X6", false}, // X6 G06 (unverified secondary key)
@@ -310,7 +587,7 @@ var bmwTypeKeys = map[byte]bmwModelEntry{
 	// G05 X5 also uses 'T' (typeKey TA61); differentiated by VIN[4]='A'→G05.
 	'T': {"G01", "", "X3", false}, // X3 G01 (also G05 X5 with VIN[4]='A')
 	// 'U' confirmed = G01 X3 (typeKey UZ31, series G001).
-	'U': {"G01", "", "X3", false}, // X3 G01 (alternative type key)
+	'U': {"G01", "", "X3", false},    // X3 G01 (alternative type key)
 	'V': {"G82", "G83", "M4", false}, // M4 G82 coupé / G83 cabrio (unverified)
 	// 'W' confirmed = F25 X3 (typeKey WX71/WX39/WZ59, series F025).
 	// G26 4GC is the G-series successor; disambiguated via gseriesIntroMY['W']='N'.
@@ -333,11 +610,11 @@ var bmwEngineCodes = map[byte]string{
 	'5': "20i", '6': "40i", '7': "35d", '8': "40d",
 	'9': "50i",
 	'A': "16d", 'B': "18d", 'C': "20d", 'D': "25d",
-	'E': "30i", 'F': "M",   'G': "M",   'H': "25e",
+	'E': "30i", 'F': "M", 'G': "M", 'H': "25e",
 	'J': "30e", 'K': "45e", 'L': "25i", 'N': "28i",
-	'P': "35i", 'R': "28d", 'S': "M",   'T': "30i",
+	'P': "35i", 'R': "28d", 'S': "M", 'T': "30i",
 	'U': "30i", 'V': "40i", 'W': "50e", 'X': "45e",
-	'Y': "M",   'Z': "60i",
+	'Y': "M", 'Z': "60i",
 }
 
 // decodeVIN returns the chassis code, human-readable model label, and — when
@@ -356,6 +633,7 @@ var bmwEngineCodes = map[byte]string{
 //	"WBA3B51090F123456" → chassis "F31", model "F31 320i"   (Touring)
 //	"WBAHE510X0H12345"  → chassis "G20", model "G20 318i xDrive"
 //	"WBAHE5100EH12345"  → chassis "G21", model "G21 318i"   (Touring)
+//
 // platformForChassis returns the ISTA platform for a chassis, preferring the
 // FA-learned map (real I-Step data) over the hand-curated chassisPlatform.
 func platformForChassis(chassis string) string {
@@ -370,9 +648,9 @@ func decodeVIN(vin string) (chassis, model, engine, body string, powerKW int) {
 		return
 	}
 
-	// FA-learned exact 4-char type-key lookup (VIN[3:7]) — authoritative for the
-	// ~650 type keys seen in real BMW FA backups (~99% chassis accuracy vs ~43%
-	// for the single-char heuristic). Falls through for unknown keys.
+	// Step 0: FA-learned exact 4-char type-key lookup (VIN[3:7]) — authoritative
+	// for the ~725 type keys seen in real BMW FA backups (~99% chassis accuracy).
+	// Falls through to the heuristic steps below for unknown keys.
 	if fa, ok := faTypeKeys[vin[3:7]]; ok {
 		chassis = fa.chassis
 		model = fa.chassis
@@ -400,11 +678,18 @@ func decodeVIN(vin string) (chassis, model, engine, body string, powerKW int) {
 	myChar := vin[9]
 	var entry bmwModelEntry
 	var ok bool
-	if introMY, reused := gseriesIntroMY[typeKey]; reused && myChar < introMY {
-		// VIN predates G-series introduction for this key → use F-series entry.
-		entry, ok = fseriesAltKeys[typeKey]
-	} else {
-		entry, ok = bmwTypeKeys[typeKey]
+
+	// Step 1: try the two-character lookup (VIN[3]+VIN[4]) first.
+	// This overrides the single-character table for heavily overloaded keys
+	// (e.g. '5' is shared by F10 5-series AND G20/G22/G01).
+	if entry, ok = bmwType2Keys[[2]byte{vin[3], vin[4]}]; !ok {
+		// Step 2: single-character lookup with generation disambiguation.
+		if introMY, reused := gseriesIntroMY[typeKey]; reused && myChar < introMY {
+			// VIN predates G-series introduction for this key → use F-series entry.
+			entry, ok = fseriesAltKeys[typeKey]
+		} else {
+			entry, ok = bmwTypeKeys[typeKey]
+		}
 	}
 	if !ok {
 		return
@@ -805,7 +1090,7 @@ func scanIfaces(skipName string) *Info {
 
 // doProbes sends the ZGW discovery probe on all available 169.254 interfaces.
 func doProbes(rx *net.UDPConn, skipName string, onPacket func([]byte, *net.UDPAddr)) {
-	bcastLimited  := &net.UDPAddr{IP: net.IPv4(255, 255, 255, 255), Port: zgwPort}
+	bcastLimited := &net.UDPAddr{IP: net.IPv4(255, 255, 255, 255), Port: zgwPort}
 	bcastDirected := &net.UDPAddr{IP: net.IPv4(169, 254, 255, 255), Port: zgwPort}
 	// 0x0011 = 17 = VIN length — ZGW ignores probes shorter than 6 bytes.
 	probe := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x11}
