@@ -40,19 +40,19 @@ type winUI struct {
 	statusBarItem *walk.StatusBarItem
 
 	// Connection tab
-	serverPresetCombo *walk.ComboBox
-	serverEdit        *walk.LineEdit
-	loginEdit         *walk.LineEdit
-	passwordEdit      *walk.LineEdit
-	hubCombo          *walk.ComboBox
-	hubInfos          []proto.HubInfo // last fetched from server; nil = not yet fetched
-	modeCombo         *walk.ComboBox
-	transportCombo    *walk.ComboBox
-	configCombo       *walk.ComboBox
-	configLabel       *walk.Label
+	serverPresetCombo     *walk.ComboBox
+	serverEdit            *walk.LineEdit
+	loginEdit             *walk.LineEdit
+	passwordEdit          *walk.LineEdit
+	hubCombo              *walk.ComboBox
+	hubInfos              []proto.HubInfo // last fetched from server; nil = not yet fetched
+	modeCombo             *walk.ComboBox
+	transportCombo        *walk.ComboBox
+	configCombo           *walk.ComboBox
+	configLabel           *walk.Label
 	connectBtn            *walk.PushButton
 	disconnectBtn         *walk.PushButton
-	statusDotView         *walk.ImageView  // colored circle indicator
+	statusDotView         *walk.ImageView // colored circle indicator
 	connectionStatusLabel *walk.Label
 	statsLabel            *walk.Label
 
@@ -77,8 +77,10 @@ type winUI struct {
 	// Npcap install button (connection tab)
 	npcapBtn *walk.PushButton
 
-	// BMW ZGW discovery result label (bottom of Connection tab)
-	bmwLabel *walk.Label
+	// BMW ZGW discovery result label (bottom of Connection tab). LinkLabel so
+	// the car IP and VIN are clickable — clicking copies them to the clipboard.
+	bmwLabel      *walk.LinkLabel
+	bmwIP, bmwVIN string
 
 	// Last disconnect time label (bottom of Connection tab)
 	disconnectLabel *walk.Label
@@ -90,7 +92,7 @@ type winUI struct {
 	testBtn        *walk.PushButton
 
 	// Advanced tab – behavior
-	minimizeToTrayCheck *walk.CheckBox
+	minimizeToTrayCheck   *walk.CheckBox
 	autoConnectCheck      *walk.CheckBox
 	startWithWindowsCheck *walk.CheckBox
 
@@ -179,10 +181,11 @@ func (ui *winUI) runApp() {
 		tunName = "supervpn"
 	}
 	go zgw.Run(context.Background(), tunName, func(info *zgw.Info) {
-		text := zgw.FormatBMW(info)
+		markup, ip, vin := bmwLinkMarkup(info)
 		ui.form.Synchronize(func() {
+			ui.bmwIP, ui.bmwVIN = ip, vin
 			if ui.bmwLabel != nil {
-				_ = ui.bmwLabel.SetText(text)
+				_ = ui.bmwLabel.SetText(markup)
 			}
 		})
 	})
@@ -315,8 +318,8 @@ func (ui *winUI) connectionPage() TabPage {
 									StretchFactor: 3,
 								},
 								PushButton{
-									Text:    "↻",
-									MaxSize: Size{Width: 30},
+									Text:      "↻",
+									MaxSize:   Size{Width: 30},
 									OnClicked: func() { go ui.fetchAndPopulateHubs() },
 								},
 							},
@@ -340,8 +343,8 @@ func (ui *winUI) connectionPage() TabPage {
 					Layout: HBox{Spacing: 4},
 					Children: []Widget{
 						ComboBox{
-							AssignTo:      &ui.configCombo,
-							StretchFactor: 3,
+							AssignTo:              &ui.configCombo,
+							StretchFactor:         3,
 							OnCurrentIndexChanged: func() { ui.onConfigSelected() },
 						},
 						PushButton{Text: "Browse…", MaxSize: Size{Width: 80}, OnClicked: ui.onBrowseConfig},
@@ -388,11 +391,12 @@ func (ui *winUI) connectionPage() TabPage {
 						},
 					},
 				},
-				Label{
-					AssignTo: &ui.bmwLabel,
-					Text:     "",
-					Font:     Font{PointSize: 9},
-					MinSize:  Size{Height: 32}, // room for 2 lines (IP/VIN + model detail)
+				LinkLabel{
+					AssignTo:        &ui.bmwLabel,
+					Text:            "",
+					Font:            Font{PointSize: 9},
+					MinSize:         Size{Height: 32}, // room for 2 lines (IP/VIN + model detail)
+					OnLinkActivated: ui.onBmwLinkActivated,
 				},
 				Label{
 					AssignTo: &ui.disconnectLabel,
@@ -1033,8 +1037,8 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 			TapName:     strings.TrimSpace(ui.bridgeTAPEdit.Text()),
 			SetupMethod: bridgeMethod,
 		},
-		StatusListen:   strings.TrimSpace(ui.statusListenEdit.Text()),
-		Timeout:        strings.TrimSpace(ui.timeoutEdit.Text()),
+		StatusListen:     strings.TrimSpace(ui.statusListenEdit.Text()),
+		Timeout:          strings.TrimSpace(ui.timeoutEdit.Text()),
 		MinimizeToTray:   ui.minimizeToTrayCheck.Checked(),
 		AutoConnect:      ui.autoConnectCheck.Checked(),
 		StartWithWindows: ui.startWithWindowsCheck.Checked(),
@@ -1194,6 +1198,57 @@ func (ui *winUI) updateNpcapButton() {
 
 // onInstallNpcap runs in a goroutine: disables the button, runs the installer,
 // then refreshes the button state to reflect the result.
+// bmwLinkMarkup renders the BMW discovery result as LinkLabel markup with the
+// car IP and VIN as clickable links (id "ip" / "vin"). Returns the markup plus
+// the raw IP and VIN so the click handler can copy them verbatim.
+func bmwLinkMarkup(info *zgw.Info) (markup, ip, vin string) {
+	if info == nil {
+		return "BMW: not found", "", ""
+	}
+	if info.VIN == "" {
+		return `BMW: <a id="ip">` + info.IP + `</a> (no ZGW response)`, info.IP, ""
+	}
+	m := `BMW: <a id="ip">` + info.IP + `</a>  <a id="vin">` + info.VIN + `</a>`
+	var d string
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		if d != "" {
+			d += "  "
+		}
+		d += s
+	}
+	add(info.Model)
+	add(info.Platform)
+	if info.PowerKW > 0 {
+		add(fmt.Sprintf("%dkW", info.PowerKW))
+	}
+	add(info.Body)
+	if d != "" {
+		m += "\n" + d
+	}
+	return m, info.IP, info.VIN
+}
+
+// onBmwLinkActivated copies the clicked car IP or VIN to the clipboard.
+func (ui *winUI) onBmwLinkActivated(link *walk.LinkLabelLink) {
+	var v string
+	switch link.Id() {
+	case "ip":
+		v = ui.bmwIP
+	case "vin":
+		v = ui.bmwVIN
+	}
+	if v == "" {
+		return
+	}
+	_ = walk.Clipboard().SetText(v)
+	if ui.statusBarItem != nil {
+		_ = ui.statusBarItem.SetText("Скопировано: " + v)
+	}
+}
+
 // maybeInstallNpcap prompts on first launch when Npcap is missing and, if the
 // user agrees, runs the embedded installer. Npcap is only needed for bridge
 // mode (direct/WinTun works without it), so it is offered, not forced.

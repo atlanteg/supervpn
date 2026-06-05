@@ -162,7 +162,7 @@ func ensureAdmin() {
 type dotKind int
 
 const (
-	dotGray   dotKind = iota
+	dotGray dotKind = iota
 	dotGreen
 	dotYellow
 	dotRed
@@ -201,8 +201,9 @@ type seemaApp struct {
 	form            *walk.MainWindow
 	dotView         *walk.ImageView
 	statusLabel     *walk.Label
-	modeLabel       *walk.Label // adapter mode line (direct / bridge + iface)
-	bmwLabel        *walk.Label // BMW ZGW discovery result
+	modeLabel       *walk.Label     // adapter mode line (direct / bridge + iface)
+	bmwLabel        *walk.LinkLabel // BMW ZGW result; IP/VIN clickable → clipboard
+	bmwIP, bmwVIN   string
 	disconnectLabel *walk.Label // last disconnect time
 
 	client        *vpnclient.Client
@@ -213,6 +214,52 @@ type seemaApp struct {
 
 	lastDisconnect time.Time
 	prevConnected  bool
+}
+
+// bmwLinkMarkup renders the BMW result as LinkLabel markup with the car IP and
+// VIN as clickable links (id "ip"/"vin"); returns the raw IP and VIN too.
+func bmwLinkMarkup(info *zgw.Info) (markup, ip, vin string) {
+	if info == nil {
+		return "BMW: not found", "", ""
+	}
+	if info.VIN == "" {
+		return `BMW: <a id="ip">` + info.IP + `</a> (no ZGW response)`, info.IP, ""
+	}
+	m := `BMW: <a id="ip">` + info.IP + `</a>  <a id="vin">` + info.VIN + `</a>`
+	var d string
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		if d != "" {
+			d += "  "
+		}
+		d += s
+	}
+	add(info.Model)
+	add(info.Platform)
+	if info.PowerKW > 0 {
+		add(fmt.Sprintf("%dkW", info.PowerKW))
+	}
+	add(info.Body)
+	if d != "" {
+		m += "\n" + d
+	}
+	return m, info.IP, info.VIN
+}
+
+// onBmwLinkActivated copies the clicked car IP or VIN to the clipboard.
+func (a *seemaApp) onBmwLinkActivated(link *walk.LinkLabelLink) {
+	var v string
+	switch link.Id() {
+	case "ip":
+		v = a.bmwIP
+	case "vin":
+		v = a.bmwVIN
+	}
+	if v != "" {
+		_ = walk.Clipboard().SetText(v)
+	}
 }
 
 func (a *seemaApp) setDot(kind dotKind) {
@@ -386,11 +433,12 @@ func run() {
 				Text:     "",
 				Font:     Font{PointSize: 9},
 			},
-			Label{
-				AssignTo: &a.bmwLabel,
-				Text:     "",
-				Font:     Font{PointSize: 9},
-				MinSize:  Size{Height: 32}, // room for 2 lines (IP/VIN + model detail)
+			LinkLabel{
+				AssignTo:        &a.bmwLabel,
+				Text:            "",
+				Font:            Font{PointSize: 9},
+				MinSize:         Size{Height: 32}, // room for 2 lines (IP/VIN + model detail)
+				OnLinkActivated: a.onBmwLinkActivated,
 			},
 			Label{
 				AssignTo: &a.disconnectLabel,
@@ -443,10 +491,11 @@ func run() {
 	// BMW ZGW discovery — runs independently of VPN connection state.
 	// Seema uses the default "supervpn" adapter name — exclude it from BMW detection.
 	go zgw.Run(context.Background(), "supervpn", func(info *zgw.Info) {
-		text := zgw.FormatBMW(info)
+		markup, ip, vin := bmwLinkMarkup(info)
 		a.form.Synchronize(func() {
+			a.bmwIP, a.bmwVIN = ip, vin
 			if a.bmwLabel != nil {
-				_ = a.bmwLabel.SetText(text)
+				_ = a.bmwLabel.SetText(markup)
 			}
 		})
 	})

@@ -27,7 +27,6 @@ import (
 	pkgtun "github.com/atlanteg/supervpn/pkg/tun"
 )
 
-
 type mainUI struct {
 	app fyne.App
 	win fyne.Window
@@ -56,7 +55,7 @@ type mainUI struct {
 	prevBytesRx   uint64
 	prevBytesTx   uint64
 	prevStatsTime time.Time
-	autoSaveDone  bool // auto-saved once per connect session
+	autoSaveDone  bool           // auto-saved once per connect session
 	npcapBtn      *widget.Button // Windows-only: Install Npcap
 
 	// refreshCh is a 1-slot channel used to coalesce rapid OnChange signals
@@ -94,8 +93,11 @@ type mainUI struct {
 	minimizeToTrayCheck *widget.Check
 	autoConnectCheck    *widget.Check
 
-	// BMW ZGW discovery result label
-	bmwLabel *widget.Label
+	// BMW ZGW discovery result. The car IP and VIN are clickable buttons that
+	// copy to the clipboard; bmwLabel holds the detail/status line.
+	bmwLabel            *widget.Label
+	bmwIPBtn, bmwVINBtn *widget.Button
+	bmwIP, bmwVIN       string
 
 	// Last disconnect time label
 	disconnectLabel *widget.Label
@@ -131,12 +133,7 @@ func (ui *mainUI) build() fyne.CanvasObject {
 		tunName = "supervpn"
 	}
 	go zgw.Run(context.Background(), tunName, func(info *zgw.Info) {
-		text := zgw.FormatBMW(info)
-		fyne.Do(func() {
-			if ui.bmwLabel != nil {
-				ui.bmwLabel.SetText(text)
-			}
-		})
+		fyne.Do(func() { ui.updateBMW(info) })
 	})
 
 	// Log tab ticker — updates from AppLog every 2 s regardless of VPN state.
@@ -343,6 +340,13 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 	}
 
 	ui.bmwLabel = widget.NewLabel("")
+	ui.bmwIPBtn = widget.NewButton("", func() { ui.copyBMW(ui.bmwIP) })
+	ui.bmwVINBtn = widget.NewButton("", func() { ui.copyBMW(ui.bmwVIN) })
+	ui.bmwIPBtn.Importance = widget.LowImportance
+	ui.bmwVINBtn.Importance = widget.LowImportance
+	ui.bmwIPBtn.Hide()
+	ui.bmwVINBtn.Hide()
+	rows = append(rows, container.NewHBox(widget.NewLabel("BMW:"), ui.bmwIPBtn, ui.bmwVINBtn))
 	rows = append(rows, ui.bmwLabel)
 
 	ui.disconnectLabel = widget.NewLabel("")
@@ -962,6 +966,58 @@ func (ui *mainUI) saveLastConfigPref(path string) {
 // updateNpcapBtn sets the Install Npcap button state based on whether Npcap
 // is already installed.  Safe to call from any goroutine — Fyne widgets are
 // thread-safe.  No-op when npcapBtn is nil (non-Windows build or not yet created).
+// updateBMW refreshes the BMW discovery row: the car IP and VIN as clickable
+// (copy-to-clipboard) buttons, plus a detail line.
+func (ui *mainUI) updateBMW(info *zgw.Info) {
+	if ui.bmwIPBtn == nil {
+		return
+	}
+	if info == nil {
+		ui.bmwIP, ui.bmwVIN = "", ""
+		ui.bmwIPBtn.Hide()
+		ui.bmwVINBtn.Hide()
+		ui.bmwLabel.SetText("not found")
+		return
+	}
+	ui.bmwIP = info.IP
+	ui.bmwIPBtn.SetText(info.IP)
+	ui.bmwIPBtn.Show()
+	if info.VIN == "" {
+		ui.bmwVIN = ""
+		ui.bmwVINBtn.Hide()
+		ui.bmwLabel.SetText("(no ZGW response)")
+		return
+	}
+	ui.bmwVIN = info.VIN
+	ui.bmwVINBtn.SetText(info.VIN)
+	ui.bmwVINBtn.Show()
+	var d string
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		if d != "" {
+			d += "  "
+		}
+		d += s
+	}
+	add(info.Model)
+	add(info.Platform)
+	if info.PowerKW > 0 {
+		add(fmt.Sprintf("%dkW", info.PowerKW))
+	}
+	add(info.Body)
+	ui.bmwLabel.SetText(d)
+}
+
+// copyBMW puts the clicked car IP or VIN on the clipboard.
+func (ui *mainUI) copyBMW(v string) {
+	if v == "" {
+		return
+	}
+	ui.app.Clipboard().SetContent(v)
+}
+
 func (ui *mainUI) updateNpcapBtn() {
 	if ui.npcapBtn == nil {
 		return
