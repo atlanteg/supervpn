@@ -491,46 +491,45 @@ jobs:
           else
             echo "No existing release $VER — proceeding with create"
           fi
-          publish() {
-            gh release create "$VER" "${FILES[@]}" \
-              --repo atlanteg/supervpn-releases \
-              --title "supervpn $VER" \
-              --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
-              --latest 2>&1 || true
-          }
-          # gh release create can print a false "workflow scope may be required"
-          # error and exit non-zero even when it actually succeeds, and the new
-          # release routinely takes longer than a few seconds to become visible
-          # via the API. Verify by polling the asset count for up to ~2 minutes;
-          # if it is still missing past the half-way mark, retry create once in
-          # case the first attempt genuinely failed.
-          publish
-          VERIFIED=false
-          RECREATED=false
-          for i in $(seq 1 24); do          # 24 × 5 s ≈ 120 s
+          WANT=${#FILES[@]}
+          # Create the release SHELL first (no assets) — fast and reliable. Then
+          # upload assets separately with retries. Uploading via `gh release
+          # create file1 file2 …` is fragile: if it hits the false "workflow
+          # scope" error partway, it leaves a half-populated release (seen:
+          # 9/13). gh release create may exit non-zero even on success, so `|| true`.
+          gh release create "$VER" \
+            --repo atlanteg/supervpn-releases \
+            --title "supervpn $VER" \
+            --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
+            --latest 2>&1 || true
+
+          # Wait for the release shell to exist (API is eventually consistent).
+          for i in $(seq 1 12); do
+            gh release view "$VER" --repo atlanteg/supervpn-releases >/dev/null 2>&1 && break
             sleep 5
-            # `|| echo ""` keeps the command substitution exit status 0 — under
-            # `bash -e` a failing `gh release view` (release not visible yet)
-            # would otherwise abort the whole step on the first poll.
+          done
+
+          # Upload assets with --clobber, retrying until the count matches WANT.
+          # Each pass re-uploads everything (clobber overwrites), so a partial
+          # upload is healed on the next pass.
+          CNT=0
+          for pass in $(seq 1 6); do
+            gh release upload "$VER" "${FILES[@]}" \
+              --repo atlanteg/supervpn-releases --clobber 2>&1 || true
+            sleep 5
             CNT=$(gh release view "$VER" --repo atlanteg/supervpn-releases \
                     --json assets --jq '.assets | length' 2>/dev/null || echo "")
             CNT=${CNT:-0}
-            if [ "$CNT" -gt 0 ]; then
-              echo "Release $VER published with $CNT assets (attempt $i)."
-              VERIFIED=true
+            echo "Upload pass $pass: $CNT/$WANT assets."
+            if [ "$CNT" -ge "$WANT" ]; then
               break
             fi
-            echo "Release not visible yet (attempt $i, assets=$CNT) — retrying..."
-            if [ "$i" -eq 12 ] && [ "$RECREATED" = "false" ]; then
-              echo "Still missing after ~60 s — retrying create once."
-              publish
-              RECREATED=true
-            fi
           done
-          if [ "$VERIFIED" = "false" ]; then
-            echo "::error::Release $VER was NOT created after retries (~2 min)."
+          if [ "$CNT" -lt "$WANT" ]; then
+            echo "::error::Release $VER incomplete: $CNT/$WANT assets after retries."
             exit 1
           fi
+          echo "Release $VER published with $CNT/$WANT assets."
 
       - name: Sync user guide to supervpn-releases repo
         # Auxiliary: the user guide is already a release asset (README-user.pdf).
