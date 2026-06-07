@@ -509,18 +509,27 @@ jobs:
             sleep 5
           done
 
-          # Upload assets with --clobber, retrying until the count matches WANT.
-          # Each pass re-uploads everything (clobber overwrites), so a partial
-          # upload is healed on the next pass.
+          # Upload only the MISSING assets each pass, one file at a time, without
+          # --clobber. --clobber deletes-then-reuploads and races the cross-repo
+          # API (HTTP 404 on the delete), which left large GUI/macOS assets stuck;
+          # uploading just the absent ones never deletes, so it is reliable.
           CNT=0
-          for pass in $(seq 1 6); do
-            gh release upload "$VER" "${FILES[@]}" \
-              --repo atlanteg/supervpn-releases --clobber 2>&1 || true
-            sleep 5
+          for pass in $(seq 1 8); do
+            PRESENT=$(gh release view "$VER" --repo atlanteg/supervpn-releases \
+                        --json assets --jq '.assets[].name' 2>/dev/null || echo "")
+            for f in "${FILES[@]}"; do
+              name=$(basename "$f")
+              if printf '%s\n' "$PRESENT" | grep -qxF "$name"; then
+                continue
+              fi
+              echo "  uploading $name (pass $pass)…"
+              gh release upload "$VER" "$f" --repo atlanteg/supervpn-releases 2>&1 || true
+            done
+            sleep 3
             CNT=$(gh release view "$VER" --repo atlanteg/supervpn-releases \
                     --json assets --jq '.assets | length' 2>/dev/null || echo "")
             CNT=${CNT:-0}
-            echo "Upload pass $pass: $CNT/$WANT assets."
+            echo "After pass $pass: $CNT/$WANT assets."
             if [ "$CNT" -ge "$WANT" ]; then
               break
             fi
