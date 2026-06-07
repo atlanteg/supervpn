@@ -167,12 +167,14 @@ func (ui *winUI) runApp() {
 	ui.initConfigSelect()
 	ui.updateNpcapButton()
 
-	// Disable Windows Firewall for the lifetime of the app.
-	// The Closing handler that restores it is registered in setupTray, where
-	// it can check whether the close is being cancelled (minimize-to-tray).
-	if err := winfirewall.Disable(); err != nil {
-		log.Printf("winfirewall disable: %v", err)
-	}
+	// Disable Windows Firewall for the lifetime of the app — in a goroutine so a
+	// slow/hung netsh can never block window creation (the window must always
+	// appear). The Closing handler that restores it is registered in setupTray.
+	go func() {
+		if err := winfirewall.Disable(); err != nil {
+			log.Printf("winfirewall disable: %v", err)
+		}
+	}()
 
 	// Start BMW ZGW discovery — runs independently of VPN connection state.
 	// Exclude our own VPN tunnel adapter so it is not mistaken for a BMW ENET cable.

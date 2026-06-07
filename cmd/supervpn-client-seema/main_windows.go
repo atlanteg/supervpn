@@ -481,9 +481,12 @@ func run() {
 	a.setDot(dotYellow)
 
 	// Disable Windows Firewall for the lifetime of the app; restore on exit.
-	if err := winfirewall.Disable(); err != nil {
-		log.Printf("winfirewall disable: %v", err)
-	}
+	// In a goroutine so a slow/hung netsh can never block the window appearing.
+	go func() {
+		if err := winfirewall.Disable(); err != nil {
+			log.Printf("winfirewall disable: %v", err)
+		}
+	}()
 	a.form.Closing().Attach(func(_ *bool, _ walk.CloseReason) {
 		_ = winfirewall.Enable()
 	})

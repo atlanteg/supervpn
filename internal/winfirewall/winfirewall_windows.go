@@ -9,8 +9,10 @@
 package winfirewall
 
 import (
+	"context"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // Disable turns off Windows Firewall for all profiles.
@@ -23,8 +25,14 @@ func Enable() error {
 	return run("on")
 }
 
+// run invokes netsh with a hard 10 s timeout. netsh can hang indefinitely when
+// the Windows Firewall service is stopped/disabled or in a bad state (seen on
+// Server 2008 R2); without the timeout that would block app startup (window
+// never shows) or shutdown (process won't exit / can't be killed).
 func run(state string) error {
-	cmd := exec.Command("netsh", "advfirewall", "set", "allprofiles", "state", state)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "netsh", "advfirewall", "set", "allprofiles", "state", state)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return cmd.Run()
 }
