@@ -19,6 +19,9 @@ func reexec(exe string) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
+	// Mark the successor so it skips the update re-check (no re-exec chains) and
+	// the GUI single-instance bounce — the old process is exiting.
+	cmd.Env = append(os.Environ(), relaunchEnv+"=1")
 	if err := cmd.Start(); err != nil {
 		log.Printf("update: restart: %v — restart manually", err)
 		return

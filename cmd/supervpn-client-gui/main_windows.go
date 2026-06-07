@@ -5,6 +5,7 @@ package main
 import (
 	"io"
 	"log"
+	"time"
 
 	"github.com/lxn/walk"
 
@@ -20,11 +21,21 @@ func main() {
 	// cleanly with no race (which previously left no window on slower hosts).
 	ensureAdmin()
 
+	relaunch := update.RelaunchedByUpdate()
+
 	// Single-instance guard (per-session): if another copy is already running
 	// IN THIS SESSION, bring its window to the foreground and exit. The mutex is
 	// session-local, so separate RDP sessions on a terminal server (e.g. Windows
 	// Server 2008 R2) each run their own instance instead of blocking each other.
-	if !acquireSingleInstance() {
+	//
+	// A self-update successor must NOT bounce: it takes over from the exiting old
+	// process. Wait briefly for the old mutex to free, then grab it; proceed
+	// regardless so the updated window always comes up.
+	if relaunch {
+		for i := 0; i < 20 && !tryAcquireSingleInstance(); i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+	} else if !acquireSingleInstance() {
 		return
 	}
 
@@ -49,7 +60,11 @@ func main() {
 	}()
 
 	update.CleanupOldFiles()
-	go update.CheckAndUpdate(version, update.AssetForClientGUI(), update.DefaultMirrors())
+	// Skip the update check when we are the freshly-relaunched successor — it
+	// just updated; re-checking risks a re-exec chain (e.g. CDN lag).
+	if !relaunch {
+		go update.CheckAndUpdate(version, update.AssetForClientGUI(), update.DefaultMirrors())
+	}
 
 	ui := &winUI{}
 	ui.runApp()

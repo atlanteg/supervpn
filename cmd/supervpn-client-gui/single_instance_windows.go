@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	_user32          = windows.NewLazySystemDLL("user32.dll")
-	_getWindowTextW  = _user32.NewProc("GetWindowTextW")
+	_user32         = windows.NewLazySystemDLL("user32.dll")
+	_getWindowTextW = _user32.NewProc("GetWindowTextW")
 )
 
 func getWindowText(hwnd win.HWND) string {
@@ -53,6 +53,26 @@ func acquireSingleInstance() bool {
 		// Access denied or unexpected error — let the process proceed.
 		return true
 	}
+}
+
+// tryAcquireSingleInstance attempts to grab the mutex without bouncing: returns
+// true if acquired, false if another instance still holds it. Used by the
+// self-update successor, which must take over (not defer to) the exiting old
+// process and never bring its dying window to the front.
+func tryAcquireSingleInstance() bool {
+	name, err := windows.UTF16PtrFromString(_singleInstanceMutexName)
+	if err != nil {
+		return true
+	}
+	h, err := windows.CreateMutex(nil, false, name)
+	if err == nil {
+		_singleInstanceMutexHandle = h
+		return true
+	}
+	if h != 0 {
+		_ = windows.CloseHandle(h)
+	}
+	return false
 }
 
 // bringExistingInstanceToFront enumerates all top-level windows and restores

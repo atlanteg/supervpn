@@ -26,6 +26,15 @@ const (
 	githubDLBase = "https://github.com/" + releasesRepo + "/releases/download/"
 )
 
+// relaunchEnv marks a process spawned by the self-updater's reexec.
+const relaunchEnv = "SUPERVPN_RELAUNCHED"
+
+// RelaunchedByUpdate reports whether this process was started by a self-update
+// restart. Such a process must NOT run CheckAndUpdate again (avoids re-exec
+// chains on CDN lag) and, in the GUI, must NOT defer to an existing instance —
+// it is the legitimate successor while the old process is still exiting.
+func RelaunchedByUpdate() bool { return os.Getenv(relaunchEnv) == "1" }
+
 // knownServerIPs lists all known supervpn server IPs that run the update
 // mirror on port 80 at /update. Used as fallback when GitHub is unreachable.
 var knownServerIPs = []string{

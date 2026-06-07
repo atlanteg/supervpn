@@ -83,6 +83,24 @@ func acquireSingleInstance() bool {
 	}
 }
 
+// tryAcquireSingleInstance grabs the mutex without bouncing (no bring-to-front).
+// Used by the self-update successor, which takes over from the exiting old one.
+func tryAcquireSingleInstance() bool {
+	name, err := windows.UTF16PtrFromString(_mutexName)
+	if err != nil {
+		return true
+	}
+	h, err := windows.CreateMutex(nil, false, name)
+	if err == nil {
+		_mutexHandle = h
+		return true
+	}
+	if h != 0 {
+		_ = windows.CloseHandle(h)
+	}
+	return false
+}
+
 func bringExistingToFront() {
 	cb := syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
 		if strings.HasPrefix(getWindowText(win.HWND(hwnd)), "seema") {
@@ -533,10 +551,20 @@ func run() {
 // ── main ─────────────────────────────────────────────────────────────────────
 
 func main() {
-	if !acquireSingleInstance() {
+	// Elevate FIRST so the throw-away non-elevated launcher never touches the
+	// mutex (avoids the elevation↔single-instance race).
+	ensureAdmin()
+
+	relaunch := update.RelaunchedByUpdate()
+	if relaunch {
+		// Self-update successor: take over from the exiting old process; wait
+		// briefly for its mutex to free, never bounce.
+		for i := 0; i < 20 && !tryAcquireSingleInstance(); i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+	} else if !acquireSingleInstance() {
 		return
 	}
-	ensureAdmin()
 
 	if lf := openLogFile(); lf != nil {
 		defer lf.Close()
@@ -550,7 +578,10 @@ func main() {
 	}()
 
 	update.CleanupOldFiles()
-	go update.CheckAndUpdate(version, update.AssetForSeema(), update.DefaultMirrors())
+	// Skip the update check on a self-update relaunch (avoids re-exec chains).
+	if !relaunch {
+		go update.CheckAndUpdate(version, update.AssetForSeema(), update.DefaultMirrors())
+	}
 
 	run()
 }
