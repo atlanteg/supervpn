@@ -205,11 +205,19 @@ func downloadWithFallback(c *http.Client, tag, asset, exe string, mirrors []stri
 
 // AssetForClient returns the release asset filename for the current client platform.
 func AssetForClient() string {
-	switch {
-	case runtime.GOOS == "windows":
+	switch runtime.GOOS {
+	case "windows":
 		return "supervpn-client-windows-amd64.exe"
-	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
-		return "supervpn-client-darwin-arm64"
+	case "linux":
+		if runtime.GOARCH == "arm64" {
+			return "supervpn-client-linux-arm64"
+		}
+		return "supervpn-client-linux-amd64"
+	case "darwin":
+		if runtime.GOARCH == "arm64" {
+			return "supervpn-client-darwin-arm64"
+		}
+		return "supervpn-client-darwin-amd64"
 	default:
 		return "supervpn-client-darwin-amd64"
 	}

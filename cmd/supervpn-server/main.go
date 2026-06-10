@@ -132,26 +132,26 @@ func main() {
 
 // Session holds the per-client state for an authenticated VPN session.
 type Session struct {
-	ID           uint32
-	HubID        uint16
-	Login        string
-	RemoteAddr   string    // IP:port of the client
-	Mode         string    // "udp" or "tls"
-	ConnectedAt  time.Time // when auth completed
-	sendRaw      func([]byte) error
-	sendRaw2     func([]byte) error // secondary send path; nil = no secondary
-	secondaryAddr string            // remote addr of secondary path (for logging)
-	closeConn    func()             // closes the underlying transport (no-op for UDP)
-	closeConn2   func()             // closes secondary TLS conn (nil = no secondary)
-	cipher       *crypto.Cipher
-	replay       crypto.ReplayWindow
-	pipe         *fec.Pipe
-	cancel          context.CancelFunc // cancels per-session goroutines (e.g. FEC flush)
-	lastSeenNano    atomic.Int64       // Unix nanoseconds; updated lock-free on every data/repair packet
-	framesRx     atomic.Int64 // frames received from this client and forwarded to hub
-	framesTx     atomic.Int64 // frames sent to this client from hub
-	hubSendCalls atomic.Int64 // times hub called client.Send (pre-FEC)
-	mu           sync.Mutex
+	ID            uint32
+	HubID         uint16
+	Login         string
+	RemoteAddr    string    // IP:port of the client
+	Mode          string    // "udp" or "tls"
+	ConnectedAt   time.Time // when auth completed
+	sendRaw       func([]byte) error
+	sendRaw2      func([]byte) error // secondary send path; nil = no secondary
+	secondaryAddr string             // remote addr of secondary path (for logging)
+	closeConn     func()             // closes the underlying transport (no-op for UDP)
+	closeConn2    func()             // closes secondary TLS conn (nil = no secondary)
+	cipher        *crypto.Cipher
+	replay        crypto.ReplayWindow
+	pipe          *fec.Pipe
+	cancel        context.CancelFunc // cancels per-session goroutines (e.g. FEC flush)
+	lastSeenNano  atomic.Int64       // Unix nanoseconds; updated lock-free on every data/repair packet
+	framesRx      atomic.Int64       // frames received from this client and forwarded to hub
+	framesTx      atomic.Int64       // frames sent to this client from hub
+	hubSendCalls  atomic.Int64       // times hub called client.Send (pre-FEC)
+	mu            sync.Mutex
 }
 
 const kickBlockDuration = 5 * time.Minute
@@ -167,20 +167,20 @@ type udpJob struct {
 
 // Server handles auth, data forwarding, and ping/pong over UDP and TLS/TCP.
 type Server struct {
-	cfg           *config.ServerConfig
-	manager       *hub.Manager
-	conn          *net.UDPConn
-	conn2         *net.UDPConn      // secondary UDP listener on port+1
-	sessions      map[uint32]*Session
-	kicked        map[string]time.Time        // login → blocked until; prevents immediate reconnect after kick
-	bannedIPs     map[string]struct{}         // IP (no port) → permanently banned until explicit unban
-	ipToLogins    map[string]map[string]bool  // IP → logins that were kicked from it (for cleanup on unban)
-	bannedLogins  map[string]map[uint16]bool  // login → set of hub IDs where banned
-	mu            sync.RWMutex
-	pktPool       sync.Pool  // reusable packet buffers to reduce GC pressure
-	sendPktPool   sync.Pool  // reusable output-packet buffers for sendFECData/sendFECRepair
-	udpJobs       chan udpJob // worker-pool channel for incoming UDP packets
-	startTime     time.Time
+	cfg            *config.ServerConfig
+	manager        *hub.Manager
+	conn           *net.UDPConn
+	conn2          *net.UDPConn // secondary UDP listener on port+1
+	sessions       map[uint32]*Session
+	kicked         map[string]time.Time       // login → blocked until; prevents immediate reconnect after kick
+	bannedIPs      map[string]struct{}        // IP (no port) → permanently banned until explicit unban
+	ipToLogins     map[string]map[string]bool // IP → logins that were kicked from it (for cleanup on unban)
+	bannedLogins   map[string]map[uint16]bool // login → set of hub IDs where banned
+	mu             sync.RWMutex
+	pktPool        sync.Pool   // reusable packet buffers to reduce GC pressure
+	sendPktPool    sync.Pool   // reusable output-packet buffers for sendFECData/sendFECRepair
+	udpJobs        chan udpJob // worker-pool channel for incoming UDP packets
+	startTime      time.Time
 	tcpListenerUp  bool             // true once the primary TLS/TCP listener successfully binds
 	tcp2ListenerUp bool             // true once the secondary TLS/TCP listener successfully binds
 	updateAssets   map[string]int64 // asset name → size in bytes (0 = missing)
@@ -1187,6 +1187,8 @@ var clientAssets = []string{
 	"supervpn-client-windows-amd64.exe",
 	"supervpn-client-darwin-arm64",
 	"supervpn-client-darwin-amd64",
+	"supervpn-client-linux-amd64",
+	"supervpn-client-linux-arm64",
 	// GUI — macOS (universal app bundle zip + per-arch binaries)
 	"supervpn-client-gui-darwin-arm64",
 	"supervpn-client-gui-darwin-amd64",
@@ -1371,19 +1373,19 @@ func (s *Server) handleUpdateListing(w http.ResponseWriter, r *http.Request) {
 // ── Status HTTP API ──────────────────────────────────────────────────────────
 
 type statusResponse struct {
-	Version        string            `json:"version"`
-	Uptime         string            `json:"uptime"`
-	UDPListen      string            `json:"udp_listen"`
-	UDPListen2     string            `json:"udp_listen_2,omitempty"`
-	TCPListen      string            `json:"tcp_listen,omitempty"`
-	TCPListen2     string            `json:"tcp_listen_2,omitempty"`
-	TCPListenerUp  bool              `json:"tcp_listener_up"`
-	TCP2ListenerUp bool              `json:"tcp2_listener_up,omitempty"`
-	Hubs           []hubStatus       `json:"hubs"`
-	Blocked        map[string]string `json:"blocked,omitempty"`    // login → blocked_until (RFC3339)
-	BannedIPs      []string              `json:"banned_ips,omitempty"`     // permanently banned IPs
-	BannedLogins   map[string][]uint16   `json:"banned_logins,omitempty"`  // login → hub IDs where banned
-	UpdateMirror   *mirrorStatus         `json:"update_mirror,omitempty"`
+	Version        string              `json:"version"`
+	Uptime         string              `json:"uptime"`
+	UDPListen      string              `json:"udp_listen"`
+	UDPListen2     string              `json:"udp_listen_2,omitempty"`
+	TCPListen      string              `json:"tcp_listen,omitempty"`
+	TCPListen2     string              `json:"tcp_listen_2,omitempty"`
+	TCPListenerUp  bool                `json:"tcp_listener_up"`
+	TCP2ListenerUp bool                `json:"tcp2_listener_up,omitempty"`
+	Hubs           []hubStatus         `json:"hubs"`
+	Blocked        map[string]string   `json:"blocked,omitempty"`       // login → blocked_until (RFC3339)
+	BannedIPs      []string            `json:"banned_ips,omitempty"`    // permanently banned IPs
+	BannedLogins   map[string][]uint16 `json:"banned_logins,omitempty"` // login → hub IDs where banned
+	UpdateMirror   *mirrorStatus       `json:"update_mirror,omitempty"`
 }
 
 type mirrorStatus struct {
@@ -1423,9 +1425,9 @@ type clientStatus struct {
 func (s *Server) runStatusServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
-	mux.HandleFunc("/api/hubs/", s.handleAPI)      // POST /api/hubs/{id}/kick/{session}; GET|POST /api/hubs/{id}/loginbans[/{login}]; POST /api/hubs/{id}/loginunbans/{login}
-	mux.HandleFunc("/api/bans", s.handleBans)      // GET /api/bans
-	mux.HandleFunc("/api/ips/", s.handleIPBan)     // POST /api/ips/{ip}/ban|unban
+	mux.HandleFunc("/api/hubs/", s.handleAPI)  // POST /api/hubs/{id}/kick/{session}; GET|POST /api/hubs/{id}/loginbans[/{login}]; POST /api/hubs/{id}/loginunbans/{login}
+	mux.HandleFunc("/api/bans", s.handleBans)  // GET /api/bans
+	mux.HandleFunc("/api/ips/", s.handleIPBan) // POST /api/ips/{ip}/ban|unban
 	// Serve /update/* on status_listen only when update_listen is not configured.
 	if s.cfg.UpdateListen == "" {
 		mux.HandleFunc("/update/version", s.handleUpdateVersion)
