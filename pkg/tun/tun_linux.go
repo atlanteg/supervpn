@@ -28,7 +28,33 @@ func openPlatform(name string) (*linuxTAP, error) {
 		unix.Close(fd)
 		return nil, fmt.Errorf("tun: TUNSETIFF: %w", errno)
 	}
+	// A freshly created TAP is administratively DOWN; writing frames to a DOWN
+	// interface fails with EIO. Bring it UP so downstream writes succeed.
+	if err := setIfaceUp(name); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("tun: bring %q up: %w", name, err)
+	}
 	return &linuxTAP{f: os.NewFile(uintptr(fd), name)}, nil
+}
+
+func setIfaceUp(name string) error {
+	sock, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(sock)
+
+	var ifr [unix.IFNAMSIZ + 64]byte
+	copy(ifr[:], name)
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(sock), unix.SIOCGIFFLAGS, uintptr(unsafe.Pointer(&ifr[0]))); errno != 0 {
+		return errno
+	}
+	flags := (*uint16)(unsafe.Pointer(&ifr[unix.IFNAMSIZ]))
+	*flags |= unix.IFF_UP | unix.IFF_RUNNING
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(sock), unix.SIOCSIFFLAGS, uintptr(unsafe.Pointer(&ifr[0]))); errno != 0 {
+		return errno
+	}
+	return nil
 }
 
 func (t *linuxTAP) ReadFrame(ctx context.Context) ([]byte, error) {
