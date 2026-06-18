@@ -486,6 +486,8 @@ jobs:
             fill "supervpn-client-windows-amd64.exe"
             fill "supervpn-client-darwin-amd64"
             fill "supervpn-client-darwin-arm64"
+            fill "supervpn-client-linux-amd64"
+            fill "supervpn-client-linux-arm64"
             fill "README-user.pdf"
           fi
 
