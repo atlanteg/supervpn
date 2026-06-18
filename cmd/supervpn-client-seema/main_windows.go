@@ -147,8 +147,17 @@ func writeCrashReport(r interface{}) {
 
 // ── elevation ─────────────────────────────────────────────────────────────────
 
+// elevationTriedEnv marks that this process tree has already attempted a runas
+// relaunch, so a child must not try again. Prevents an infinite silent relaunch
+// loop on hosts with UAC disabled (EnableLUA=0), where ShellExecute "runas"
+// neither prompts nor elevates and IsElevated() keeps returning false.
+const elevationTriedEnv = "SUPERVPN_ELEVATION_TRIED"
+
 func ensureAdmin() {
 	if windows.GetCurrentProcessToken().IsElevated() {
+		return
+	}
+	if os.Getenv(elevationTriedEnv) == "1" {
 		return
 	}
 	exe, err := os.Executable()
@@ -170,6 +179,7 @@ func ensureAdmin() {
 	if args != "" {
 		argsPtr, _ = syscall.UTF16PtrFromString(args)
 	}
+	_ = os.Setenv(elevationTriedEnv, "1")
 	if err := windows.ShellExecute(0, verbPtr, exePtr, argsPtr, nil, windows.SW_NORMAL); err == nil {
 		os.Exit(0)
 	}
