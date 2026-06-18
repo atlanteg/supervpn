@@ -11,7 +11,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net"
+	"time"
 )
 
 // LinkLocalNet is the 169.254.0.0/16 network we scan for.
@@ -40,6 +42,13 @@ func DetectLinkLocal() ([]Interface, error) {
 		// may still have a 169.254 APIPA address assigned by Windows,
 		// and bridging it would be a no-op or cause confusion.
 		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		// net.FlagUp on Windows only reflects the administrative state. An
+		// enabled Ethernet NIC with no cable still gets a 169.254 APIPA address
+		// but cannot transmit (pcap_sendpacket failed). Skip adapters that are
+		// not operationally up (media-connected). No-op on non-Windows.
+		if !ifaceHasLink(iface.Name) {
 			continue
 		}
 		addrs, err := iface.Addrs()
@@ -117,6 +126,8 @@ func (b *Bridge) RunUpstream(ctx context.Context) error {
 // RunDownstream injects frames received from the server into the local network interface.
 // frames channel is closed when the connection is lost.
 func (b *Bridge) RunDownstream(ctx context.Context, frames <-chan []byte) error {
+	var dropped uint64
+	var lastLog time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -126,7 +137,16 @@ func (b *Bridge) RunDownstream(ctx context.Context, frames <-chan []byte) error 
 				return io.EOF
 			}
 			if err := b.framer.WriteFrame(frame); err != nil {
-				return err
+				// A single inject failure (e.g. the bridged NIC momentarily has
+				// no link, or cannot send raw L2) must NOT tear down the whole
+				// VPN session — that turned one dropped frame into an endless
+				// reconnect loop. Drop the frame and keep going; the session
+				// still ends if the read/transport side dies. Rate-limit the log.
+				dropped++
+				if time.Since(lastLog) > 5*time.Second {
+					log.Printf("bridge: downstream inject failing, dropped %d frame(s): %v", dropped, err)
+					lastLog = time.Now()
+				}
 			}
 		}
 	}
