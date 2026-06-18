@@ -1192,7 +1192,7 @@ func (ui *winUI) updateNpcapButton() {
 			_ = ui.npcapBtn.SetText("Npcap ✓")
 			ui.npcapBtn.SetEnabled(false)
 		} else {
-			_ = ui.npcapBtn.SetText("Install Npcap")
+			_ = ui.npcapBtn.SetText("Install Npcap/WinPcap")
 			ui.npcapBtn.SetEnabled(true)
 		}
 	})
@@ -1258,9 +1258,9 @@ func (ui *winUI) maybeInstallNpcap() {
 	if pkgtun.NpcapInstalled() {
 		return
 	}
-	if walk.MsgBox(ui.form, "superVPN — Npcap",
-		"Npcap не установлен — он нужен для режима моста (bridge).\n\n"+
-			"Установить сейчас? (для direct-режима Npcap не требуется)",
+	if walk.MsgBox(ui.form, "superVPN — Npcap/WinPcap",
+		"Драйвер захвата (Npcap/WinPcap) не установлен — он нужен для режима моста (bridge).\n\n"+
+			"Установить сейчас? (для direct-режима он не требуется)",
 		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != win.IDYES {
 		return
 	}

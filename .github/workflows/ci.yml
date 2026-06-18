@@ -299,7 +299,12 @@ jobs:
           # Staged into staging386\ (NOT the embed dirs) so the amd64 builds above
           # keep their amd64 embeds; the 386 build step swaps these in just before
           # it compiles.
-          New-Item -ItemType Directory -Force -Path staging386\wintun, staging386\tap | Out-Null
+          New-Item -ItemType Directory -Force -Path staging386\wintun, staging386\tap, staging386\winpcap | Out-Null
+          try {
+            Invoke-WebRequest -Uri "https://www.winpcap.org/install/bin/WinPcap_4_1_3.exe" `
+              -OutFile staging386\winpcap\WinPcap_4_1_3.exe -UseBasicParsing
+            Write-Host "staged WinPcap 4.1.3: $((Get-Item 'staging386\winpcap\WinPcap_4_1_3.exe').Length) bytes"
+          } catch { Write-Warning "WinPcap download failed: $_" }
           try {
             $dll86 = "wintun-pkg\wintun\bin\x86\wintun.dll"
             if (Test-Path $dll86) {
@@ -399,6 +404,12 @@ jobs:
             Copy-Item staging386\tap\* pkg\tun\tap-driver\ -Force
             Write-Host "386 TAP driver embedded"
           } else { Write-Warning "no 386 TAP driver staged — falls back to disk install" }
+          # Embed the WinPcap installer alongside Npcap: on Win7 the runtime picks
+          # WinPcap (Npcap drivers >1.79 are rejected there post cross-cert expiry).
+          if (Test-Path staging386\winpcap\WinPcap_4_1_3.exe) {
+            Copy-Item staging386\winpcap\WinPcap_4_1_3.exe pkg\tun\npcap-installer\ -Force
+            Write-Host "386 WinPcap installer embedded"
+          } else { Write-Warning "no WinPcap installer staged — 386 build falls back to Npcap" }
 
           $icon = "cmd\supervpn-client-gui\icon.ico"
           if (-not (Test-Path $icon)) { $icon = "cmd\supervpn-client-gui\icon.png" }

@@ -67,10 +67,10 @@ func openNpcapFramer(nicName string) (*npcapFramer, error) {
 
 	var procOpen, procNext, procSend, procClose *windows.Proc
 	for name, pp := range map[string]**windows.Proc{
-		"pcap_open_live": &procOpen,
-		"pcap_next_ex":   &procNext,
+		"pcap_open_live":  &procOpen,
+		"pcap_next_ex":    &procNext,
 		"pcap_sendpacket": &procSend,
-		"pcap_close":     &procClose,
+		"pcap_close":      &procClose,
 	} {
 		p, err := dll.FindProc(name)
 		if err != nil {
@@ -231,16 +231,45 @@ func NpcapInstalled() bool {
 	return false
 }
 
-// InstallNpcap runs the embedded Npcap installer silently (/S).
-// If no installer is embedded (local dev build), opens the download page in the
-// browser and returns an error so the caller knows to wait for manual install.
+// windows7OrOlder reports whether the host is Windows 7 / Vista or older
+// (NT 6.1 or below). Such hosts reject Npcap drivers newer than 1.79 after the
+// June-2024 cross-cert expiry, so WinPcap is the reliable capture provider.
+func windows7OrOlder() bool {
+	v := windows.RtlGetVersion()
+	if v.MajorVersion < 6 {
+		return true
+	}
+	return v.MajorVersion == 6 && v.MinorVersion <= 1
+}
+
+// InstallNpcap runs an embedded packet-capture installer. When both Npcap and
+// WinPcap installers are embedded (the 32-bit Win7 build), WinPcap is chosen on
+// Windows 7/Vista and Npcap on newer Windows. If no installer is embedded
+// (local dev build), opens the download page in the browser and returns an
+// error so the caller knows to wait for a manual install.
 func InstallNpcap() error {
 	entries, _ := npcapInstallerFS.ReadDir("npcap-installer")
+	var npcapExe, winpcapExe string
 	for _, e := range entries {
-		if strings.HasSuffix(strings.ToLower(e.Name()), ".exe") {
-			return runEmbeddedNpcapInstaller(e.Name())
+		n := strings.ToLower(e.Name())
+		if !strings.HasSuffix(n, ".exe") {
+			continue
+		}
+		if strings.Contains(n, "winpcap") {
+			winpcapExe = e.Name()
+		} else {
+			npcapExe = e.Name()
 		}
 	}
+
+	if winpcapExe != "" && (npcapExe == "" || windows7OrOlder()) {
+		log.Printf("npcap: installing WinPcap (Win7-compatible capture driver)")
+		return runEmbeddedNpcapInstaller(winpcapExe)
+	}
+	if npcapExe != "" {
+		return runEmbeddedNpcapInstaller(npcapExe)
+	}
+
 	log.Printf("npcap: no embedded installer — opening download page")
 	exec.Command("rundll32", "url.dll,FileProtocolHandler",
 		"https://npcap.com/dist/npcap-1.88.exe").Start()
