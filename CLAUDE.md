@@ -78,6 +78,7 @@ GitHub (atlanteg/supervpn-releases) → 81.27.241.25 → 185.108.16.16 → 212.4
    - `supervpn-client-darwin-amd64` / `supervpn-client-darwin-arm64`
    - `supervpn-client-linux-amd64` / `supervpn-client-linux-arm64`
    - `supervpn-client-gui-windows-amd64.exe`
+   - `supervpn-client-gui-windows-386.exe` (32-bit Win7)
    - `supervpn-client-gui-darwin-amd64` / `supervpn-client-gui-darwin-arm64`
    - `supervpn-seema-windows-amd64.exe`
    - `supervpn-dist.zip`, `README-user.pdf`

@@ -1192,8 +1192,9 @@ var clientAssets = []string{
 	// GUI — macOS (universal app bundle zip + per-arch binaries)
 	"supervpn-client-gui-darwin-arm64",
 	"supervpn-client-gui-darwin-amd64",
-	// GUI — Windows: Win32/Walk main client
+	// GUI — Windows: Win32/Walk main client (amd64 + 32-bit Win7)
 	"supervpn-client-gui-windows-amd64.exe",
+	"supervpn-client-gui-windows-386.exe",
 	// GUI — Windows: seema pre-configured minimal client
 	"supervpn-seema-windows-amd64.exe",
 }

@@ -227,6 +227,8 @@ func AssetForClient() string {
 // On Windows this is the default (Walk/GDI) variant; on macOS it is the arch-specific binary.
 func AssetForClientGUI() string {
 	switch {
+	case runtime.GOOS == "windows" && runtime.GOARCH == "386":
+		return "supervpn-client-gui-windows-386.exe"
 	case runtime.GOOS == "windows":
 		return "supervpn-client-gui-windows-amd64.exe"
 	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":

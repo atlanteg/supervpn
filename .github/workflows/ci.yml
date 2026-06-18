@@ -295,6 +295,39 @@ jobs:
             Write-Warning "TAP driver not embedded — binary falls back to disk install"
           }
 
+          # ── 386 (x86 / i386) variants for the 32-bit Win7 GUI build ───────────
+          # Staged into staging386\ (NOT the embed dirs) so the amd64 builds above
+          # keep their amd64 embeds; the 386 build step swaps these in just before
+          # it compiles.
+          New-Item -ItemType Directory -Force -Path staging386\wintun, staging386\tap | Out-Null
+          try {
+            $dll86 = "wintun-pkg\wintun\bin\x86\wintun.dll"
+            if (Test-Path $dll86) {
+              Copy-Item $dll86 -Destination staging386\wintun\wintun.dll -Force
+              Write-Host "staged 386 wintun.dll: $((Get-Item $dll86).Length) bytes"
+            } else { Write-Warning "386 wintun.dll not found at $dll86" }
+          } catch { Write-Warning "386 wintun stage failed: $_" }
+          try {
+            if (Test-Path tap-extract) {
+              $sys86 = Get-ChildItem -Recurse tap-extract -Filter tap0901.sys |
+                Where-Object { $_.FullName -match '\\i386\\' -or $_.FullName -match '\\x86\\' } |
+                Select-Object -First 1
+              if ($sys86) {
+                $dir = $sys86.Directory.FullName
+                Copy-Item (Join-Path $dir 'tap0901.sys')  staging386\tap\ -Force
+                Copy-Item (Join-Path $dir 'tap0901.cat')  staging386\tap\ -Force -EA SilentlyContinue
+                Copy-Item (Join-Path $dir 'OemVista.inf') staging386\tap\ -Force -EA SilentlyContinue
+                if (-not (Test-Path staging386\tap\OemVista.inf)) {
+                  Get-ChildItem -Recurse tap-extract -Filter OemVista.inf | Select-Object -First 1 | Copy-Item -Destination staging386\tap\ -Force
+                }
+                if (-not (Test-Path staging386\tap\tap0901.cat)) {
+                  Get-ChildItem -Recurse tap-extract -Filter tap0901.cat | Where-Object { $_.FullName -match 'i386|x86' } | Select-Object -First 1 | Copy-Item -Destination staging386\tap\ -Force
+                }
+                Write-Host "staged 386 TAP driver:"; Get-ChildItem staging386\tap\
+              } else { Write-Warning "386 tap0901.sys (i386) not found in installer" }
+            }
+          } catch { Write-Warning "386 TAP stage failed: $_" }
+
           # ── Npcap installer ───────────────────────────────────────────────────
           try {
             Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.88.exe" `
@@ -351,6 +384,36 @@ jobs:
             -ldflags="-s -w -H windowsgui -X main.version=$VER" `
             -o dist/supervpn-seema-windows-amd64.exe `
             ./cmd/supervpn-client-seema
+
+      - name: Build GUI client Walk (windows/386 — 32-bit Win7)
+        shell: pwsh
+        run: |
+          # Swap the embedded driver binaries to their 32-bit variants so the 386
+          # exe ships a matching wintun.dll / tap0901.sys. The amd64 builds above
+          # already consumed the amd64 embeds, so overwriting now is safe.
+          if (Test-Path staging386\wintun\wintun.dll) {
+            Copy-Item staging386\wintun\wintun.dll pkg\tun\wintun-dll\wintun.dll -Force
+            Write-Host "386 wintun.dll embedded"
+          } else { Write-Warning "no 386 wintun.dll staged — exe will need a system wintun.dll" }
+          if (Test-Path staging386\tap\tap0901.sys) {
+            Copy-Item staging386\tap\* pkg\tun\tap-driver\ -Force
+            Write-Host "386 TAP driver embedded"
+          } else { Write-Warning "no 386 TAP driver staged — falls back to disk install" }
+
+          $icon = "cmd\supervpn-client-gui\icon.ico"
+          if (-not (Test-Path $icon)) { $icon = "cmd\supervpn-client-gui\icon.png" }
+          Push-Location cmd\supervpn-client-gui
+          go-winres simply --icon $icon.Replace("cmd\supervpn-client-gui\", "") --manifest gui --arch 386
+          Pop-Location
+
+          $env:CGO_ENABLED = "0"
+          $env:GOOS = "windows"
+          $env:GOARCH = "386"
+          $VER = "${{ needs.setup.outputs.ver }}"
+          go build `
+            -ldflags="-s -w -H windowsgui -X main.version=$VER" `
+            -o dist/supervpn-client-gui-windows-386.exe `
+            ./cmd/supervpn-client-gui
 
       - uses: actions/upload-artifact@v4
         with:
@@ -436,6 +499,7 @@ jobs:
           if [ "${{ needs.build-gui-windows.result }}" = "skipped" ]; then
             echo "Filling Windows GUI artifacts from $PREV..."
             fill "supervpn-client-gui-windows-amd64.exe"
+            fill "supervpn-client-gui-windows-386.exe"
             fill "supervpn-seema-windows-amd64.exe"
           fi
 
@@ -483,6 +547,7 @@ jobs:
             dist/supervpn-client-linux-amd64 \
             dist/supervpn-client-linux-arm64 \
             dist/supervpn-client-gui-windows-amd64.exe \
+            dist/supervpn-client-gui-windows-386.exe \
             dist/supervpn-client-gui-darwin-amd64 \
             dist/supervpn-client-gui-darwin-arm64 \
             dist/superVPN-macos.zip \

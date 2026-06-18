@@ -17,6 +17,7 @@ Latest release: [atlanteg/supervpn-releases](https://github.com/atlanteg/supervp
 | `supervpn-client-linux-amd64` | Linux amd64 | CLI client |
 | `supervpn-client-linux-arm64` | Linux arm64 | CLI client |
 | `supervpn-client-gui-windows-amd64.exe` | Windows amd64 | GUI client (Win32/GDI — works on RDP, Hyper-V, no GPU needed) |
+| `supervpn-client-gui-windows-386.exe` | Windows 32-bit (Win7) | GUI client for 32-bit Windows 7 (Win32/GDI) |
 | `superVPN-macos.zip` | macOS universal | GUI client (.app bundle, arm64 + amd64) |
 
 ---
