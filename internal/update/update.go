@@ -282,12 +282,28 @@ func CleanupOldFiles() {
 	if err != nil {
 		return
 	}
-	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(exe), "*.old"))
-	for _, f := range matches {
-		if err := os.Remove(f); err == nil {
-			log.Printf("update: removed stale backup %s", filepath.Base(f))
+	dir := filepath.Dir(exe)
+	// The .old file is the previous binary, which Windows keeps locked until the
+	// pre-update process fully exits — and that can lag this (successor) process's
+	// startup by a moment, so a single Remove attempt at launch often failed and
+	// left the .old orphaned next to the exe. Retry in the background.
+	go func() {
+		for i := 0; i < 30; i++ {
+			matches, _ := filepath.Glob(filepath.Join(dir, "*.old"))
+			remaining := 0
+			for _, f := range matches {
+				if err := os.Remove(f); err != nil {
+					remaining++
+				} else {
+					log.Printf("update: removed stale backup %s", filepath.Base(f))
+				}
+			}
+			if remaining == 0 {
+				return
+			}
+			time.Sleep(time.Second)
 		}
-	}
+	}()
 }
 
 func parseVersion(v string) (int, error) {
