@@ -387,8 +387,8 @@ func (ui *winUI) connectionPage() TabPage {
 						},
 						PushButton{
 							AssignTo:  &ui.npcapBtn,
-							Text:      "Install Npcap",
-							MaxSize:   Size{Width: 100},
+							Text:      "Install Npcap/WinPcap",
+							MaxSize:   Size{Width: 190},
 							OnClicked: func() { go ui.onInstallNpcap() },
 						},
 					},
@@ -1183,18 +1183,21 @@ func (ui *winUI) formatTestResults(results []ServerTestResult) string {
 
 // ── Npcap install ─────────────────────────────────────────────────────────────
 
-// updateNpcapButton sets the Install Npcap button state based on whether Npcap
-// is already installed.  Safe to call from any thread.
+// updateNpcapButton reflects whether a capture driver is detected, but keeps the
+// button ENABLED either way: detection can false-positive on uninstall remnants
+// (a lingering SOFTWARE\WinPcap key or npf service with no wpcap.dll), so the
+// user must always be able to (re)install. Safe to call from any thread.
 func (ui *winUI) updateNpcapButton() {
 	installed := pkgtun.NpcapInstalled()
 	ui.form.Synchronize(func() {
 		if installed {
-			_ = ui.npcapBtn.SetText("Npcap ✓")
-			ui.npcapBtn.SetEnabled(false)
+			_ = ui.npcapBtn.SetText("Npcap ✓ — переустановить")
+			_ = ui.npcapBtn.SetToolTipText("Драйвер определён как установленный. Если захват не работает, нажмите для переустановки Npcap/WinPcap.")
 		} else {
 			_ = ui.npcapBtn.SetText("Install Npcap/WinPcap")
-			ui.npcapBtn.SetEnabled(true)
+			_ = ui.npcapBtn.SetToolTipText("Установить драйвер захвата (нужен для bridge-режима).")
 		}
+		ui.npcapBtn.SetEnabled(true)
 	})
 }
 
