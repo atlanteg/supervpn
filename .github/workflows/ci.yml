@@ -440,6 +440,10 @@ jobs:
       !failure() && !cancelled()
     needs: [setup, build-server-cli, build-gui-macos, build-gui-windows]
     runs-on: ubuntu-latest
+    # contents:write lets the built-in GITHUB_TOKEN publish the release to this
+    # CI repo (atlantegsrb/supervpn) itself. The atlanteg/* repos use GH_PAT.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -541,105 +545,78 @@ jobs:
           (cd dist && zip -r ../supervpn-linux.zip   linux/)
           (cd dist && zip -r ../supervpn-windows.zip windows/)
 
-      - name: Publish release to supervpn-releases
+      - name: Publish release to all three repos
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          CI_TOKEN: ${{ github.token }}
         run: |
           VER="${{ needs.setup.outputs.ver }}"
-          # Build file list dynamically — skip any asset that wasn't produced
-          # (build job skipped and previous release didn't have it either).
+          COMMIT=$(git rev-parse --short HEAD)
+          # Build file list dynamically — skip any asset that wasn't produced.
           FILES=()
           for f in \
-            supervpn-dist.zip \
-            supervpn-linux.zip \
-            supervpn-windows.zip \
-            dist/supervpn-server \
-            dist/supervpn-client-windows-amd64.exe \
-            dist/supervpn-client-darwin-amd64 \
-            dist/supervpn-client-darwin-arm64 \
-            dist/supervpn-client-linux-amd64 \
-            dist/supervpn-client-linux-arm64 \
-            dist/supervpn-client-gui-windows-amd64.exe \
-            dist/supervpn-client-gui-windows-386.exe \
-            dist/supervpn-client-gui-darwin-amd64 \
-            dist/supervpn-client-gui-darwin-arm64 \
-            dist/superVPN-macos.zip \
-            dist/supervpn-seema-windows-amd64.exe \
-            dist/README-user.pdf; do
-            if [ -f "$f" ]; then
-              FILES+=("$f")
-            else
-              echo "::warning::Asset not found, skipping: $f"
-            fi
+            supervpn-dist.zip supervpn-linux.zip supervpn-windows.zip \
+            dist/supervpn-server dist/supervpn-client-windows-amd64.exe \
+            dist/supervpn-client-darwin-amd64 dist/supervpn-client-darwin-arm64 \
+            dist/supervpn-client-linux-amd64 dist/supervpn-client-linux-arm64 \
+            dist/supervpn-client-gui-windows-amd64.exe dist/supervpn-client-gui-windows-386.exe \
+            dist/supervpn-client-gui-darwin-amd64 dist/supervpn-client-gui-darwin-arm64 \
+            dist/superVPN-macos.zip dist/supervpn-seema-windows-amd64.exe dist/README-user.pdf; do
+            if [ -f "$f" ]; then FILES+=("$f"); else echo "::warning::Asset not found, skipping: $f"; fi
           done
-          # Delete stale release + git tag if they exist (idempotent).
-          # Check API exit code separately to avoid capturing error JSON in RELEASE_ID.
-          if gh api repos/atlanteg/supervpn-releases/releases/tags/"$VER" \
-              > /tmp/existing_release.json 2>/dev/null; then
-            RELEASE_ID=$(jq -r '.id // empty' /tmp/existing_release.json)
-            echo "Deleting existing release $VER (id=$RELEASE_ID)..."
-            gh api --method DELETE repos/atlanteg/supervpn-releases/releases/"$RELEASE_ID" \
-              && echo "  release deleted" || echo "::warning::Release delete failed (id=$RELEASE_ID)"
-            gh api --method DELETE repos/atlanteg/supervpn-releases/git/refs/tags/"$VER" \
-              && echo "  tag deleted" || echo "::warning::Tag delete failed ($VER)"
-          else
-            echo "No existing release $VER — proceeding with create"
-          fi
           WANT=${#FILES[@]}
-          COMMIT=$(git rev-parse --short HEAD)
-          # Create the release SHELL (no assets) via the REST API, NOT
-          # `gh release create`: the CLI's tag-creation path intermittently fails
-          # with a spurious `! Failed to create release, "workflow" scope may be
-          # required` (the cross-repo PAT lacks workflow scope). The releases
-          # endpoint auto-creates the tag without that guard. Retry until the
-          # shell is visible; uploads happen separately below.
-          RELEASE_OK=""
-          for i in $(seq 1 6); do
-            if gh release view "$VER" --repo atlanteg/supervpn-releases >/dev/null 2>&1; then
-              RELEASE_OK=1; break
-            fi
-            gh api --method POST repos/atlanteg/supervpn-releases/releases \
-              -f tag_name="$VER" \
-              -f name="supervpn $VER" \
-              -f body="Build $VER — commit $COMMIT" \
-              -f make_latest=true >/dev/null 2>&1 || true
-            sleep 5
-          done
-          if [ -z "$RELEASE_OK" ]; then
-            echo "::error::Failed to create release shell $VER after retries."
-            exit 1
-          fi
 
-          # Upload only the MISSING assets each pass, one file at a time, without
-          # --clobber. --clobber deletes-then-reuploads and races the cross-repo
-          # API (HTTP 404 on the delete), which left large GUI/macOS assets stuck;
-          # uploading just the absent ones never deletes, so it is reliable.
-          CNT=0
-          for pass in $(seq 1 8); do
-            PRESENT=$(gh release view "$VER" --repo atlanteg/supervpn-releases \
-                        --json assets --jq '.assets[].name' 2>/dev/null || echo "")
-            for f in "${FILES[@]}"; do
-              name=$(basename "$f")
-              if printf '%s\n' "$PRESENT" | grep -qxF "$name"; then
-                continue
-              fi
-              echo "  uploading $name (pass $pass)…"
-              gh release upload "$VER" "$f" --repo atlanteg/supervpn-releases 2>&1 || true
-            done
-            sleep 3
-            CNT=$(gh release view "$VER" --repo atlanteg/supervpn-releases \
-                    --json assets --jq '.assets | length' 2>/dev/null || echo "")
-            CNT=${CNT:-0}
-            echo "After pass $pass: $CNT/$WANT assets."
-            if [ "$CNT" -ge "$WANT" ]; then
-              break
+          # publish_to <repo> <token>: (re)create the release shell via the REST
+          # API — gh release create's tag path intermittently fails with a spurious
+          # "workflow scope" error — then upload only-missing assets with retries.
+          # Returns non-zero if it could not reach WANT assets.
+          publish_to() {
+            local repo="$1" tok="$2"
+            echo "──────── $repo  ($VER → $WANT assets) ────────"
+            if GH_TOKEN="$tok" gh api "repos/$repo/releases/tags/$VER" >/tmp/er.json 2>/dev/null; then
+              local id; id=$(jq -r '.id // empty' /tmp/er.json)
+              GH_TOKEN="$tok" gh api --method DELETE "repos/$repo/releases/$id" >/dev/null 2>&1 || true
+              GH_TOKEN="$tok" gh api --method DELETE "repos/$repo/git/refs/tags/$VER" >/dev/null 2>&1 || true
             fi
-          done
-          if [ "$CNT" -lt "$WANT" ]; then
-            echo "::error::Release $VER incomplete: $CNT/$WANT assets after retries."
+            local ok=""
+            for i in $(seq 1 6); do
+              if GH_TOKEN="$tok" gh release view "$VER" --repo "$repo" >/dev/null 2>&1; then ok=1; break; fi
+              GH_TOKEN="$tok" gh api --method POST "repos/$repo/releases" \
+                -f tag_name="$VER" -f name="supervpn $VER" \
+                -f body="Build $VER — commit $COMMIT" -f make_latest=true >/dev/null 2>&1 || true
+              sleep 5
+            done
+            if [ -z "$ok" ]; then echo "::warning::$repo: could not create release shell"; return 1; fi
+            local cnt=0
+            for pass in $(seq 1 8); do
+              local present; present=$(GH_TOKEN="$tok" gh release view "$VER" --repo "$repo" --json assets --jq '.assets[].name' 2>/dev/null || echo "")
+              for f in "${FILES[@]}"; do
+                local name; name=$(basename "$f")
+                if printf '%s\n' "$present" | grep -qxF "$name"; then continue; fi
+                GH_TOKEN="$tok" gh release upload "$VER" "$f" --repo "$repo" >/dev/null 2>&1 || true
+              done
+              sleep 3
+              cnt=$(GH_TOKEN="$tok" gh release view "$VER" --repo "$repo" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
+              cnt=${cnt:-0}
+              echo "  $repo pass $pass: $cnt/$WANT"
+              [ "$cnt" -ge "$WANT" ] && break
+            done
+            [ "$cnt" -ge "$WANT" ]
+          }
+
+          # atlanteg/supervpn-releases is REQUIRED — the update system reads from it.
+          # atlantegsrb/supervpn publishes reliably via the built-in GITHUB_TOKEN.
+          # The two atlanteg/* targets use GH_PAT; the source mirror is best-effort
+          # so a token permission gap there can't block the critical release.
+          REQ_OK=1
+          publish_to "atlanteg/supervpn-releases" "$GH_PAT"   || REQ_OK=0
+          publish_to "atlantegsrb/supervpn"        "$CI_TOKEN" || echo "::warning::atlantegsrb/supervpn release incomplete"
+          publish_to "atlanteg/supervpn"           "$GH_PAT"   || echo "::warning::atlanteg/supervpn release incomplete (GH_PAT may lack write access there)"
+          if [ "$REQ_OK" -ne 1 ]; then
+            echo "::error::Critical release to atlanteg/supervpn-releases incomplete."
             exit 1
           fi
-          echo "Release $VER published with $CNT/$WANT assets."
+          echo "All publishes attempted."
 
       - name: Sync user guide to supervpn-releases repo
         # Auxiliary: the user guide is already a release asset (README-user.pdf).
