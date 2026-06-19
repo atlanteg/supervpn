@@ -45,6 +45,15 @@ combines the bridge + client roles.
 - `gh` CLI is authenticated as `atlanteg`; it **cannot** edit `atlantegsrb/supervpn`
   (404). For API calls against the CI repo, use the PAT embedded in the
   `new-origin` remote URL: `GH_TOKEN=$(git remote get-url new-origin | sed -E 's#.*:([^@]+)@.*#\1#') gh api ...`.
+- The embedded `new-origin` PAT **lacks the `workflow` scope**, so it cannot push
+  commits that touch `.github/workflows/` (GitHub rejects them) and it also made
+  `gh release create`'s tag path fail with a spurious "workflow scope may be
+  required". Both gh-keyring tokens (`atlanteg`, `atlantegsrb`) DO have `workflow`.
+  To push a workflow-file change to the CI repo:
+  `git push "https://atlantegsrb:$(gh auth token --user atlantegsrb)@github.com/atlantegsrb/supervpn.git" main`.
+  The release job now creates the release via REST API (`gh api POST .../releases`),
+  which sidesteps the scope error; normal (non-workflow) commits still push fine
+  via the plain `new-origin` remote.
 - CI builds at `atlantegsrb/supervpn` → artifacts copied **manually** to `atlanteg/supervpn-releases`.
 - Release tags live in `atlanteg/supervpn-releases` (public). The update system reads from there.
 
