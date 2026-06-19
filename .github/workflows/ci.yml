@@ -586,22 +586,29 @@ jobs:
             echo "No existing release $VER — proceeding with create"
           fi
           WANT=${#FILES[@]}
-          # Create the release SHELL first (no assets) — fast and reliable. Then
-          # upload assets separately with retries. Uploading via `gh release
-          # create file1 file2 …` is fragile: if it hits the false "workflow
-          # scope" error partway, it leaves a half-populated release (seen:
-          # 9/13). gh release create may exit non-zero even on success, so `|| true`.
-          gh release create "$VER" \
-            --repo atlanteg/supervpn-releases \
-            --title "supervpn $VER" \
-            --notes "Build $VER — commit $(git rev-parse --short HEAD)" \
-            --latest 2>&1 || true
-
-          # Wait for the release shell to exist (API is eventually consistent).
-          for i in $(seq 1 12); do
-            gh release view "$VER" --repo atlanteg/supervpn-releases >/dev/null 2>&1 && break
+          COMMIT=$(git rev-parse --short HEAD)
+          # Create the release SHELL (no assets) via the REST API, NOT
+          # `gh release create`: the CLI's tag-creation path intermittently fails
+          # with a spurious `! Failed to create release, "workflow" scope may be
+          # required` (the cross-repo PAT lacks workflow scope). The releases
+          # endpoint auto-creates the tag without that guard. Retry until the
+          # shell is visible; uploads happen separately below.
+          RELEASE_OK=""
+          for i in $(seq 1 6); do
+            if gh release view "$VER" --repo atlanteg/supervpn-releases >/dev/null 2>&1; then
+              RELEASE_OK=1; break
+            fi
+            gh api --method POST repos/atlanteg/supervpn-releases/releases \
+              -f tag_name="$VER" \
+              -f name="supervpn $VER" \
+              -f body="Build $VER — commit $COMMIT" \
+              -f make_latest=true >/dev/null 2>&1 || true
             sleep 5
           done
+          if [ -z "$RELEASE_OK" ]; then
+            echo "::error::Failed to create release shell $VER after retries."
+            exit 1
+          fi
 
           # Upload only the MISSING assets each pass, one file at a time, without
           # --clobber. --clobber deletes-then-reuploads and races the cross-repo
