@@ -619,8 +619,10 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 	}
 
 	var storedHash string
+	hubUserCount := 0
 	for _, hcfg := range s.cfg.Hubs {
 		if hcfg.ID == hello.HubID {
+			hubUserCount = len(hcfg.Users)
 			for _, u := range hcfg.Users {
 				if u.Login == hello.Login {
 					storedHash = u.PasswordHash
@@ -629,15 +631,23 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		}
 	}
 	if storedHash == "" {
+		// Diagnostic only — the wire reply stays generic so it does not reveal
+		// which field was wrong. "hub has N user(s)" makes a stale/not-reloaded
+		// config obvious (N=0 → the user block was never loaded).
+		log.Printf("auth: login %q not found in hub %d config (hub has %d user(s)) — verify the user exists in THIS hub and that the server was restarted after editing the config",
+			hello.Login, hello.HubID, hubUserCount)
 		replyError("invalid credentials")
 		return 0
 	}
 
 	wireHex := hex.EncodeToString(hello.PWHash[:])
 	if err := auth.CheckPassword(wireHex, storedHash); err != nil {
+		log.Printf("auth: bad password for login %q in hub %d — the value the client sent does not match the stored hash (check the password typed in the client)",
+			hello.Login, hello.HubID)
 		replyError("invalid credentials")
 		return 0
 	}
+	log.Printf("auth: login %q authenticated in hub %d", hello.Login, hello.HubID)
 
 	s.mu.RLock()
 	blockedUntil, isBlocked := s.kicked[hello.Login]
