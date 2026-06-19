@@ -2,12 +2,14 @@ package update
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -74,9 +76,10 @@ func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 
 	log.Printf("update: checking for updates (current: %s) ...", currentVersion)
 
-	hc := &http.Client{Timeout: 10 * time.Second}
+	ghc := &http.Client{Timeout: 10 * time.Second}
+	mc := mirrorHTTPClient(15 * time.Second)
 
-	tag, tagSrc, err := resolveLatestTag(hc, mirrors)
+	tag, tagSrc, err := resolveLatestTag(ghc, mc, mirrors)
 	if err != nil {
 		log.Printf("update: check failed (current: %s, all sources unreachable): %v", currentVersion, err)
 		return
@@ -104,8 +107,9 @@ func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 		return
 	}
 
-	dlc := &http.Client{Timeout: 3 * time.Minute}
-	if err := downloadWithFallback(dlc, tag, asset, exe, mirrors); err != nil {
+	ghDL := &http.Client{Timeout: 3 * time.Minute}
+	mcDL := mirrorHTTPClient(2 * time.Minute)
+	if err := downloadWithFallback(ghDL, mcDL, tag, asset, exe, mirrors); err != nil {
 		if errors.Is(err, errBinaryUnchanged) {
 			log.Printf("update: %s asset is identical to current binary — already up to date (tag reused)", tag)
 			return
@@ -118,11 +122,29 @@ func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 	reexec(exe)
 }
 
+// mirrorHTTPClient builds an HTTP client for the hardcoded peer-server mirror IPs.
+// It (a) accepts self-signed / IP-only TLS certs — a mirror may redirect http→https
+// and an IP host has no cert SAN, which otherwise fails verification — and (b) uses
+// short dial/handshake timeouts so an unreachable mirror fails in seconds and the
+// next one is tried. This adds no exposure beyond the design's existing plaintext
+// HTTP mirror fetch: the IP list is hardcoded and the transport was already
+// untrusted (binaries are not signed). knownServerIPs is the trust anchor.
+func mirrorHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			DialContext:         (&net.Dialer{Timeout: 8 * time.Second}).DialContext,
+			TLSHandshakeTimeout: 8 * time.Second,
+		},
+	}
+}
+
 // resolveLatestTag tries GitHub API first, then each mirror's /version endpoint.
 // Returns the tag, the source label, and any error if all sources failed.
-func resolveLatestTag(c *http.Client, mirrors []string) (tag, src string, err error) {
+func resolveLatestTag(ghc, mc *http.Client, mirrors []string) (tag, src string, err error) {
 	// GitHub API
-	if t, e := latestTagFromGitHub(c); e == nil {
+	if t, e := latestTagFromGitHub(ghc); e == nil {
 		return t, "github", nil
 	} else {
 		err = e
@@ -131,7 +153,7 @@ func resolveLatestTag(c *http.Client, mirrors []string) (tag, src string, err er
 	// Mirrors: GET {base}/version → plain text "bN"
 	for _, m := range mirrors {
 		url := strings.TrimRight(m, "/") + "/version"
-		if t, e := latestTagFromURL(c, url); e == nil {
+		if t, e := latestTagFromURL(mc, url); e == nil {
 			return t, m, nil
 		}
 	}
@@ -182,19 +204,23 @@ func latestTagFromURL(c *http.Client, url string) (string, error) {
 
 // downloadWithFallback tries GitHub (tag-specific URL) first, then each mirror.
 // Returns errBinaryUnchanged if every source served an identical binary.
-func downloadWithFallback(c *http.Client, tag, asset, exe string, mirrors []string) error {
-	urls := []string{githubDLBase + tag + "/" + asset}
+func downloadWithFallback(ghc, mc *http.Client, tag, asset, exe string, mirrors []string) error {
+	type source struct {
+		url    string
+		client *http.Client
+	}
+	sources := []source{{githubDLBase + tag + "/" + asset, ghc}}
 	for _, m := range mirrors {
-		urls = append(urls, strings.TrimRight(m, "/")+"/"+asset)
+		sources = append(sources, source{strings.TrimRight(m, "/") + "/" + asset, mc})
 	}
 
 	var lastErr error
-	for _, url := range urls {
-		if err := downloadAndReplace(c, url, exe); err != nil {
+	for _, s := range sources {
+		if err := downloadAndReplace(s.client, s.url, exe); err != nil {
 			if errors.Is(err, errBinaryUnchanged) {
 				return errBinaryUnchanged
 			}
-			log.Printf("update: download from %s failed: %v", url, err)
+			log.Printf("update: download from %s failed: %v", s.url, err)
 			lastErr = err
 			continue
 		}
