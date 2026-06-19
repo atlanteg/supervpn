@@ -29,14 +29,22 @@ combines the bridge + client roles.
 
 ## GitHub accounts & remotes
 
-| Account | Visibility | Purpose | git remote |
+| Repo | Visibility | Purpose | git remote |
 |---|---|---|---|
-| `atlanteg` | Public | Source code mirror + **release hosting** | `origin` |
-| `atlantegsrb` | Private | CI/CD (GitHub Actions build & release) | `new-origin` |
+| `atlanteg/supervpn` | **Private** | Source code mirror | `origin` |
+| `atlantegsrb/supervpn` | **Private** | CI/CD (GitHub Actions build & release) | `new-origin` |
+| `atlanteg/supervpn-releases` | **Public** | Release hosting (only public repo) | — |
 
+- Both source repos are **private**; only `atlanteg/supervpn-releases` is public.
+  Since `atlantegsrb/supervpn` is now private, its GitHub Actions minutes are
+  capped (2000/mo on free tier) — macOS (×10) + Windows (×2) runners burn these
+  fast, so avoid unnecessary CI runs.
 - Source of truth: push every commit to **both** remotes.
-  - `git push origin main` — always (public mirror, no CI)
+  - `git push origin main` — always (private mirror, no CI)
   - `git push new-origin main` — triggers CI; **ask user before pushing here**
+- `gh` CLI is authenticated as `atlanteg`; it **cannot** edit `atlantegsrb/supervpn`
+  (404). For API calls against the CI repo, use the PAT embedded in the
+  `new-origin` remote URL: `GH_TOKEN=$(git remote get-url new-origin | sed -E 's#.*:([^@]+)@.*#\1#') gh api ...`.
 - CI builds at `atlantegsrb/supervpn` → artifacts copied **manually** to `atlanteg/supervpn-releases`.
 - Release tags live in `atlanteg/supervpn-releases` (public). The update system reads from there.
 
