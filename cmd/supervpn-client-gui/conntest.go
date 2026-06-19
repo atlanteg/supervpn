@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"strconv"
 	"time"
@@ -12,11 +11,12 @@ import (
 )
 
 // Port layout probed by the test tab:
-//   UDP  — primary UDP (the server's configured port)
-//   UDP2 — secondary UDP (port+1, dual-path)
-//   TCP  — plain TLS/TCP fallback (:8443)
-//   TCP2 — secondary TLS/TCP (:8444, dual-path)
-//   Reality — stealth VLESS+Reality front (:443)
+//
+//	UDP  — primary UDP (the server's configured port)
+//	UDP2 — secondary UDP (port+1, dual-path)
+//	TCP  — plain TLS/TCP fallback (:8443)
+//	TCP2 — secondary TLS/TCP (:8444, dual-path)
+//	Reality — stealth VLESS+Reality front (:443)
 const (
 	realityPort = "443"
 	tlsPort     = "8443"
@@ -92,20 +92,20 @@ func testProbeUDP(addr string) string {
 
 	tr, err := transport.DialUDP(addr)
 	if err != nil {
-		return fmt.Sprintf("✗ dial: %v", err)
+		return "✗"
 	}
 	defer tr.Close()
 
 	if err := tr.Send(transport.Frame{Data: listHubsFrame()}); err != nil {
-		return fmt.Sprintf("✗ send: %v", err)
+		return "✗"
 	}
 	if _, err := tr.Recv(ctx); err != nil {
 		if ctx.Err() != nil {
-			return "✗ timeout"
+			return "✗"
 		}
-		return fmt.Sprintf("✗ %v", err)
+		return "✗"
 	}
-	return "✓ OK"
+	return "✓"
 }
 
 // testTCPConnect dials a TCP port with a 3 s timeout (reachability only).
@@ -113,12 +113,12 @@ func testTCPConnect(addr string) string {
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			return "✗ timeout"
+			return "✗"
 		}
-		return fmt.Sprintf("✗ %v", err)
+		return "✗"
 	}
 	conn.Close()
-	return "✓ OK"
+	return "✓"
 }
 
 // testReality performs a full Reality handshake (using a public key from the
@@ -131,7 +131,7 @@ func testReality(addr string) string {
 
 	pub := transport.RandomPoolPublicKey()
 	if pub == "" {
-		return "✗ no pool"
+		return "✗"
 	}
 	tr, err := transport.DialReality(ctx, transport.RealityClientParams{
 		Addr:        addr,
@@ -140,20 +140,20 @@ func testReality(addr string) string {
 		Fingerprint: "chrome",
 	})
 	if err != nil {
-		return fmt.Sprintf("✗ %v", err)
+		return "✗"
 	}
 	defer tr.Close()
 
 	if err := tr.Send(transport.Frame{Data: listHubsFrame()}); err != nil {
-		return fmt.Sprintf("✗ send: %v", err)
+		return "✗"
 	}
 	if _, err := tr.Recv(ctx); err != nil {
 		if ctx.Err() != nil {
-			return "✗ no reply" // handshake ok but not a supervpn Reality server (fallback)
+			return "✗" // handshake ok but no reply — likely a Reality prober-fallback, not our server
 		}
-		return fmt.Sprintf("✗ %v", err)
+		return "✗"
 	}
-	return "✓ OK"
+	return "✓"
 }
 
 func listHubsFrame() []byte {
