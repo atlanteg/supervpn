@@ -58,8 +58,12 @@ combines the bridge + client roles.
   The release job now creates the release via REST API (`gh api POST .../releases`),
   which sidesteps the scope error; normal (non-workflow) commits still push fine
   via the plain `new-origin` remote.
-- CI builds at `atlantegsrb/supervpn` → artifacts copied **manually** to `atlanteg/supervpn-releases`.
-- Release tags live in `atlanteg/supervpn-releases` (public). The update system reads from there.
+- CI builds at `atlantegsrb/supervpn`, then the release job **auto-publishes the
+  same tag + 16 assets to all three repos**: `atlanteg/supervpn-releases`
+  (required — the update system reads from it), `atlantegsrb/supervpn` (via the
+  built-in `GITHUB_TOKEN`), and `atlanteg/supervpn`. See the `publish_to()` helper
+  in `.github/workflows/ci.yml`. No more manual copying.
+- The update system reads releases from `atlanteg/supervpn-releases`.
 
 ### Known server IPs (update mirrors)
 
