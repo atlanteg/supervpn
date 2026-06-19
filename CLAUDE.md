@@ -31,17 +31,21 @@ combines the bridge + client roles.
 
 | Repo | Visibility | Purpose | git remote |
 |---|---|---|---|
-| `atlanteg/supervpn` | **Private** | Source code mirror | `origin` |
-| `atlantegsrb/supervpn` | **Private** | CI/CD (GitHub Actions build & release) | `new-origin` |
-| `atlanteg/supervpn-releases` | **Public** | Release hosting (only public repo) | — |
+| `atlanteg/supervpn` | **Public** | Source code mirror | `origin` |
+| `atlantegsrb/supervpn` | **Public** | CI/CD (GitHub Actions build & release) | `new-origin` |
+| `atlanteg/supervpn-releases` | **Public** | Release hosting | — |
 
-- Both source repos are **private**; only `atlanteg/supervpn-releases` is public.
-  Since `atlantegsrb/supervpn` is now private, its GitHub Actions minutes are
-  capped (2000/mo on free tier) — macOS (×10) + Windows (×2) runners burn these
-  fast, so avoid unnecessary CI runs.
+- All three repos are **public** (made permanently public 2026-06-19 at the
+  user's request — no more flipping to private). Because `atlantegsrb/supervpn`
+  is public, its GitHub Actions minutes are **unlimited/free**, so the old
+  "make CI repo public temporarily for free minutes, then revert" dance is gone.
+- Before going public a scan confirmed no tokens/private keys/FA archives are
+  committed (`.gitignore` covers `reality-private-pool.toml`, `*.key`, `.env`,
+  `tests_FA_all/`). Keep it that way — never commit those.
 - Source of truth: push every commit to **both** remotes.
-  - `git push origin main` — always (private mirror, no CI)
+  - `git push origin main` — always (mirror, no CI)
   - `git push new-origin main` — triggers CI; **ask user before pushing here**
+    (no longer a cost concern — just to avoid unnecessary CI runs/releases)
 - `gh` CLI is authenticated as `atlanteg`; it **cannot** edit `atlantegsrb/supervpn`
   (404). For API calls against the CI repo, use the PAT embedded in the
   `new-origin` remote URL: `GH_TOKEN=$(git remote get-url new-origin | sed -E 's#.*:([^@]+)@.*#\1#') gh api ...`.
