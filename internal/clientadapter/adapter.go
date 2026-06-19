@@ -3,6 +3,7 @@ package clientadapter
 import (
 	"fmt"
 	"log"
+	"net"
 	"strings"
 
 	"github.com/atlanteg/supervpn/internal/bridge"
@@ -63,7 +64,21 @@ func OpenAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, stri
 				return ri, rf, "bridge (" + iface.Name + ")", nil
 			}
 		}
-		log.Printf("bridge: configured nic %q not found among 169.254 interfaces — falling back to direct mode", bc.NIC)
+		// The user explicitly picked this NIC, but it is not among the
+		// auto-detected 169.254 interfaces (no APIPA address yet, or it was
+		// filtered for some reason). Honour the choice as long as the adapter
+		// exists, instead of silently dropping to direct mode — which looked
+		// like "Connect does nothing" to the user.
+		if ni, err := net.InterfaceByName(bc.NIC); err == nil {
+			log.Printf("bridge: NIC %q has no 169.254 address but was explicitly selected — bridging it anyway", bc.NIC)
+			chosen := bridge.Interface{Name: ni.Name, HWAddr: ni.HardwareAddr}
+			ri, rf, err := openBridgeAdapter(cfg, chosen)
+			if err != nil {
+				return ri, rf, "", err
+			}
+			return ri, rf, "bridge (" + ni.Name + ")", nil
+		}
+		log.Printf("bridge: configured nic %q not found on this system — falling back to direct mode", bc.NIC)
 		iface, framer, err := openDirectAdapter(cfg)
 		if err != nil {
 			return iface, framer, "", err
