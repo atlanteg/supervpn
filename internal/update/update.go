@@ -239,7 +239,22 @@ func downloadWithFallback(ghc, mc *http.Client, tag, asset, exe string, mirrors 
 		}
 		return nil
 	}
-	return lastErr
+
+	// Last resort: the DPI-resistant in-band Reality channel. When GitHub and the
+	// plain-HTTP mirrors are blocked (aggressive DPI), pull the binary from a peer
+	// over the same transport that already defeats blocking.
+	log.Printf("update: HTTP sources exhausted — trying in-band Reality from peers ...")
+	if err := downloadInBand(asset, exe); err != nil {
+		if errors.Is(err, errBinaryUnchanged) {
+			return errBinaryUnchanged
+		}
+		log.Printf("update: in-band Reality fallback failed: %v", err)
+		if lastErr == nil {
+			lastErr = err
+		}
+		return lastErr
+	}
+	return nil
 }
 
 // AssetForClient returns the release asset filename for the current client platform.
@@ -365,13 +380,21 @@ func downloadAndReplace(c *http.Client, url, exe string) error {
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
 	}
+	return applyBinary(resp.Body, exe)
+}
 
+// applyBinary atomically replaces exe with the bytes from r (via exe.new). It
+// returns errBinaryUnchanged when the new binary is byte-identical to the
+// running one (so the caller doesn't re-exec into the same binary forever), and
+// on Windows renames the current exe to .old first. Shared by the HTTP and the
+// in-band Reality download paths.
+func applyBinary(r io.Reader, exe string) error {
 	tmp := exe + ".new"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", tmp, err)
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	if _, err := io.Copy(f, r); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return fmt.Errorf("write: %w", err)
@@ -381,16 +404,11 @@ func downloadAndReplace(c *http.Client, url, exe string) error {
 		return err
 	}
 
-	// Guard against infinite update loops: if the downloaded binary is
-	// identical to the one currently on disk (version tag was reused), skip
-	// the replacement entirely so the caller doesn't re-exec into the same
-	// binary forever.
 	if same, _ := filesBytesEqual(exe, tmp); same {
 		os.Remove(tmp)
 		return errBinaryUnchanged
 	}
 
-	// On Windows: rename running exe to .old first.
 	if runtime.GOOS == "windows" {
 		old := exe + ".old"
 		os.Remove(old)

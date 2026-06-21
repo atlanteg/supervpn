@@ -15,18 +15,30 @@ import (
 type FrameType uint8
 
 const (
-	FrameData   FrameType = 0x01 // encrypted L2 Ethernet frame
-	FrameRepair FrameType = 0x02 // FEC repair symbol
-	FrameJoin   FrameType = 0x03 // register secondary path (no payload; SessionID identifies session)
+	FrameData     FrameType = 0x01 // encrypted L2 Ethernet frame
+	FrameRepair   FrameType = 0x02 // FEC repair symbol
+	FrameJoin     FrameType = 0x03 // register secondary path (no payload; SessionID identifies session)
 	FrameAuth     FrameType = 0x10 // handshake/auth
 	FrameListHubs FrameType = 0x11 // pre-auth hub discovery (no credentials required)
 	FramePing     FrameType = 0x20
 	FramePong     FrameType = 0x21
+	// In-band software update over the (DPI-resistant) transport. Pre-auth, used
+	// as a fallback when GitHub and the HTTP mirrors are blocked. Only meaningful
+	// over a reliable stream transport (Reality/TCP).
+	FrameUpdateGet  FrameType = 0x30 // client→server: payload = asset name (raw bytes)
+	FrameUpdateData FrameType = 0x31 // server→client: payload = [1 byte status][chunk]
+)
+
+// FrameUpdateData status byte (first payload byte).
+const (
+	UpdateChunk byte = 0 // a chunk of asset data follows
+	UpdateEOF   byte = 1 // end of asset; no data
+	UpdateErr   byte = 2 // error; rest of payload is a UTF-8 message
 )
 
 const (
 	HeaderSize = 1 + 2 + 4 + 8 // type + hub_id + session_id + seq
-	MaxPayload = 1472           // MTU 1500 - UDP 28 - HeaderSize 15
+	MaxPayload = 1472          // MTU 1500 - UDP 28 - HeaderSize 15
 )
 
 type Header struct {

@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -569,8 +570,79 @@ func (s *Server) handlePacket(ctx context.Context, pkt []byte, sendReply func([]
 		s.handleListHubs(sendReply)
 	case proto.FramePing:
 		s.handlePing(hdr, sendReply)
+	case proto.FrameUpdateGet:
+		// Streaming the binary is only reliable over a stream transport
+		// (Reality/TCP/TLS); never blast 16 KB chunks over UDP datagrams.
+		if mode != "udp" && mode != "udp2" {
+			s.handleUpdateGet(payload, sendReply)
+		}
 	}
 	return 0
+}
+
+// handleUpdateGet streams a release asset to a peer over the (DPI-resistant)
+// transport — the in-band update channel used when GitHub and the HTTP mirrors
+// are blocked. Pre-auth: the assets are public release binaries. For the server
+// binary it streams our own running executable (always matches /update/version,
+// works even when this server could not fetch its own asset from GitHub).
+func (s *Server) handleUpdateGet(payload []byte, sendReply func([]byte) error) {
+	name := string(payload)
+	sendData := func(status byte, data []byte) error {
+		hdr := make([]byte, proto.HeaderSize)
+		proto.Header{Type: proto.FrameUpdateData}.Marshal(hdr)
+		frame := make([]byte, 0, proto.HeaderSize+1+len(data))
+		frame = append(frame, hdr...)
+		frame = append(frame, status)
+		frame = append(frame, data...)
+		return sendReply(frame)
+	}
+
+	allowed := false
+	for _, a := range clientAssets {
+		if name == a {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		_ = sendData(proto.UpdateErr, []byte("unknown asset"))
+		return
+	}
+
+	path := filepath.Join(s.updateDir(), name)
+	if name == update.AssetServer {
+		if exe, err := os.Executable(); err == nil {
+			if resolved, e := filepath.EvalSymlinks(exe); e == nil {
+				exe = resolved
+			}
+			if _, e := os.Stat(exe); e == nil {
+				path = exe
+			}
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		_ = sendData(proto.UpdateErr, []byte("asset not available"))
+		return
+	}
+	defer f.Close()
+
+	buf := make([]byte, 16384)
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			if err := sendData(proto.UpdateChunk, buf[:n]); err != nil {
+				return
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return
+		}
+	}
+	_ = sendData(proto.UpdateEOF, nil)
 }
 
 // handleListHubs responds to a pre-auth hub discovery request with the list of
