@@ -54,17 +54,16 @@ func OpenAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, stri
 		physical = append(physical, iface)
 	}
 
+	// Hard exclusion: never bridge Radmin VPN (Famatech) etc. A stale config can
+	// carry it in bridge.nic (auto-detection's "vpn" filter only guards the
+	// auto-pick, not an explicit NIC). Ignore it and fall through to normal
+	// auto-detection instead of bridging it.
+	if bc.NIC != "" && bridge.IsExcludedFromBridge(bc.NIC) {
+		log.Printf("bridge: ignoring excluded bridge NIC %q (Radmin VPN etc.) — using auto-detection", bc.NIC)
+		bc.NIC = ""
+	}
+
 	if bc.NIC != "" {
-		// Hard exclusion: never bridge Radmin VPN (Famatech) etc., even if the
-		// user (or a stale config) explicitly named it.
-		if bridge.IsExcludedFromBridge(bc.NIC) {
-			log.Printf("bridge: refusing to bridge excluded adapter %q — falling back to direct mode", bc.NIC)
-			iface, framer, err := openDirectAdapter(cfg)
-			if err != nil {
-				return iface, framer, "", err
-			}
-			return iface, framer, "direct (" + iface.Name + ")", nil
-		}
 		for _, iface := range physical {
 			if iface.Name == bc.NIC {
 				ri, rf, err := openBridgeAdapter(cfg, iface)
