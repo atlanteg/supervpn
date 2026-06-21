@@ -237,12 +237,13 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.cfg.StatusListen != "" {
 		go s.runStatusServer(ctx)
 	}
-	// update_listen defaults to ":80" when not set.
-	// If status_listen is also set, /update/* is served there as fallback,
-	// but a dedicated port 80 listener is preferred for client-reachability.
+	// update_listen defaults to ":993" (IMAPS — privileged, near-universally
+	// firewall-allowed, rarely DPI-filtered, and free of the nginx-on-:80
+	// conflict). Clients/peers probe both :993 and :80 (see update.mirrorPorts),
+	// so a server may still be put on :80 via config during migration.
 	updateListen := s.cfg.UpdateListen
 	if updateListen == "" {
-		updateListen = ":80"
+		updateListen = ":993"
 		s.cfg.UpdateListen = updateListen
 	}
 	go s.runUpdateServer(ctx)
