@@ -26,6 +26,7 @@ import (
 	. "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
 
+	"github.com/atlanteg/supervpn/internal/bridge"
 	"github.com/atlanteg/supervpn/internal/clientadapter"
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/proto"
@@ -1422,6 +1423,10 @@ func listAdapterNames() []string {
 	}
 	names := make([]string, 0, len(ifaces))
 	for _, iface := range ifaces {
+		// Never offer Radmin VPN (Famatech) etc. as a bridge target.
+		if bridge.IsExcludedFromBridge(iface.Name) {
+			continue
+		}
 		names = append(names, iface.Name)
 	}
 	return names

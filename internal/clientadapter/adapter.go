@@ -55,6 +55,16 @@ func OpenAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer, stri
 	}
 
 	if bc.NIC != "" {
+		// Hard exclusion: never bridge Radmin VPN (Famatech) etc., even if the
+		// user (or a stale config) explicitly named it.
+		if bridge.IsExcludedFromBridge(bc.NIC) {
+			log.Printf("bridge: refusing to bridge excluded adapter %q — falling back to direct mode", bc.NIC)
+			iface, framer, err := openDirectAdapter(cfg)
+			if err != nil {
+				return iface, framer, "", err
+			}
+			return iface, framer, "direct (" + iface.Name + ")", nil
+		}
 		for _, iface := range physical {
 			if iface.Name == bc.NIC {
 				ri, rf, err := openBridgeAdapter(cfg, iface)

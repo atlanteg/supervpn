@@ -13,8 +13,22 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"time"
 )
+
+// IsExcludedFromBridge reports whether an adapter must NEVER be bridged or probed
+// — currently the Radmin VPN virtual adapter (Famatech), which lives on 26.0.0.0/8
+// and would corrupt the L2 bridge if captured. Matched by friendly name and (on
+// Windows) hardware description, so renaming the connection cannot defeat it.
+// This is a HARD exclusion: it applies even to an explicitly selected bridge NIC.
+func IsExcludedFromBridge(name string) bool {
+	hit := func(s string) bool {
+		s = strings.ToLower(s)
+		return strings.Contains(s, "radmin") || strings.Contains(s, "famatech")
+	}
+	return hit(name) || hit(adapterDescription(name))
+}
 
 // LinkLocalNet is the 169.254.0.0/16 network we scan for.
 var LinkLocalNet = func() *net.IPNet {
@@ -42,6 +56,10 @@ func DetectLinkLocal() ([]Interface, error) {
 		// may still have a 169.254 APIPA address assigned by Windows,
 		// and bridging it would be a no-op or cause confusion.
 		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		// Radmin VPN (Famatech) and the like must never be a bridge candidate.
+		if IsExcludedFromBridge(iface.Name) {
 			continue
 		}
 		// net.FlagUp on Windows only reflects the administrative state. An
