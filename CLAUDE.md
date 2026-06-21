@@ -77,18 +77,27 @@ All 5 servers are hardcoded in `internal/update/update.go` → `knownServerIPs`:
 49.13.4.85
 ```
 
-Each server exposes `GET /update/version` and `GET /update/{asset}` on port 80.
+Each server exposes `GET /update/version` and `GET /update/{asset}` on **:993**
+(IMAPS — privileged, near-universally firewall-allowed, rarely DPI-filtered, and
+free of the nginx-on-:80 conflict). `update_listen` defaults to `:993`; clients
+probe both `:993` and `:80` per mirror IP (`update.mirrorPorts`) during migration.
 
 ### Update chain (all binaries)
 
 ```
-GitHub (atlanteg/supervpn-releases) → 81.27.241.25 → 185.108.16.16 → 212.48.224.5 → 162.55.48.218 → 49.13.4.85
+GitHub → HTTP mirrors (:993/:80 on the 5 IPs) → in-band Reality from peers
 ```
 
 - GitHub API: `https://api.github.com/repos/atlanteg/supervpn-releases/releases/latest`
 - Download base: `https://github.com/atlanteg/supervpn-releases/releases/download/{tag}/{asset}`
 - All clients and **servers** follow the same fallback chain.
-- Servers also host `supervpn-server` itself in their mirror dir (`dist/`) so peer servers can pull it.
+- Servers host `supervpn-server` in their mirror dir; `handleUpdateAsset` and the
+  in-band handler also serve the server's **own running exe**, so any live server
+  seeds peers even if it couldn't fetch its own asset from GitHub.
+- **In-band Reality fallback** (`internal/update/inband.go`): when GitHub and the
+  HTTP mirrors are blocked (aggressive DPI), the binary is pulled from a peer over
+  the DPI-resistant Reality transport (`FrameUpdateGet`/`FrameUpdateData`, pre-auth).
+  This is the unblockable last resort — if the VPN transport works, updates work.
 
 ### Release procedure
 
