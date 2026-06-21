@@ -108,7 +108,11 @@ func CheckAndUpdate(currentVersion, asset string, mirrors []string) {
 	}
 
 	ghDL := &http.Client{Timeout: 3 * time.Minute}
-	mcDL := mirrorHTTPClient(2 * time.Minute)
+	// Peer-mirror links can be much slower than GitHub's CDN; the binary is
+	// ~15 MB, so give the body read a generous total budget (a dead mirror still
+	// fails fast at the 8 s dial/TLS stage, so this only extends genuinely
+	// reachable-but-slow mirrors). 2 min was too tight and timed out mid-download.
+	mcDL := mirrorHTTPClient(8 * time.Minute)
 	if err := downloadWithFallback(ghDL, mcDL, tag, asset, exe, mirrors); err != nil {
 		if errors.Is(err, errBinaryUnchanged) {
 			log.Printf("update: %s asset is identical to current binary — already up to date (tag reused)", tag)
