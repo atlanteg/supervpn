@@ -260,8 +260,20 @@ func realityFallback(client net.Conn, dest string, consumed []byte) {
 		}
 	}
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(up, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, up); done <- struct{}{} }()
+	pipe := func(dst, src net.Conn) {
+		_, _ = io.Copy(dst, src)
+		// Half-close: propagate EOF so the other direction also finishes, rather
+		// than returning after just one side and letting the deferred Close cut
+		// the proxy off mid-stream — that truncated the dest's response to a
+		// prober (a tell for a censor, and the source of the flaky test).
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+		done <- struct{}{}
+	}
+	go pipe(up, client)
+	go pipe(client, up)
+	<-done
 	<-done
 }
 
