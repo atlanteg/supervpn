@@ -80,12 +80,12 @@ All 5 servers are hardcoded in `internal/update/update.go` → `knownServerIPs`:
 Each server exposes `GET /update/version` and `GET /update/{asset}` on **:993**
 (IMAPS — privileged, near-universally firewall-allowed, rarely DPI-filtered, and
 free of the nginx-on-:80 conflict). `update_listen` defaults to `:993`; clients
-probe both `:993` and `:80` per mirror IP (`update.mirrorPorts`) during migration.
+use `:993` only (`update.mirrorPorts`).
 
 ### Update chain (all binaries)
 
 ```
-GitHub → HTTP mirrors (:993/:80 on the 5 IPs) → in-band Reality from peers
+GitHub → HTTP mirrors (:993 on the 5 IPs) → in-band Reality from peers
 ```
 
 - GitHub API: `https://api.github.com/repos/atlanteg/supervpn-releases/releases/latest`

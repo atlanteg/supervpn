@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/atlanteg/supervpn/internal/proto"
@@ -90,6 +91,31 @@ func processUpdateFrame(frame []byte, out *bytes.Buffer) (done bool, err error) 
 		return false, fmt.Errorf("inband: peer refused: %s", string(data))
 	}
 	return false, nil
+}
+
+// latestTagInBand resolves the latest version tag by asking peers for "version"
+// over Reality — the last-resort version check when GitHub's API and the HTTP
+// mirror /version endpoints are all blocked. Returns the first peer's tag.
+func latestTagInBand() (string, error) {
+	peers := make([]string, len(knownServerIPs))
+	copy(peers, knownServerIPs)
+	rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
+
+	var lastErr error
+	for _, ip := range peers {
+		data, err := fetchInBand(context.Background(), ip, "version")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if tag := strings.TrimSpace(string(data)); tag != "" {
+			return tag, nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("inband: no peers")
+	}
+	return "", lastErr
 }
 
 // downloadInBand tries to fetch asset from each known peer over Reality (random

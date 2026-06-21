@@ -597,6 +597,14 @@ func (s *Server) handleUpdateGet(payload []byte, sendReply func([]byte) error) {
 		return sendReply(frame)
 	}
 
+	// "version" is the in-band equivalent of GET /update/version — lets a peer
+	// resolve the latest tag over Reality when all HTTP version checks are blocked.
+	if name == "version" {
+		_ = sendData(proto.UpdateChunk, []byte(version))
+		_ = sendData(proto.UpdateEOF, nil)
+		return
+	}
+
 	allowed := false
 	for _, a := range clientAssets {
 		if name == a {

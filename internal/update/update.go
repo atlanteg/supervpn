@@ -47,12 +47,10 @@ var knownServerIPs = []string{
 	"49.13.4.85",
 }
 
-// mirrorPorts lists the ports the update mirror may be served on, tried in
-// order. 993 (IMAPS) is the standard port we moved to — privileged, near-
-// universally firewall-allowed and rarely DPI-filtered, and free of the nginx-
-// on-:80 conflict some servers have. 80 is kept as a transitional fallback for
-// servers not yet migrated; drop it once all servers serve on 993.
-var mirrorPorts = []string{"993", "80"}
+// mirrorPorts lists the ports the update mirror is served on. 993 (IMAPS) —
+// privileged, near-universally firewall-allowed, rarely DPI-filtered, and free
+// of the nginx-on-:80 conflict. (Kept as a slice for easy future additions.)
+var mirrorPorts = []string{"993"}
 
 // DefaultMirrors returns the known server mirror base URLs in RANDOM order.
 // Each server exposes GET /update/version and GET /update/{asset} on each of
@@ -169,6 +167,11 @@ func resolveLatestTag(ghc, mc *http.Client, mirrors []string) (tag, src string, 
 		if t, e := latestTagFromURL(mc, url); e == nil {
 			return t, m, nil
 		}
+	}
+
+	// Last resort: resolve the version in-band over Reality (HTTP fully blocked).
+	if t, e := latestTagInBand(); e == nil {
+		return t, "reality", nil
 	}
 
 	return "", "", fmt.Errorf("github: %w; mirrors tried: %d", err, len(mirrors))
