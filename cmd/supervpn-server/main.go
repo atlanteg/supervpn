@@ -1351,6 +1351,21 @@ func (s *Server) handleUpdateAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// For the server binary, prefer our OWN running executable: it always
+	// matches /update/version and is available even when this server could not
+	// download its own asset from GitHub into updateDir (GitHub CDN blocked).
+	// This keeps the peer-mirror chain working server-to-server with no GitHub.
+	if name == update.AssetServer {
+		if exe, err := os.Executable(); err == nil {
+			if resolved, err2 := filepath.EvalSymlinks(exe); err2 == nil {
+				exe = resolved
+			}
+			if _, err3 := os.Stat(exe); err3 == nil {
+				http.ServeFile(w, r, exe)
+				return
+			}
+		}
+	}
 	http.ServeFile(w, r, filepath.Join(s.updateDir(), name))
 }
 
