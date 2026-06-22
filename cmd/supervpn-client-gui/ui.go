@@ -20,6 +20,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/atlanteg/supervpn/internal/bmwbattery"
 	"github.com/atlanteg/supervpn/internal/clientadapter"
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/vpnclient"
@@ -98,6 +99,11 @@ type mainUI struct {
 	bmwLabel            *widget.Label
 	bmwIPBtn, bmwVINBtn *widget.Button
 	bmwIP, bmwVIN       string
+
+	// Battery data for G-series cars — polled via ENET while the car is live.
+	batteryLabel  *widget.Label
+	batteryCancel context.CancelFunc
+	batteryIP     string // IP of the car currently being polled; "" = not polling
 
 	// Last disconnect time label
 	disconnectLabel *widget.Label
@@ -348,6 +354,9 @@ func (ui *mainUI) buildConnectionTab() fyne.CanvasObject {
 	ui.bmwVINBtn.Hide()
 	rows = append(rows, container.NewHBox(widget.NewLabel("BMW:"), ui.bmwIPBtn, ui.bmwVINBtn))
 	rows = append(rows, ui.bmwLabel)
+
+	ui.batteryLabel = widget.NewLabel("")
+	rows = append(rows, ui.batteryLabel)
 
 	ui.disconnectLabel = widget.NewLabel("")
 	rows = append(rows, ui.disconnectLabel)
@@ -1008,6 +1017,39 @@ func (ui *mainUI) updateBMW(info *zgw.Info) {
 	}
 	add(info.Body)
 	ui.bmwLabel.SetText(d)
+	ui.updateBattery(info)
+}
+
+// updateBattery starts or stops battery polling based on the current ZGW info.
+// Only polls G-series cars (Chassis starts with 'G'). Called on the main
+// goroutine (inside fyne.Do via updateBMW), so batteryLabel can be set directly.
+func (ui *mainUI) updateBattery(info *zgw.Info) {
+	if ui.batteryLabel == nil {
+		return
+	}
+	newIP := ""
+	if info != nil && len(info.Chassis) > 0 && info.Chassis[0] == 'G' {
+		newIP = info.IP
+	}
+	if newIP == ui.batteryIP {
+		return // same car (or still no G-series) — keep polling
+	}
+	if ui.batteryCancel != nil {
+		ui.batteryCancel()
+		ui.batteryCancel = nil
+	}
+	ui.batteryIP = newIP
+	if newIP == "" {
+		ui.batteryLabel.SetText("")
+		return
+	}
+	ui.batteryLabel.SetText("Battery: reading…")
+	ctx, cancel := context.WithCancel(context.Background())
+	ui.batteryCancel = cancel
+	go bmwbattery.StickyPoll(ctx, newIP, 30*time.Second, func(st *bmwbattery.Status) {
+		text := "Battery: " + st.String()
+		fyne.Do(func() { ui.batteryLabel.SetText(text) })
+	})
 }
 
 // copyBMW puts the clicked car IP or VIN on the clipboard.

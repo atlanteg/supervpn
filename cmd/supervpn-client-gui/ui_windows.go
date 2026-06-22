@@ -26,6 +26,7 @@ import (
 	. "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
 
+	"github.com/atlanteg/supervpn/internal/bmwbattery"
 	"github.com/atlanteg/supervpn/internal/bridge"
 	"github.com/atlanteg/supervpn/internal/clientadapter"
 	"github.com/atlanteg/supervpn/internal/config"
@@ -82,6 +83,11 @@ type winUI struct {
 	// the car IP and VIN are clickable — clicking copies them to the clipboard.
 	bmwLabel      *walk.LinkLabel
 	bmwIP, bmwVIN string
+
+	// Battery data for G-series cars — polled via ENET while the car is live.
+	batteryLabel  *walk.Label
+	batteryCancel context.CancelFunc
+	batteryIP     string // IP of the car currently being polled; "" = not polling
 
 	// Last disconnect time label (bottom of Connection tab)
 	disconnectLabel *walk.Label
@@ -190,6 +196,7 @@ func (ui *winUI) runApp() {
 			if ui.bmwLabel != nil {
 				_ = ui.bmwLabel.SetText(markup)
 			}
+			ui.updateBattery(info)
 		})
 	})
 
@@ -400,6 +407,11 @@ func (ui *winUI) connectionPage() TabPage {
 					Font:            Font{PointSize: 9},
 					MinSize:         Size{Height: 32}, // room for 2 lines (IP/VIN + model detail)
 					OnLinkActivated: ui.onBmwLinkActivated,
+				},
+				Label{
+					AssignTo: &ui.batteryLabel,
+					Text:     "",
+					Font:     Font{PointSize: 9},
 				},
 				Label{
 					AssignTo: &ui.disconnectLabel,
@@ -1592,6 +1604,40 @@ func (ui *winUI) setStatusDot(kind dotKind) {
 		return
 	}
 	_ = ui.statusDotView.SetImage(bmp)
+}
+
+// updateBattery starts or stops battery polling based on the current ZGW info.
+// Only polls G-series cars (Chassis starts with 'G'). Must be called on the UI
+// goroutine (inside form.Synchronize), because it writes to batteryLabel directly.
+func (ui *winUI) updateBattery(info *zgw.Info) {
+	if ui.batteryLabel == nil {
+		return
+	}
+	newIP := ""
+	if info != nil && len(info.Chassis) > 0 && info.Chassis[0] == 'G' {
+		newIP = info.IP
+	}
+	if newIP == ui.batteryIP {
+		return // same car (or still no G-series) — keep polling
+	}
+	if ui.batteryCancel != nil {
+		ui.batteryCancel()
+		ui.batteryCancel = nil
+	}
+	ui.batteryIP = newIP
+	if newIP == "" {
+		_ = ui.batteryLabel.SetText("")
+		return
+	}
+	_ = ui.batteryLabel.SetText("Battery: reading…")
+	ctx, cancel := context.WithCancel(context.Background())
+	ui.batteryCancel = cancel
+	label := ui.batteryLabel
+	form := ui.form
+	go bmwbattery.StickyPoll(ctx, newIP, 30*time.Second, func(st *bmwbattery.Status) {
+		text := "Battery: " + st.String()
+		form.Synchronize(func() { _ = label.SetText(text) })
+	})
 }
 
 // makeDotBitmap returns a 16×16 anti-aliased filled circle bitmap.
