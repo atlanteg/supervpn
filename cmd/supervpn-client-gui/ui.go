@@ -1021,18 +1021,15 @@ func (ui *mainUI) updateBMW(info *zgw.Info) {
 }
 
 // updateBattery starts or stops battery polling based on the current ZGW info.
-// Only polls G-series cars (Chassis starts with 'G'). Called on the main
-// goroutine (inside fyne.Do via updateBMW), so batteryLabel can be set directly.
+// Polls G-series (CLAR) and F-series cars; skips everything else. Called on
+// the main goroutine (inside fyne.Do via updateBMW).
 func (ui *mainUI) updateBattery(info *zgw.Info) {
 	if ui.batteryLabel == nil {
 		return
 	}
-	newIP := ""
-	if info != nil && len(info.Chassis) > 0 && info.Chassis[0] == 'G' {
-		newIP = info.IP
-	}
+	newIP, platform := batteryTarget(info)
 	if newIP == ui.batteryIP {
-		return // same car (or still no G-series) — keep polling
+		return // same car (or still unsupported series) — keep polling
 	}
 	if ui.batteryCancel != nil {
 		ui.batteryCancel()
@@ -1046,7 +1043,7 @@ func (ui *mainUI) updateBattery(info *zgw.Info) {
 	ui.batteryLabel.SetText("Battery: reading…")
 	ctx, cancel := context.WithCancel(context.Background())
 	ui.batteryCancel = cancel
-	go bmwbattery.StickyPoll(ctx, newIP, 30*time.Second, func(st *bmwbattery.Status) {
+	go bmwbattery.StickyPoll(ctx, newIP, platform, 30*time.Second, func(st *bmwbattery.Status) {
 		text := "Battery: " + st.String()
 		fyne.Do(func() { ui.batteryLabel.SetText(text) })
 	})

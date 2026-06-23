@@ -1607,18 +1607,15 @@ func (ui *winUI) setStatusDot(kind dotKind) {
 }
 
 // updateBattery starts or stops battery polling based on the current ZGW info.
-// Only polls G-series cars (Chassis starts with 'G'). Must be called on the UI
-// goroutine (inside form.Synchronize), because it writes to batteryLabel directly.
+// Polls G-series (CLAR) and F-series cars; skips everything else. Must be
+// called on the UI goroutine (inside form.Synchronize).
 func (ui *winUI) updateBattery(info *zgw.Info) {
 	if ui.batteryLabel == nil {
 		return
 	}
-	newIP := ""
-	if info != nil && len(info.Chassis) > 0 && info.Chassis[0] == 'G' {
-		newIP = info.IP
-	}
+	newIP, platform := batteryTarget(info)
 	if newIP == ui.batteryIP {
-		return // same car (or still no G-series) — keep polling
+		return // same car (or still unsupported series) — keep polling
 	}
 	if ui.batteryCancel != nil {
 		ui.batteryCancel()
@@ -1634,7 +1631,7 @@ func (ui *winUI) updateBattery(info *zgw.Info) {
 	ui.batteryCancel = cancel
 	label := ui.batteryLabel
 	form := ui.form
-	go bmwbattery.StickyPoll(ctx, newIP, 30*time.Second, func(st *bmwbattery.Status) {
+	go bmwbattery.StickyPoll(ctx, newIP, platform, 30*time.Second, func(st *bmwbattery.Status) {
 		text := "Battery: " + st.String()
 		form.Synchronize(func() { _ = label.SetText(text) })
 	})

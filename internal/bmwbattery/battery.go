@@ -1,23 +1,25 @@
-// Package bmwbattery reads the 12 V battery state of a G-series BMW (CLAR
-// platform) over the ENET diagnostic link, with no external dependencies.
+// Package bmwbattery reads the 12 V battery state of a BMW (F-series and
+// G-series/CLAR) over the ENET diagnostic link, with no external dependencies.
 //
 // It speaks the EDIABAS/AIFC TCP framing on port 6801 and queries the DME
 // (ECU 0x12) with UDS ReadDataByIdentifier (service 0x22). The field mapping
-// was reverse-engineered from traffic captures and confirmed against ISTA
-// ("Battery and intelligent battery sensor" / "Charge status of 12V battery"):
+// was reverse-engineered from traffic captures and confirmed against ISTA:
 //
-//	State of charge %   : DID 0x40AD, byte[0]
-//	Battery voltage  V  : DID 0x40C3, first 16-bit word in 11.0–15.2 V range
-//	Ageing / health  %  : DID 0x40B5, byte[19]
+//	                     G-series (CLAR)            F-series
+//	State of charge %  : DID 0x40AD byte[0]         DID 0x4023 byte[17]
+//	Battery voltage  V : DID 0x40C3 (word in range) DID 0x4022 (best-effort)
+//	Ageing / health  % : DID 0x40B5 byte[19]        — (not confirmed)
+//
+// Read dispatches by ISTA platform code (see IsGSeries / series.go).
 //
 // Quick start:
 //
-//	st, err := bmwbattery.Read("169.254.14.38")   // ZGW link-local IP
-//	if err == nil { fmt.Println(st) }              // 🔋 62%  ·  V: 13.06  ·  Ageing 58%
+//	st, err := bmwbattery.Read("169.254.14.38", "S15A") // host, platform
+//	if err == nil { fmt.Println(st) }                   // 🔋 62%  ·  V: 13.06  ·  Ageing 58%
 //
 // or poll continuously:
 //
-//	bmwbattery.Poll(ctx, host, time.Minute, func(st *bmwbattery.Status, err error) { ... })
+//	bmwbattery.Poll(ctx, host, platform, time.Minute, func(st *bmwbattery.Status, err error) { ... })
 package bmwbattery
 
 import (
@@ -66,11 +68,16 @@ func (s *Status) String() string {
 }
 
 // Read opens a fresh connection to the ZGW at host (its link-local 169.254.x.x
-// IP, found via auto-search) and reads SoC, voltage and ageing. It returns
-// whatever it managed to obtain; err is non-nil only when it can't connect or
-// gets no response at all — a partial result (some fields missing) is returned
-// with err == nil.
-func Read(host string) (*Status, error) {
+// IP, found via auto-search) and reads the battery, dispatching to the G- or
+// F-series logic based on the ISTA platform code (see IsGSeries / series.go).
+// Pass the platform from your discovery layer, e.g. zgw.Info.Platform —
+// "S15A" (G), "F010" (F), …
+//
+// It returns whatever it managed to obtain; err is non-nil only when it can't
+// connect or gets no response at all — a partial result (some fields missing)
+// is returned with err == nil. G-series fills SoC + voltage + ageing; F-series
+// fills SoC + best-effort voltage (no confirmed ageing field there yet).
+func Read(host, platform string) (*Status, error) {
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, Port), 4*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", host, err)
@@ -79,7 +86,14 @@ func Read(host string) (*Status, error) {
 	if err := conn.SetDeadline(time.Now().Add(6 * time.Second)); err != nil {
 		return nil, err
 	}
+	if IsGSeries(platform) {
+		return readG(conn, host)
+	}
+	return readF(conn, host)
+}
 
+// readG reads a G-series (CLAR) battery: SoC 0x40AD[0], voltage 0x40C3, ageing 0x40B5[19].
+func readG(conn net.Conn, host string) (*Status, error) {
 	st := &Status{}
 	got := false
 
@@ -108,9 +122,37 @@ func Read(host string) (*Status, error) {
 	return st, nil
 }
 
+// readF reads an F-series battery. SoC is the most-recent determined value —
+// DID 0x4023 byte[17] ("Last" in ISTA's AS6120_SOC_HIST; 0xFF = no recent
+// value). Voltage is best-effort from the 0x4022 sample ring.
+func readF(conn net.Conn, host string) (*Status, error) {
+	st := &Status{}
+	got := false
+
+	if d, err := readDID(conn, 0x40, 0x23); err == nil {
+		got = true // DID answered (SoC may still be 0xFF "no recent value")
+		if len(d) > 17 {
+			if v := d[17]; v >= 1 && v <= 100 {
+				st.SoCPercent, st.HasSoC = int(v), true
+			}
+		}
+	}
+	if d, err := readDID(conn, 0x40, 0x22); err == nil {
+		if mv, ok := findVoltage(d); ok {
+			st.VoltageV, st.HasVoltage, got = float64(mv)/1000.0, true, true
+		}
+	}
+
+	if !got {
+		return st, fmt.Errorf("no battery data from %s (DME not responding?)", host)
+	}
+	return st, nil
+}
+
 // findVoltage scans a data block for the first 16-bit word in a plausible 12 V
-// battery range (11.0–15.2 V). Aligned big-endian words are tried first to
-// avoid false positives from straddling byte pairs.
+// battery range (11.0–15.2 V). These DIDs lay values out as aligned big-endian
+// words, so try those first; misaligned/little-endian matches are a last resort
+// to avoid false positives from straddling byte pairs.
 func findVoltage(d []byte) (mv int, ok bool) {
 	inRange := func(w int) bool { return w >= 11000 && w <= 15200 }
 	for i := 0; i+1 < len(d); i += 2 { // aligned big-endian

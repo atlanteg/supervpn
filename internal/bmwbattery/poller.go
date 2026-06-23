@@ -5,22 +5,26 @@ import (
 	"time"
 )
 
-// Poll reads the battery from host every interval and invokes fn with each
-// result (the first read fires immediately, not after the first interval). It
-// blocks until ctx is cancelled, so call it in its own goroutine:
+// Poll reads the battery from host (for the given ISTA platform code) every
+// interval and invokes fn with each result (the first read fires immediately,
+// not after the first interval). It blocks until ctx is cancelled, so call it
+// in its own goroutine:
 //
 //	ctx, cancel := context.WithCancel(context.Background())
-//	go bmwbattery.Poll(ctx, "169.254.14.38", time.Minute, func(st *bmwbattery.Status, err error) {
+//	go bmwbattery.Poll(ctx, "169.254.14.38", "S15A", time.Minute, func(st *bmwbattery.Status, err error) {
 //	    if err != nil { return }       // keep showing the previous value
 //	    fmt.Println(st)                // 🔋 62%  ·  V: 13.06  ·  Ageing 58%
 //	})
 //	// … cancel() to stop.
-func Poll(ctx context.Context, host string, interval time.Duration, fn func(*Status, error)) {
+//
+// fn is always called from Poll's goroutine, one call at a time (reads never
+// overlap), so a UI updater inside fn doesn't need its own locking against Poll.
+func Poll(ctx context.Context, host, platform string, interval time.Duration, fn func(*Status, error)) {
 	if interval <= 0 {
 		interval = time.Minute
 	}
 	tick := func() {
-		st, err := Read(host)
+		st, err := Read(host, platform)
 		fn(st, err)
 	}
 	tick() // immediate first read
@@ -40,9 +44,9 @@ func Poll(ctx context.Context, host string, interval time.Duration, fn func(*Sta
 // StickyPoll is like Poll but holds the last good value of each field across
 // failed or partial reads, so a no-response cycle (or a single DID that didn't
 // answer) never blanks a field. fn receives the merged, sticky status.
-func StickyPoll(ctx context.Context, host string, interval time.Duration, fn func(*Status)) {
+func StickyPoll(ctx context.Context, host, platform string, interval time.Duration, fn func(*Status)) {
 	var held *Status
-	Poll(ctx, host, interval, func(st *Status, err error) {
+	Poll(ctx, host, platform, interval, func(st *Status, err error) {
 		held = merge(held, st)
 		if held != nil {
 			fn(held)

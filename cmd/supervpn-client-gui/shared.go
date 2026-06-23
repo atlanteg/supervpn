@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"time"
+
+	"github.com/atlanteg/supervpn/internal/zgw"
 )
 
 // version is set at build time via -ldflags "-X main.version=bN".
@@ -17,6 +19,19 @@ func formatAgo(t time.Time) string {
 	m := int(d.Minutes())
 	s := int(d.Seconds()) % 60
 	return fmt.Sprintf("Last disconnect: %dm %ds ago", m, s)
+}
+
+// batteryTarget returns the ZGW IP and ISTA platform to poll, or ("","") when
+// the car is not a supported series. Only F-series and G-series cars have
+// confirmed ENET battery DIDs; everything else is skipped.
+func batteryTarget(info *zgw.Info) (ip, platform string) {
+	if info == nil || info.VIN == "" || len(info.Chassis) == 0 {
+		return "", ""
+	}
+	if c := info.Chassis[0]; c != 'F' && c != 'G' {
+		return "", ""
+	}
+	return info.IP, info.Platform
 }
 
 // predefinedServers is the built-in server list shown in the dropdown on all platforms.
