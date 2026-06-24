@@ -103,6 +103,7 @@ type winUI struct {
 	minimizeToTrayCheck   *walk.CheckBox
 	autoConnectCheck      *walk.CheckBox
 	startWithWindowsCheck *walk.CheckBox
+	batteryPollingCheck   *walk.CheckBox
 
 	// System tray icon (created after window init)
 	notifyIcon *walk.NotifyIcon
@@ -519,6 +520,22 @@ func (ui *winUI) advancedPage() TabPage {
 							Text:     "Start with Windows (register auto-start task)",
 							OnClicked: func() {
 								ui.applyStartWithWindows(ui.startWithWindowsCheck.Checked())
+							},
+						},
+						CheckBox{
+							AssignTo: &ui.batteryPollingCheck,
+							Text:     "Battery polling (SoC & voltage via ENET)",
+							Checked:  true,
+							OnClicked: func() {
+								if !ui.batteryPollingCheck.Checked() {
+									if ui.batteryCancel != nil {
+										ui.batteryCancel()
+										ui.batteryCancel = nil
+									}
+									_ = ui.batteryLabel.SetText("")
+								} else {
+									ui.batteryIP = "" // force restart on next ZGW update
+								}
 							},
 						},
 					},
@@ -1058,9 +1075,10 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 		},
 		StatusListen:     strings.TrimSpace(ui.statusListenEdit.Text()),
 		Timeout:          strings.TrimSpace(ui.timeoutEdit.Text()),
-		MinimizeToTray:   ui.minimizeToTrayCheck.Checked(),
-		AutoConnect:      ui.autoConnectCheck.Checked(),
-		StartWithWindows: ui.startWithWindowsCheck.Checked(),
+		MinimizeToTray:        ui.minimizeToTrayCheck.Checked(),
+		AutoConnect:           ui.autoConnectCheck.Checked(),
+		StartWithWindows:      ui.startWithWindowsCheck.Checked(),
+		DisableBatteryPolling: !ui.batteryPollingCheck.Checked(),
 	}
 	cfg.FEC = cfg.FEC.WithDefaults()
 	cfg.UDP = cfg.UDP.WithDefaults()
@@ -1137,6 +1155,7 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)
 	ui.autoConnectCheck.SetChecked(cfg.AutoConnect)
 	ui.startWithWindowsCheck.SetChecked(cfg.StartWithWindows)
+	ui.batteryPollingCheck.SetChecked(!cfg.DisableBatteryPolling)
 }
 
 // ── connectivity test tab ─────────────────────────────────────────────────────
@@ -1617,6 +1636,9 @@ func (ui *winUI) setStatusDot(kind dotKind) {
 func (ui *winUI) updateBattery(info *zgw.Info) {
 	if ui.batteryLabel == nil {
 		return
+	}
+	if ui.batteryPollingCheck != nil && !ui.batteryPollingCheck.Checked() {
+		return // polling disabled; OnClicked already stopped any running poll
 	}
 	newIP, platform := batteryTarget(info)
 	if newIP == ui.batteryIP {

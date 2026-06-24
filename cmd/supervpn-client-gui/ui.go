@@ -92,8 +92,9 @@ type mainUI struct {
 	testBtn   *widget.Button
 
 	// advanced tab – behavior
-	minimizeToTrayCheck *widget.Check
-	autoConnectCheck    *widget.Check
+	minimizeToTrayCheck  *widget.Check
+	autoConnectCheck     *widget.Check
+	batteryPollingCheck  *widget.Check
 
 	// BMW ZGW discovery result. The car IP and VIN are clickable buttons that
 	// copy to the clipboard; bmwLabel holds the detail/status line.
@@ -421,6 +422,22 @@ func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
 
 	ui.autoConnectCheck = widget.NewCheck("Auto-connect on startup", nil)
 	items = append(items, widget.NewFormItem("", ui.autoConnectCheck))
+
+	ui.batteryPollingCheck = widget.NewCheck("Battery polling (SoC & voltage via ENET)", func(checked bool) {
+		if !checked {
+			if ui.batteryCancel != nil {
+				ui.batteryCancel()
+				ui.batteryCancel = nil
+			}
+			if ui.batteryLabel != nil {
+				ui.batteryLabel.SetText("")
+			}
+		} else {
+			ui.batteryIP = "" // force restart on next ZGW update
+		}
+	})
+	ui.batteryPollingCheck.SetChecked(true)
+	items = append(items, widget.NewFormItem("", ui.batteryPollingCheck))
 
 	return widget.NewForm(items...)
 }
@@ -909,8 +926,9 @@ func (ui *mainUI) buildConfig() config.ClientConfig {
 		},
 		StatusListen:   strings.TrimSpace(ui.statusListenEntry.Text),
 		Timeout:        strings.TrimSpace(ui.timeoutEntry.Text),
-		MinimizeToTray: ui.minimizeToTrayCheck.Checked,
-		AutoConnect:    ui.autoConnectCheck.Checked,
+		MinimizeToTray:        ui.minimizeToTrayCheck.Checked,
+		AutoConnect:           ui.autoConnectCheck.Checked,
+		DisableBatteryPolling: !ui.batteryPollingCheck.Checked,
 	}
 
 	cfg.FEC = cfg.FEC.WithDefaults()
@@ -970,6 +988,7 @@ func (ui *mainUI) populateFromConfig(cfg *config.ClientConfig) {
 	ui.timeoutEntry.SetText(cfg.Timeout)
 	ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)
 	ui.autoConnectCheck.SetChecked(cfg.AutoConnect)
+	ui.batteryPollingCheck.SetChecked(!cfg.DisableBatteryPolling)
 }
 
 // saveLastConfigPref persists path so the next launch can restore it.
@@ -1032,6 +1051,9 @@ func (ui *mainUI) updateBMW(info *zgw.Info) {
 func (ui *mainUI) updateBattery(info *zgw.Info) {
 	if ui.batteryLabel == nil {
 		return
+	}
+	if ui.batteryPollingCheck != nil && !ui.batteryPollingCheck.Checked {
+		return // polling disabled; onChange handler already stopped any running poll
 	}
 	newIP, platform := batteryTarget(info)
 	if newIP == ui.batteryIP {

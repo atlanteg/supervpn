@@ -167,6 +167,10 @@ type ClientConfig struct {
 	// client launches automatically at user logon with elevated privileges.
 	// Has no effect on non-Windows platforms.
 	StartWithWindows bool `toml:"start_with_windows"`
+	// DisableBatteryPolling, when true, suppresses ENET battery reads (SoC,
+	// voltage, ageing) for discovered F/G-series cars.  Default false = polling
+	// enabled.  Stored inverted so the zero value keeps the feature on.
+	DisableBatteryPolling bool `toml:"disable_battery_polling"`
 }
 
 // BridgeConfig controls how the client bridges traffic in bridge mode (when a
