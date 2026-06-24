@@ -155,5 +155,14 @@ func openDirectAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer
 		return bridge.Interface{}, nil, fmt.Errorf("open direct adapter %q: %w", tunName, err)
 	}
 	log.Printf("direct mode: opened %q (L2 TAP — participates in hub L2 domain)", actual)
+
+	if cfg.TunIP != "" {
+		if err := assignAdapterIP(actual, cfg.TunIP); err != nil {
+			log.Printf("direct mode: TUN IP warning: %v", err)
+		} else {
+			log.Printf("direct mode: %s: assigned static IP %s", actual, cfg.TunIP)
+		}
+	}
+
 	return bridge.Interface{Name: actual}, framer, nil
 }

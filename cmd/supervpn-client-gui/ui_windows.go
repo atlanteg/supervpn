@@ -70,6 +70,7 @@ type winUI struct {
 	bridgeTAPEdit     *walk.LineEdit
 	bridgeMethodCombo *walk.ComboBox
 	tunNameEdit       *walk.LineEdit
+	tunIPEdit         *walk.LineEdit
 	statusListenEdit  *walk.LineEdit
 	timeoutEdit       *walk.LineEdit
 
@@ -481,6 +482,8 @@ func (ui *winUI) advancedPage() TabPage {
 						},
 						Label{Text: "TUN adapter name:"},
 						LineEdit{AssignTo: &ui.tunNameEdit, Text: "supervpn"},
+						Label{Text: "TUN static IP (CIDR):"},
+						LineEdit{AssignTo: &ui.tunIPEdit, CueBanner: "e.g. 192.168.100.10/24"},
 					},
 				},
 				GroupBox{
@@ -1034,6 +1037,7 @@ func (ui *winUI) buildConfig() config.ClientConfig {
 		Transport: transportVal,
 		Mode:      modeVal,
 		TunName:   strings.TrimSpace(ui.tunNameEdit.Text()),
+		TunIP:     strings.TrimSpace(ui.tunIPEdit.Text()),
 		FEC: config.FECConfig{
 			K:           fecK,
 			R:           fecR,
@@ -1127,6 +1131,7 @@ func (ui *winUI) populateFromConfig(cfg *config.ClientConfig) {
 	if cfg.TunName != "" {
 		_ = ui.tunNameEdit.SetText(cfg.TunName)
 	}
+	_ = ui.tunIPEdit.SetText(cfg.TunIP)
 	_ = ui.statusListenEdit.SetText(cfg.StatusListen)
 	_ = ui.timeoutEdit.SetText(cfg.Timeout)
 	ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)

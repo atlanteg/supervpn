@@ -76,6 +76,7 @@ type mainUI struct {
 	bridgeTAPEntry    *widget.Entry
 	bridgeMethodEntry *widget.Select
 	tunNameEntry      *widget.Entry
+	tunIPEntry        *widget.Entry
 	statusListenEntry *widget.Entry
 	timeoutEntry      *widget.Entry
 
@@ -384,6 +385,8 @@ func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
 	ui.bridgeMethodEntry.SetSelected("netbridge")
 	ui.tunNameEntry = widget.NewEntry()
 	ui.tunNameEntry.SetText("supervpn")
+	ui.tunIPEntry = widget.NewEntry()
+	ui.tunIPEntry.SetPlaceHolder("e.g. 192.168.100.10/24")
 	ui.statusListenEntry = widget.NewEntry()
 	ui.statusListenEntry.SetPlaceHolder("127.0.0.1:9191")
 	ui.timeoutEntry = widget.NewEntry()
@@ -408,6 +411,7 @@ func (ui *mainUI) buildAdvancedTab() fyne.CanvasObject {
 	}
 	items = append(items,
 		widget.NewFormItem("TUN Name", ui.tunNameEntry),
+		widget.NewFormItem("TUN Static IP", ui.tunIPEntry),
 		widget.NewFormItem("Status Listen", ui.statusListenEntry),
 		widget.NewFormItem("Timeout", ui.timeoutEntry),
 	)
@@ -884,6 +888,7 @@ func (ui *mainUI) buildConfig() config.ClientConfig {
 		Transport: transportVal,
 		Mode:      modeVal,
 		TunName:   strings.TrimSpace(ui.tunNameEntry.Text),
+		TunIP:     strings.TrimSpace(ui.tunIPEntry.Text),
 		FEC: config.FECConfig{
 			K:           fecK,
 			R:           fecR,
@@ -960,6 +965,7 @@ func (ui *mainUI) populateFromConfig(cfg *config.ClientConfig) {
 	if cfg.TunName != "" {
 		ui.tunNameEntry.SetText(cfg.TunName)
 	}
+	ui.tunIPEntry.SetText(cfg.TunIP)
 	ui.statusListenEntry.SetText(cfg.StatusListen)
 	ui.timeoutEntry.SetText(cfg.Timeout)
 	ui.minimizeToTrayCheck.SetChecked(cfg.MinimizeToTray)

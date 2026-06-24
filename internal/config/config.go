@@ -139,8 +139,12 @@ type ClientConfig struct {
 	Mode string `toml:"mode"`
 	// TunName is the WinTun/utun adapter name used in direct mode (no 169.254.x.x interface
 	// detected). Defaults to "supervpn".
-	TunName string          `toml:"tun_name"`
-	FEC     FECConfig           `toml:"fec"`
+	TunName string `toml:"tun_name"`
+	// TunIP, when non-empty, assigns a static IP address to the supervpn TUN/TAP
+	// adapter in direct mode. Accepts CIDR notation, e.g. "192.168.100.10/24".
+	// When empty the adapter keeps its auto-assigned link-local address.
+	TunIP string          `toml:"tun_ip"`
+	FEC   FECConfig       `toml:"fec"`
 	TLS     TLSClientConfig     `toml:"tls"`
 	UDP     UDPConfig           `toml:"udp"`
 	Bridge  BridgeConfig        `toml:"bridge"`
