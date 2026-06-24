@@ -429,10 +429,17 @@ func scanIfaces(skipName string) *Info {
 }
 
 // doProbes sends the 4-byte ZGW discovery probe on all available 169.254
-// interfaces (except skipName).  onPacket is called for every UDP packet
-// received in response — both on the persistent rx socket (port 6811) and on
-// the ephemeral per-interface sockets which stay open for probeRecvWindow.
-func doProbes(rx *net.UDPConn, skipName string, onPacket func([]byte, *net.UDPAddr)) {
+// interfaces, including the VPN tunnel adapter.  onPacket is called for every
+// UDP packet received in response — both on the persistent rx socket (port
+// 6811) and on the ephemeral per-interface sockets which stay open for
+// probeRecvWindow.
+//
+// Unlike scanIfaces, we do NOT skip the VPN tunnel adapter here: when the BMW
+// is on the other side of the VPN hub (bridge client on the remote end), the
+// probe must go through the tunnel so the ZGW can hear it and respond.
+// False-positive detection is not a concern because a ZGW response must contain
+// a valid 17-char VIN — the VPN adapter itself can never fake one.
+func doProbes(rx *net.UDPConn, onPacket func([]byte, *net.UDPAddr)) {
 	// Both broadcast forms: limited (255.255.255.255) and directed link-local
 	// subnet broadcast (169.254.255.255).  Some ZGW firmware only responds to
 	// the directed form.
@@ -453,9 +460,6 @@ func doProbes(rx *net.UDPConn, skipName string, onPacket func([]byte, *net.UDPAd
 	for _, iface := range ifaces {
 		if iface.Addr == nil {
 			continue
-		}
-		if skipName != "" && iface.Name == skipName {
-			continue // don't probe through our own VPN tunnel
 		}
 		sc, err := openSendConn(iface.Addr.String())
 		if err != nil {
@@ -578,7 +582,7 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 	}()
 
 	// Periodic probe + interface re-scan.
-	doProbes(rx, skipIfaceName, processPacket)
+	doProbes(rx, processPacket)
 
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -591,7 +595,7 @@ func Run(ctx context.Context, skipIfaceName string, onChange func(*Info)) {
 			// Re-scan interfaces first so the UI is updated even without ZGW response.
 			ifaceInfo := scanIfaces(skipIfaceName)
 
-			doProbes(rx, skipIfaceName, processPacket)
+			doProbes(rx, processPacket)
 
 			mu.Lock()
 			seen := lastSeen
