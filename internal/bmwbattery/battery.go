@@ -138,7 +138,8 @@ func readF(conn net.Conn, host string) (*Status, error) {
 		}
 	}
 	if d, err := readDID(conn, 0x40, 0x22); err == nil {
-		if mv, ok := findVoltage(d); ok {
+		// 0x4022 is a sample ring: scan from the end to get the most recent entry.
+		if mv, ok := findVoltageFromEnd(d); ok {
 			st.VoltageV, st.HasVoltage, got = float64(mv)/1000.0, true, true
 		}
 	}
@@ -166,6 +167,35 @@ func findVoltage(d []byte) (mv int, ok bool) {
 		}
 	}
 	for i := 0; i+1 < len(d); i++ { // any offset, either endianness
+		if w := int(d[i])<<8 | int(d[i+1]); inRange(w) {
+			return w, true
+		}
+		if w := int(d[i+1])<<8 | int(d[i]); inRange(w) {
+			return w, true
+		}
+	}
+	return 0, false
+}
+
+// findVoltageFromEnd is like findVoltage but scans from the end of the buffer.
+// Use it for DIDs that store samples in a ring: the most recent write is at the
+// highest index, so a reverse scan finds the newest value first.
+func findVoltageFromEnd(d []byte) (mv int, ok bool) {
+	inRange := func(w int) bool { return w >= 11000 && w <= 15200 }
+	// aligned big-endian, newest first
+	for i := (len(d) - 2) &^ 1; i >= 0; i -= 2 {
+		if w := int(d[i])<<8 | int(d[i+1]); inRange(w) {
+			return w, true
+		}
+	}
+	// aligned little-endian, newest first
+	for i := (len(d) - 2) &^ 1; i >= 0; i -= 2 {
+		if w := int(d[i+1])<<8 | int(d[i]); inRange(w) {
+			return w, true
+		}
+	}
+	// any offset, newest first
+	for i := len(d) - 2; i >= 0; i-- {
 		if w := int(d[i])<<8 | int(d[i+1]); inRange(w) {
 			return w, true
 		}
