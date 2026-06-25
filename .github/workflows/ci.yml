@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      build_macos:
+        description: 'Build macOS GUI clients (macos-latest runner — extra cost, off by default)'
+        type: boolean
+        default: false
 
 jobs:
   # ── Compute version + detect what needs rebuilding ────────────────────────
@@ -19,6 +24,7 @@ jobs:
       ver:                ${{ steps.ver.outputs.ver }}
       rebuild_server_cli: ${{ steps.changes.outputs.server_cli }}
       rebuild_gui:        ${{ steps.changes.outputs.gui }}
+      build_macos:        ${{ steps.flags.outputs.build_macos }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +74,12 @@ jobs:
           echo "server_cli=$server_cli" >> "$GITHUB_OUTPUT"
           echo "gui=$gui"               >> "$GITHUB_OUTPUT"
           echo "server_cli=$server_cli  gui=$gui" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resolve build flags
+        id: flags
+        run: |
+          bm="${{ inputs.build_macos }}"
+          echo "build_macos=${bm:-false}" >> "$GITHUB_OUTPUT"
 
       - name: Set run title
         env:
@@ -177,7 +189,7 @@ jobs:
   # Cross-compile amd64 from Apple Silicon using -arch x86_64 clang flags.
   build-gui-macos:
     needs: [setup]
-    if: needs.setup.outputs.rebuild_gui == 'true'
+    if: needs.setup.outputs.rebuild_gui == 'true' && needs.setup.outputs.build_macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
