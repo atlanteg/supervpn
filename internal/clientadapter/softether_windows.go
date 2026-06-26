@@ -13,14 +13,30 @@ import (
 
 const netAdapterClassSE = `SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}`
 
+// isSoftEtherAdapter returns true for a SoftEther VPN Client virtual adapter.
+// Two independent signals — either one is sufficient:
+//   - ComponentId starts with "NeoAdapter_"  (e.g. "NeoAdapter_VPN", "NeoAdapter_VPN2")
+//   - DriverDesc starts with "VPN Client Adapter"  (e.g. "VPN Client Adapter - VPN")
+func isSoftEtherAdapter(compID, driverDesc string) bool {
+	if strings.HasPrefix(strings.ToLower(compID), "neoadapter_") {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(driverDesc), "vpn client adapter") {
+		return true
+	}
+	return false
+}
+
 // DisableSoftEtherAdapters finds every SoftEther VPN Client virtual adapter
-// (identified by ComponentId "sun_neo" in the registry) and disables it.
-// Called at client startup so SoftEther's adapter does not interfere with
-// supervpn's own adapter or the BMW ENET discovery broadcast.
+// and disables it via netsh. Called at startup after UAC elevation.
 func DisableSoftEtherAdapters() {
 	names, err := softEtherAdapterNames()
 	if err != nil {
 		log.Printf("softether: enumerate: %v", err)
+		return
+	}
+	if len(names) == 0 {
+		log.Printf("softether: no adapters found")
 		return
 	}
 	for _, name := range names {
@@ -51,12 +67,18 @@ func softEtherAdapterNames() ([]string, error) {
 			continue
 		}
 		compID, _, _ := sub.GetStringValue("ComponentId")
+		desc, _, _ := sub.GetStringValue("DriverDesc")
 		guid, _, _ := sub.GetStringValue("NetCfgInstanceId")
 		sub.Close()
 
-		if !strings.EqualFold(compID, "sun_neo") || guid == "" {
+		if guid == "" {
 			continue
 		}
+		if !isSoftEtherAdapter(compID, desc) {
+			continue
+		}
+		log.Printf("softether: found adapter guid=%s compID=%q desc=%q", guid, compID, desc)
+
 		name, err := seAdapterName(guid)
 		if err != nil {
 			log.Printf("softether: get name for %s: %v", guid, err)
