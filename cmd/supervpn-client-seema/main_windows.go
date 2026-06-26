@@ -564,6 +564,7 @@ func main() {
 	// Elevate FIRST so the throw-away non-elevated launcher never touches the
 	// mutex (avoids the elevation↔single-instance race).
 	ensureAdmin()
+	clientadapter.DisableSoftEtherAdapters()
 
 	relaunch := update.RelaunchedByUpdate()
 	if relaunch {

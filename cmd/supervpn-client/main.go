@@ -30,6 +30,7 @@ var globalClient *vpnclient.Client
 func main() {
 	update.CleanupOldFiles()
 	killStaleClient()
+	clientadapter.DisableSoftEtherAdapters()
 	if err := os.WriteFile(pidFilePath(), []byte(strconv.Itoa(os.Getpid())), 0644); err == nil {
 		defer os.Remove(pidFilePath())
 	}

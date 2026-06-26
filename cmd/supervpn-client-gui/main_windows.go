@@ -9,6 +9,7 @@ import (
 
 	"github.com/lxn/walk"
 
+	"github.com/atlanteg/supervpn/internal/clientadapter"
 	"github.com/atlanteg/supervpn/internal/update"
 )
 
@@ -20,6 +21,7 @@ func main() {
 	// launcher never touches the mutex, so the elevated instance acquires it
 	// cleanly with no race (which previously left no window on slower hosts).
 	ensureAdmin()
+	clientadapter.DisableSoftEtherAdapters()
 
 	relaunch := update.RelaunchedByUpdate()
 
