@@ -14,17 +14,12 @@ import (
 const netAdapterClassSE = `SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}`
 
 // isSoftEtherAdapter returns true for a SoftEther VPN Client virtual adapter.
-// Two independent signals — either one is sufficient:
+// Requires both signals simultaneously to avoid false positives:
 //   - ComponentId starts with "NeoAdapter_"  (e.g. "NeoAdapter_VPN", "NeoAdapter_VPN2")
 //   - DriverDesc starts with "VPN Client Adapter"  (e.g. "VPN Client Adapter - VPN")
 func isSoftEtherAdapter(compID, driverDesc string) bool {
-	if strings.HasPrefix(strings.ToLower(compID), "neoadapter_") {
-		return true
-	}
-	if strings.HasPrefix(strings.ToLower(driverDesc), "vpn client adapter") {
-		return true
-	}
-	return false
+	return strings.HasPrefix(strings.ToLower(compID), "neoadapter_") &&
+		strings.HasPrefix(strings.ToLower(driverDesc), "vpn client adapter")
 }
 
 // DisableSoftEtherAdapters finds every SoftEther VPN Client virtual adapter
