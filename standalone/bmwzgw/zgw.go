@@ -221,7 +221,7 @@ var chassisPlatform = map[string]string{
 	"G08": "S15C", "G38": "S15C",
 	// ── G-series — CLAR gen 2 (S18A) ─────────────────────────────────────────
 	// 3 Series G20/G21, 4 Series G22/G23/G26, 2 Series G42
-	"G20": "S18A", "G21": "S18A",
+	"G20": "S18A", "G21": "S18A", "G28": "S18A",
 	"G22": "S18A", "G23": "S18A", "G24": "S18A", "G26": "S18A",
 	"G42": "S18A",
 	// X3M G09, X5 G05, X6 G06, X7 G07

@@ -243,6 +243,7 @@ var faTypeKeys = map[string]faEntry{
 	"51BL": {"G30", "520d", true},
 	"51BN": {"G31", "520d", true},
 	"51DH": {"F56", "Cooper S", false},
+	"51FH": {"G28", "320Li", false},
 	"51FL": {"G60", "523d", true},
 	"53AK": {"F44", "", false},
 	"53AP": {"G22", "430i", false},
