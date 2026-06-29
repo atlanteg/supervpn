@@ -13,7 +13,7 @@
 // Setup sequence:
 //   open /dev/bpfN  → BIOCSETIF (bind NIC) → BIOCIMMEDIATE → BIOCPROMISC
 //   → BIOCSRTIMEOUT (100 ms read timeout for ctx cancellation)
-//   → BIOCSSEESENT=0 (suppress self-sent frames to prevent bridge loops)
+//   → BIOCSSEESENT=1 (capture self-sent frames so Mac host traffic reaches hub)
 //   → BIOCGBLEN (get read buffer size)
 //
 // Read returns one or more BPF-framed packets per call. Each is preceded by a
@@ -21,9 +21,12 @@
 // BPF_WORDALIGN (4-byte) boundaries.  We return frames one at a time; any
 // additional packets in the same read buffer are queued in darwinBPF.pending.
 //
-// Bridge loop prevention: BIOCSSEESENT=0 is unreliable on newer macOS/arm64.
-// WriteFrame stores a short hash of each injected frame; ReadFrame drops any
-// frame whose hash matches a recently-injected one (within 300 ms TTL).
+// Bridge loop prevention: with BIOCSSEESENT=1, frames we inject via WriteFrame
+// reappear in BPF reads (via SEESENT and/or the driver's TX loopback on newer
+// macOS/arm64).  WriteFrame records a hash of each injected frame; ReadFrame
+// drops any frame whose hash matches a recently-injected one (300 ms TTL).
+// Kernel-sent frames (Mac host pings, ARP, ZGW probes) are NOT in the dedup
+// map and pass through to the hub — that is intentional.
 package tun
 
 import (
@@ -95,11 +98,12 @@ func openBPF(ifaceName string) (*darwinBPF, error) {
 		return nil, fmt.Errorf("bpf/darwin: BIOCSRTIMEOUT: %w", errno)
 	}
 
-	// Don't see frames we inject — prevents bridge loops.
-	// Not reliable on all macOS versions; software dedup (dedupMap) is the backstop.
-	zero := uint32(0)
+	// Capture self-sent frames so the Mac host's own traffic (pings, ARP,
+	// ZGW probes) is forwarded to the hub in bridge mode.
+	// Frames we inject via WriteFrame are excluded by the software dedup.
+	one2 := uint32(1)
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL,
-		uintptr(fd), unix.BIOCSSEESENT, uintptr(unsafe.Pointer(&zero))); errno != 0 {
+		uintptr(fd), unix.BIOCSSEESENT, uintptr(unsafe.Pointer(&one2))); errno != 0 {
 		unix.Close(fd)
 		return nil, fmt.Errorf("bpf/darwin: BIOCSSEESENT: %w", errno)
 	}
