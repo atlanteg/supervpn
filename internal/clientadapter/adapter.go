@@ -162,10 +162,6 @@ func openDirectAdapter(cfg config.ClientConfig) (bridge.Interface, bridge.Framer
 		} else {
 			log.Printf("direct mode: %s: assigned static IP %s", actual, cfg.TunIP)
 		}
-	} else {
-		if err := autoAssignLinkLocal(actual); err != nil {
-			log.Printf("direct mode: %s: link-local auto-assign: %v", actual, err)
-		}
 	}
 
 	return bridge.Interface{Name: actual}, framer, nil
