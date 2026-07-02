@@ -86,9 +86,10 @@ type winUI struct {
 	bmwIP, bmwVIN string
 
 	// Battery data for G-series cars — polled via ENET while the car is live.
-	batteryLabel  *walk.Label
-	batteryCancel context.CancelFunc
-	batteryIP     string // IP of the car currently being polled; "" = not polling
+	batteryLabel   *walk.Label
+	batteryCancel  context.CancelFunc
+	batteryIP      string     // IP of the car currently being polled; "" = not polling
+	lastZGWInfo    *zgw.Info  // last ZGW state; used to restart polling on checkbox re-enable
 
 	// Last disconnect time label (bottom of Connection tab)
 	disconnectLabel *walk.Label
@@ -195,6 +196,7 @@ func (ui *winUI) runApp() {
 		markup, ip, vin := bmwLinkMarkup(info)
 		ui.form.Synchronize(func() {
 			ui.bmwIP, ui.bmwVIN = ip, vin
+			ui.lastZGWInfo = info
 			if ui.bmwLabel != nil {
 				_ = ui.bmwLabel.SetText(markup)
 			}
@@ -532,9 +534,11 @@ func (ui *winUI) advancedPage() TabPage {
 										ui.batteryCancel()
 										ui.batteryCancel = nil
 									}
+									ui.batteryIP = ""
 									_ = ui.batteryLabel.SetText("")
 								} else {
-									ui.batteryIP = "" // force restart on next ZGW update
+									ui.batteryIP = "" // ensure updateBattery sees it as a new car
+									ui.updateBattery(ui.lastZGWInfo)
 								}
 							},
 						},
