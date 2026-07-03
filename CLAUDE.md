@@ -20,6 +20,7 @@ combines the bridge + client roles.
 | Encryption | AES-128-GCM from internal/crypto | Taken verbatim from myvpn. Speed over strength. Works through ТСПУ. |
 | FEC | Reed-Solomon/XOR matrix (SMPTE 2022-1 style) | Recovers from ≤5% random packet loss without retransmit |
 | FEC negotiation | Server advertises K/R in AuthOK (+2 bytes) | Client auto-adopts server params; no manual config alignment needed |
+| Delivery order | Strict in-order per session on the decode→forward path | The FEC decoder releases frames in (blockID, pktIdx) order, but its callers run concurrently (server UDP worker pool, client dual-path recvLoops, stale flush). A per-session `orderMu` makes decode→forward atomic so the VPN never injects its own reordering — critical for latency-sensitive inner protocols like UDS/ENET ECU flashing that treat out-of-order as loss. AES-GCM decryption stays parallel (outside the lock). |
 | Authentication | Login + password (bcrypt stored, SHA-256 wire) | Simple, no PKI required |
 | Server language | Go | Fast development, excellent networking, single binary deploy |
 | Client language | Go | Same codebase, cross-compile to Windows/macOS |
