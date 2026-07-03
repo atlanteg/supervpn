@@ -11,6 +11,7 @@ package fec
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -249,7 +250,15 @@ func (d *Decoder) FlushStale(maxAge time.Duration) [][]byte {
 	defer d.mu.Unlock()
 	now := time.Now()
 	var out [][]byte
-	for _, b := range d.blocks {
+	// Ascending blockID order: map iteration is randomised, and flushing two
+	// stale blocks in the wrong order would reorder the delivered frames.
+	ids := make([]uint32, 0, len(d.blocks))
+	for id := range d.blocks {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		b := d.blocks[id]
 		if b.done || b.lastActivity.IsZero() || now.Sub(b.lastActivity) < maxAge {
 			continue
 		}

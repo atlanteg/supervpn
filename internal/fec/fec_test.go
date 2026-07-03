@@ -425,3 +425,40 @@ func TestStreamingDelivery(t *testing.T) {
 		}
 	}
 }
+
+// TestFlushStale_AscendingBlockOrder: stale blocks must be flushed in blockID
+// order, or the delivered frames would be reordered relative to the original
+// stream (map iteration order is randomised in Go).
+func TestFlushStale_AscendingBlockOrder(t *testing.T) {
+	const k, r = 4, 1
+	dec, _ := NewDecoder(k, r)
+
+	// Three blocks, each with idx 0 lost so frames 1..3 are stuck behind the gap.
+	for id := uint32(0); id < 3; id++ {
+		for idx := 1; idx < k; idx++ {
+			payload := []byte{byte(id), byte(idx)}
+			if out, _ := dec.AddData(id, idx, payload); out != nil {
+				t.Fatalf("block %d idx %d: unexpected delivery", id, idx)
+			}
+		}
+	}
+
+	dec.mu.Lock()
+	for _, b := range dec.blocks {
+		b.lastActivity = time.Now().Add(-time.Second)
+	}
+	dec.mu.Unlock()
+
+	flushed := dec.FlushStale(500 * time.Millisecond)
+	if len(flushed) != 9 {
+		t.Fatalf("expected 9 flushed frames, got %d", len(flushed))
+	}
+	for i, f := range flushed {
+		wantBlock := byte(i / 3)
+		wantIdx := byte(i%3 + 1)
+		if f[0] != wantBlock || f[1] != wantIdx {
+			t.Fatalf("frame %d: got block=%d idx=%d, want block=%d idx=%d",
+				i, f[0], f[1], wantBlock, wantIdx)
+		}
+	}
+}

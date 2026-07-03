@@ -147,6 +147,13 @@ type Session struct {
 	cipher        *crypto.Cipher
 	replay        crypto.ReplayWindow
 	pipe          *fec.Pipe
+	// orderMu makes "FEC decode → hub.Forward" atomic per session. The decoder
+	// releases frames in strict (blockID, pktIdx) order, but its callers run
+	// concurrently (UDP worker pool, secondary path, stale flush) and could
+	// invert that order between RecvData returning and Forward being called —
+	// injecting reordering the VPN itself created. Taken after cipher.Open so
+	// AES-GCM decryption still runs in parallel across workers.
+	orderMu       sync.Mutex
 	cancel        context.CancelFunc // cancels per-session goroutines (e.g. FEC flush)
 	lastSeenNano  atomic.Int64       // Unix nanoseconds; updated lock-free on every data/repair packet
 	framesRx      atomic.Int64       // frames received from this client and forwarded to hub
@@ -814,8 +821,10 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		if len(frame) < 14 {
 			return
 		}
+		sess.orderMu.Lock()
 		sess.framesRx.Add(1)
 		h.Forward(sessionID, frame)
+		sess.orderMu.Unlock()
 	})
 	pipe.StartRepairSender(sCtx)
 
@@ -861,6 +870,8 @@ func (s *Server) handleData(hdr proto.Header, payload []byte, sendReply func([]b
 	}
 
 	blockID, pktIdx := proto.UnpackDataSeq(hdr.Seq)
+	sess.orderMu.Lock()
+	defer sess.orderMu.Unlock()
 	recovered, err := sess.pipe.RecvData(blockID, pktIdx, frame)
 	if err != nil || recovered == nil {
 		return
@@ -906,6 +917,8 @@ func (s *Server) handleRepair(hdr proto.Header, payload []byte, sendReply func([
 		sess.mu.Unlock()
 	}
 
+	sess.orderMu.Lock()
+	defer sess.orderMu.Unlock()
 	recovered, err := sess.pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
 	if err != nil || recovered == nil {
 		return

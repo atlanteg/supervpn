@@ -403,11 +403,16 @@ func (c *Client) runSession(ctx context.Context) error {
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
 
+	// Shared by both recvLoops and the stale flush — see recvLoop for why.
+	var recvOrderMu sync.Mutex
+
 	pipe.StartRepairSender(sessionCtx)
 	pipe.StartFlush(sessionCtx, 200*time.Millisecond, func(frame []byte) {
 		if len(frame) < 14 {
 			return
 		}
+		recvOrderMu.Lock()
+		defer recvOrderMu.Unlock()
 		select {
 		case downstream <- frame:
 		case <-sessionCtx.Done():
@@ -435,12 +440,12 @@ func (c *Client) runSession(ctx context.Context) error {
 
 	recvErr := make(chan error, 1)
 	go func() {
-		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, fecCfg.K, fecCfg.R, downstream, &lastPong, &stats, c.Logf)
+		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, fecCfg.K, fecCfg.R, downstream, &recvOrderMu, &lastPong, &stats, c.Logf)
 	}()
 
 	if tr2 != nil {
 		go func() {
-			if err := recvLoop(sessionCtx, tr2, sessionID, sessionCipher, pipe, fecCfg.K, fecCfg.R, downstream, &lastPong, &stats, c.Logf); err != nil {
+			if err := recvLoop(sessionCtx, tr2, sessionID, sessionCipher, pipe, fecCfg.K, fecCfg.R, downstream, &recvOrderMu, &lastPong, &stats, c.Logf); err != nil {
 				c.Logf("secondary recv: %v", err)
 			}
 		}()
@@ -743,7 +748,10 @@ func ServerHost(addr string) string {
 	return addr[:i]
 }
 
-func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, localK, localR int, out chan<- []byte, lastPong *atomic.Int64, stats *fecStats, logf func(string, ...interface{})) error {
+// orderMu is shared by the primary and secondary recvLoops and the FEC stale
+// flush: it makes "FEC decode → push to out" atomic, so concurrent deliveries
+// cannot invert the strict (blockID, pktIdx) order the decoder produces.
+func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, localK, localR int, out chan<- []byte, orderMu *sync.Mutex, lastPong *atomic.Int64, stats *fecStats, logf func(string, ...interface{})) error {
 	var replay crypto.ReplayWindow
 	var fecMismatchLogged bool
 	for {
@@ -769,8 +777,10 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 			stats.dataRecv.Add(1)
 			stats.bytesRx.Add(uint64(len(frame)))
 			blockID, pktIdx := proto.UnpackDataSeq(hdr.Seq)
+			orderMu.Lock()
 			delivered, err := pipe.RecvData(blockID, pktIdx, frame)
 			if err != nil {
+				orderMu.Unlock()
 				stats.unrecoverable.Add(1)
 				continue
 			}
@@ -781,9 +791,11 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 				select {
 				case out <- rf:
 				case <-ctx.Done():
+					orderMu.Unlock()
 					return ctx.Err()
 				}
 			}
+			orderMu.Unlock()
 
 		case proto.FrameRepair:
 			blockID, repairIdx, blockK, blockR := proto.UnpackRepairSeq(hdr.Seq)
@@ -807,8 +819,10 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 					blockK, blockR, localK, localR)
 				fecMismatchLogged = true
 			}
+			orderMu.Lock()
 			delivered, err := pipe.RecvRepair(blockID, repairIdx, blockK, blockR, frame)
 			if err != nil {
+				orderMu.Unlock()
 				stats.unrecoverable.Add(1)
 				continue
 			}
@@ -821,10 +835,12 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 					select {
 					case out <- rf:
 					case <-ctx.Done():
+						orderMu.Unlock()
 						return ctx.Err()
 					}
 				}
 			}
+			orderMu.Unlock()
 
 		case proto.FramePong:
 			lastPong.Store(time.Now().UnixNano())
