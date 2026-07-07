@@ -407,6 +407,11 @@ func (c *Client) runSession(ctx context.Context) error {
 	var fragID atomic.Uint32
 	reasm := fragment.NewReassembler()
 
+	// Report the anti-fragmentation posture so it can be confirmed on the wire:
+	// MSS clamping shrinks inner TCP, VPN fragmentation carries oversized non-TCP.
+	c.Logf("session %d: mss_clamp=%d vpn_fragmentation=%v",
+		sessionID, c.Cfg.Bridge.WithDefaults().MSSClamp, fragEnabled)
+
 	b := bridge.New(c.Iface, c.Framer, func(frame []byte) error {
 		if fragEnabled && fragment.NeedsSplit(frame, proto.MaxFramePlaintext) {
 			id := fragID.Add(1)
