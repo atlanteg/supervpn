@@ -140,7 +140,7 @@ func (b *Bridge) RunUpstream(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		ClampTCPMSS(frame, b.MSSClamp)
+		frame = ClampTCPMSS(frame, b.MSSClamp)
 		if err := b.send(frame); err != nil {
 			return fmt.Errorf("bridge: send upstream: %w", err)
 		}
@@ -160,7 +160,7 @@ func (b *Bridge) RunDownstream(ctx context.Context, frames <-chan []byte) error 
 			if !ok {
 				return io.EOF
 			}
-			ClampTCPMSS(frame, b.MSSClamp)
+			frame = ClampTCPMSS(frame, b.MSSClamp)
 			if err := b.framer.WriteFrame(frame); err != nil {
 				// A single inject failure (e.g. the bridged NIC momentarily has
 				// no link, or cannot send raw L2) must NOT tear down the whole

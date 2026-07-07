@@ -22,8 +22,11 @@ type repairJob struct {
 }
 
 // Pipe integrates FEC encoding (send path) and decoding (receive path) for one session.
-// It is safe for concurrent use from a single sender goroutine + single receiver goroutine.
-// Do NOT call Send from multiple goroutines simultaneously — use external locking if needed.
+// Send is safe for concurrent callers: p.mu serialises access to the encoder so
+// each frame is assigned a canonical (blockID, pktIdx) atomically, and the send
+// callbacks are themselves concurrency-safe. (The server hub legitimately calls a
+// destination session's Send from multiple source-session goroutines.) The receive
+// side is likewise safe from multiple recvLoops — the decoder has its own mutex.
 type Pipe struct {
 	enc         *Encoder
 	dec         *Decoder
@@ -179,7 +182,15 @@ func (p *Pipe) StartRepairSender(ctx context.Context) {
 // StartFlush runs a background goroutine that calls FlushStale every maxAge/4.
 // For each flushed frame it calls deliver. Stops when ctx is cancelled.
 // Intended to bound delivery latency when a mid-block loss burst is unrecoverable.
-func (p *Pipe) StartFlush(ctx context.Context, maxAge time.Duration, deliver func([]byte)) {
+//
+// orderMu (the caller's per-session delivery lock) is held across the whole
+// batch — the FlushStale collection AND every deliver — so the flush is atomic
+// with the receive path's decode→forward. Without it, a recv worker forwarding a
+// newer block could interleave between collecting and delivering the stale
+// frames, re-introducing the exact reordering orderMu exists to prevent. The
+// deliver callback must therefore NOT take orderMu itself. Pass nil to disable
+// locking (single-threaded callers/tests).
+func (p *Pipe) StartFlush(ctx context.Context, maxAge time.Duration, orderMu *sync.Mutex, deliver func([]byte)) {
 	tick := maxAge / 4
 	if tick < 10*time.Millisecond {
 		tick = 10 * time.Millisecond
@@ -192,8 +203,14 @@ func (p *Pipe) StartFlush(ctx context.Context, maxAge time.Duration, deliver fun
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				if orderMu != nil {
+					orderMu.Lock()
+				}
 				for _, frame := range p.dec.FlushStale(maxAge) {
 					deliver(frame)
+				}
+				if orderMu != nil {
+					orderMu.Unlock()
 				}
 			}
 		}

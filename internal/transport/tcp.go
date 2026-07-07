@@ -7,9 +7,17 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 const tcpMaxFrame = 65535
+
+// streamWriteTimeout bounds a single blocking Write to a stream peer. A healthy
+// peer accepts a frame into its socket buffer immediately; a peer whose window
+// stays shut this long is effectively dead. Without this bound, a stalled
+// TLS/Reality destination blocks the hub's forward path (which the server holds
+// the per-session order lock across), so one dead peer could freeze a session.
+const streamWriteTimeout = 30 * time.Second
 
 // TCPTransport wraps a single TCP connection with length-prefixed framing.
 // Frame on wire: [length: 2 big-endian][data: length bytes]
@@ -46,7 +54,9 @@ func (t *TCPTransport) Send(f Frame) error {
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(f.Data)))
 	copy(buf[2:], f.Data)
 	t.mu.Lock()
+	_ = t.conn.SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 	_, err := t.conn.Write(buf)
+	_ = t.conn.SetWriteDeadline(time.Time{})
 	t.mu.Unlock()
 	return err
 }

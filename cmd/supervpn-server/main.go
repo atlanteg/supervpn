@@ -775,9 +775,11 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 	fecCfg := s.cfg.FEC.WithDefaults()
 	now := time.Now()
 
-	// Fragment oversized frames only on UDP, where they would IP-fragment and be
-	// DPI-dropped. Over TLS/Reality the stream transport handles segmentation.
-	fragEnabled := mode == "udp"
+	// Fragment oversized frames only on UDP (where they would IP-fragment and be
+	// DPI-dropped) AND only toward clients that advertised FrameDataFrag support —
+	// an old client would drop the unknown frame type and lose large frames.
+	// Over TLS/Reality the stream transport handles segmentation.
+	fragEnabled := mode == "udp" && hello.Flags&proto.FlagFragment != 0
 
 	sess := &Session{
 		ID:          sessionID,
@@ -835,14 +837,13 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 
 	// Flush stale FEC blocks every 50ms; delivers buffered frames that are stuck
 	// behind an unrecoverable gap (mid-block loss burst).
-	pipe.StartFlush(sCtx, 200*time.Millisecond, func(frame []byte) {
+	pipe.StartFlush(sCtx, 200*time.Millisecond, &sess.orderMu, func(frame []byte) {
 		if len(frame) < 14 {
 			return
 		}
-		sess.orderMu.Lock()
+		// orderMu is held by StartFlush across the whole batch — do not re-lock.
 		sess.framesRx.Add(1)
 		h.Forward(sessionID, frame)
-		sess.orderMu.Unlock()
 	})
 	pipe.StartRepairSender(sCtx)
 

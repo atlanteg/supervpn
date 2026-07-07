@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
 )
@@ -67,15 +68,22 @@ func setTCPChecksum(ip, tcp []byte) {
 
 func TestClampTCPMSS_LowersAndKeepsChecksumValid(t *testing.T) {
 	frame, tcpOff := buildSYN(1460)
-	ClampTCPMSS(frame, 1300)
+	orig := make([]byte, len(frame))
+	copy(orig, frame)
 
-	got := binary.BigEndian.Uint16(frame[tcpOff+22 : tcpOff+24])
+	out := ClampTCPMSS(frame, 1300)
+
+	// Copy-on-write: the input must be untouched, the returned slice is the copy.
+	if !bytes.Equal(frame, orig) {
+		t.Fatal("ClampTCPMSS mutated the input frame (must be copy-on-write)")
+	}
+	got := binary.BigEndian.Uint16(out[tcpOff+22 : tcpOff+24])
 	if got != 1300 {
 		t.Fatalf("MSS not clamped: got %d, want 1300", got)
 	}
 	// Verify the checksum still validates against a full recompute.
-	ip := frame[14:34]
-	tcp := frame[tcpOff:]
+	ip := out[14:34]
+	tcp := out[tcpOff:]
 	stored := binary.BigEndian.Uint16(tcp[16:18])
 	binary.BigEndian.PutUint16(tcp[16:18], 0)
 	want := tcpChecksum(ip, tcp)

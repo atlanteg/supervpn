@@ -52,6 +52,7 @@ type partial struct {
 	got     int
 	total   int       // bytes accumulated so far
 	created time.Time
+	done    bool // frame already reassembled+returned; kept as a tombstone until TTL
 }
 
 // Reassembler collects FrameDataFrag pieces keyed by fragID and returns the
@@ -90,6 +91,13 @@ func (r *Reassembler) Add(fragID uint32, idx, count uint8, piece []byte) []byte 
 
 	now := r.now()
 	p, ok := r.pending[fragID]
+	if ok && p.done {
+		// Frame already delivered; this is a late duplicate piece from the other
+		// UDP path (the client's two recvLoops have independent replay windows, so
+		// crypto does not drop it here). Ignore it — do NOT re-complete and inject
+		// the frame twice. The tombstone is reclaimed by evictLocked after the TTL.
+		return nil
+	}
 	if !ok {
 		r.evictLocked(now)
 		p = &partial{pieces: make([][]byte, count), count: count, created: now}
@@ -118,7 +126,10 @@ func (r *Reassembler) Add(fragID uint32, idx, count uint8, piece []byte) []byte 
 	for _, pc := range p.pieces {
 		out = append(out, pc...)
 	}
-	delete(r.pending, fragID)
+	// Keep a tombstone (pieces freed) so duplicate pieces from the slower path are
+	// dropped instead of re-creating the entry and re-delivering the frame.
+	p.done = true
+	p.pieces = nil
 	return out
 }
 

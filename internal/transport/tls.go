@@ -85,6 +85,10 @@ func AcceptTLS(conn net.Conn) (*TLSTransport, error) {
 	if !ok {
 		return &TLSTransport{TCPTransport: WrapTCP(conn)}, nil
 	}
+	// Enable TCP keepalive on the underlying socket so a silently-vanished peer
+	// (NAT drop, power loss, no FIN) is eventually detected instead of leaking a
+	// blocked goroutine + FD forever.
+	enableKeepalive(tlsConn.NetConn())
 	tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tlsConn.Handshake(); err != nil {
 		tlsConn.Close()

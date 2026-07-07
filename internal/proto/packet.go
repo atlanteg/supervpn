@@ -39,13 +39,15 @@ const (
 
 const (
 	HeaderSize = 1 + 2 + 4 + 8 // type + hub_id + session_id + seq
-	MaxPayload = 1472          // MTU 1500 - UDP 28 - HeaderSize 15
+	MaxPayload = 1472          // UDP payload budget: MTU 1500 - IP 20 - UDP 8
 
 	// MaxFramePlaintext is the largest inner L2 frame that fits one UDP datagram
-	// without IP fragmentation:  MaxPayload(1472) - crypto(24 hdr + 16 tag) = 1432,
-	// held to 1400 for margin on slightly-reduced paths (PPPoE 1492, mobile,
-	// double-NAT). A plaintext frame larger than this must be VPN-fragmented into
-	// FrameDataFrag pieces so it survives DPI (fragmented UDP is dropped by ТСПУ).
+	// without IP fragmentation. Per-frame overhead on the wire is proto HeaderSize
+	// (15) + crypto (24 hdr + 16 tag) = 55, so the true ceiling at a 1500 MTU is
+	// 1500 - 20 (IP) - 8 (UDP) - 55 = 1417. Held to 1400 for margin on
+	// slightly-reduced paths (PPPoE 1492, mobile, double-NAT) — a 1400-byte frame
+	// yields a 1483-byte datagram. A larger plaintext frame must be VPN-fragmented
+	// into FrameDataFrag pieces so it survives DPI (fragmented UDP is dropped by ТСПУ).
 	MaxFramePlaintext = 1400
 )
 
@@ -128,26 +130,33 @@ const (
 )
 
 // AuthHello is sent by client inside a FrameAuth frame to initiate a session.
-// Binary: [sub_type:1=0x01][hub_id:2][login_len:1][login:N][pwhash:32]
+// Binary: [sub_type:1=0x01][hub_id:2][login_len:1][login:N][pwhash:32][flags:1]
+//
+// Flags is an optional trailing capability byte (FlagFragment = "I understand
+// FrameDataFrag"). It is appended after the fixed layout so old servers that stop
+// parsing at pwhash simply ignore it, and old clients that never send it are read
+// as Flags=0 — the server then must not fragment toward them.
 type AuthHello struct {
 	HubID  uint16
 	Login  string
 	PWHash [32]byte // raw SHA-256 of password
+	Flags  uint8    // client capability flags (FlagFragment, ...)
 }
 
 func (a AuthHello) Marshal() []byte {
 	loginBytes := []byte(a.Login)
-	buf := make([]byte, 2+1+len(loginBytes)+32)
+	buf := make([]byte, 2+1+len(loginBytes)+32+1)
 	binary.BigEndian.PutUint16(buf[0:2], a.HubID)
 	buf[2] = uint8(len(loginBytes))
 	copy(buf[3:], loginBytes)
 	copy(buf[3+len(loginBytes):], a.PWHash[:])
+	buf[3+len(loginBytes)+32] = a.Flags
 	return buf
 }
 
 func ParseAuthHello(b []byte) (AuthHello, error) {
 	// b starts after the sub_type byte
-	// layout: [hub_id:2][login_len:1][login:N][pwhash:32]
+	// layout: [hub_id:2][login_len:1][login:N][pwhash:32][flags:1 optional]
 	if len(b) < 2+1+32 {
 		return AuthHello{}, fmt.Errorf("proto: AuthHello too short")
 	}
@@ -159,7 +168,11 @@ func ParseAuthHello(b []byte) (AuthHello, error) {
 	login := string(b[3 : 3+loginLen])
 	var pwhash [32]byte
 	copy(pwhash[:], b[3+loginLen:3+loginLen+32])
-	return AuthHello{HubID: hubID, Login: login, PWHash: pwhash}, nil
+	h := AuthHello{HubID: hubID, Login: login, PWHash: pwhash}
+	if len(b) >= 3+loginLen+32+1 {
+		h.Flags = b[3+loginLen+32]
+	}
+	return h, nil
 }
 
 // AuthOK flag bits (AuthOK.Flags).

@@ -454,12 +454,11 @@ func (c *Client) runSession(ctx context.Context) error {
 	var recvOrderMu sync.Mutex
 
 	pipe.StartRepairSender(sessionCtx)
-	pipe.StartFlush(sessionCtx, 200*time.Millisecond, func(frame []byte) {
+	pipe.StartFlush(sessionCtx, 200*time.Millisecond, &recvOrderMu, func(frame []byte) {
 		if len(frame) < 14 {
 			return
 		}
-		recvOrderMu.Lock()
-		defer recvOrderMu.Unlock()
+		// orderMu is held by StartFlush across the whole batch — do not re-lock.
 		select {
 		case downstream <- frame:
 		case <-sessionCtx.Done():
@@ -722,6 +721,7 @@ func authenticate(ctx context.Context, tr transport.Transport, cfg config.Client
 		HubID:  cfg.HubID,
 		Login:  cfg.Login,
 		PWHash: pwHash,
+		Flags:  proto.FlagFragment, // we understand FrameDataFrag
 	}
 	payload := append([]byte{proto.AuthMsgHello}, hello.Marshal()...)
 	hdr := make([]byte, proto.HeaderSize)

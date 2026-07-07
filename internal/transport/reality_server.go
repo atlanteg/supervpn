@@ -138,6 +138,8 @@ func (p RealityServerParams) PoolSize() int { return len(p.privs) }
 // blocks until the proxied connection closes, so call this from a per-connection
 // goroutine.
 func AcceptReality(ctx context.Context, raw net.Conn, p RealityServerParams) (tr Transport, authorized bool, err error) {
+	// Detect a silently-vanished peer instead of leaking a blocked goroutine + FD.
+	enableKeepalive(raw)
 	_ = raw.SetReadDeadline(time.Now().Add(10 * time.Second))
 
 	record, consumed, perr := readFirstTLSRecord(raw)

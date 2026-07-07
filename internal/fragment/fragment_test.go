@@ -81,6 +81,33 @@ func TestReassemble_OutOfOrderAndDuplicate(t *testing.T) {
 	}
 }
 
+// TestReassemble_DualPathNoDoubleDelivery: the same frame arriving twice (both
+// UDP paths) must be delivered exactly once — the second path's copies must not
+// re-complete the frame after the first path already delivered it.
+func TestReassemble_DualPathNoDoubleDelivery(t *testing.T) {
+	f := makeFrame(3000)
+	pieces := Split(f, 1400) // 3 pieces
+	r := NewReassembler()
+
+	deliveries := 0
+	feed := func() {
+		for i, p := range pieces {
+			if out := r.Add(55, uint8(i), uint8(len(pieces)), p); out != nil {
+				deliveries++
+				if !bytes.Equal(out, f) {
+					t.Fatal("delivered frame mismatch")
+				}
+			}
+		}
+	}
+	feed() // primary path
+	feed() // secondary path: identical pieces, must NOT re-deliver
+
+	if deliveries != 1 {
+		t.Fatalf("frame delivered %d times, want exactly 1", deliveries)
+	}
+}
+
 func TestReassemble_SinglePiece(t *testing.T) {
 	r := NewReassembler()
 	f := makeFrame(500)
