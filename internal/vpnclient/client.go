@@ -399,6 +399,11 @@ func (c *Client) runSession(ctx context.Context) error {
 	b := bridge.New(c.Iface, c.Framer, func(frame []byte) error {
 		return pipe.Send(frame)
 	})
+	// mss_clamp: cap inner TCP MSS so full-size frames never fragment through the
+	// VPN overhead (fixes ISTA reads / UDS flashing over the bulk TCP stream).
+	if mc := c.Cfg.Bridge.WithDefaults().MSSClamp; mc > 0 {
+		b.MSSClamp = uint16(mc)
+	}
 
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()

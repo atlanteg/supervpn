@@ -121,6 +121,11 @@ type Bridge struct {
 	send      func(frame []byte) error // sends frame to server
 	SessionID uint32
 	HubID     uint16
+	// MSSClamp caps the TCP MSS of bridged SYN segments so the inner TCP never
+	// emits frames that fragment once wrapped in VPN overhead. 0 = disabled.
+	// Applied in BOTH directions so a connection is protected regardless of which
+	// side (local or a remote peer) originated the SYN or which client clamps.
+	MSSClamp uint16
 }
 
 func New(iface Interface, framer Framer, send func(frame []byte) error) *Bridge {
@@ -135,6 +140,7 @@ func (b *Bridge) RunUpstream(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		ClampTCPMSS(frame, b.MSSClamp)
 		if err := b.send(frame); err != nil {
 			return fmt.Errorf("bridge: send upstream: %w", err)
 		}
@@ -154,6 +160,7 @@ func (b *Bridge) RunDownstream(ctx context.Context, frames <-chan []byte) error 
 			if !ok {
 				return io.EOF
 			}
+			ClampTCPMSS(frame, b.MSSClamp)
 			if err := b.framer.WriteFrame(frame); err != nil {
 				// A single inject failure (e.g. the bridged NIC momentarily has
 				// no link, or cannot send raw L2) must NOT tear down the whole

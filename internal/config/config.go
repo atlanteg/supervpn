@@ -203,6 +203,13 @@ type BridgeConfig struct {
 	//
 	// On Linux and macOS this field is ignored; the native TUN/TAP is used.
 	SetupMethod string `toml:"setup_method"`
+
+	// MSSClamp caps the TCP MSS of bridged SYN segments (see bridge.DefaultMSSClamp).
+	// Without it, full-size inner frames fragment once wrapped in VPN overhead,
+	// which quietly breaks sustained streams (ISTA reads, UDS ECU flashing) while
+	// leaving short request/response traffic (coding, Tool32) working. 0 in the
+	// TOML means "use the default (1300)"; set a negative value to disable.
+	MSSClamp int `toml:"mss_clamp"`
 }
 
 func (b BridgeConfig) WithDefaults() BridgeConfig {
@@ -212,8 +219,15 @@ func (b BridgeConfig) WithDefaults() BridgeConfig {
 	if b.SetupMethod == "" {
 		b.SetupMethod = "netbridge"
 	}
+	if b.MSSClamp == 0 {
+		b.MSSClamp = DefaultBridgeMSSClamp
+	}
 	return b
 }
+
+// DefaultBridgeMSSClamp mirrors bridge.DefaultMSSClamp; duplicated here to avoid
+// a config→bridge import cycle. Kept in sync with that constant.
+const DefaultBridgeMSSClamp = 1300
 
 // UDPConfig controls the knock-and-dial strategy used before each UDP auth attempt.
 type UDPConfig struct {
