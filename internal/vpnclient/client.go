@@ -15,6 +15,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/crypto"
 	"github.com/atlanteg/supervpn/internal/fec"
+	"github.com/atlanteg/supervpn/internal/fragment"
 	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/transport"
 )
@@ -396,7 +397,43 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 
 	downstream := make(chan []byte, 64)
+
+	// VPN-level fragmentation: only when the server advertised it AND we are on
+	// UDP (over TLS/Reality the stream transport handles segmentation). It splits
+	// oversized frames — large non-TCP traffic that MSS clamping can't shrink —
+	// into FrameDataFrag pieces so they don't IP-fragment and get dropped by DPI.
+	// Normal frames stay on the untouched FrameData/FEC path.
+	fragEnabled := tr.Mode() == "udp" && ar.serverFlags&proto.FlagFragment != 0
+	var fragID atomic.Uint32
+	reasm := fragment.NewReassembler()
+
 	b := bridge.New(c.Iface, c.Framer, func(frame []byte) error {
+		if fragEnabled && fragment.NeedsSplit(frame, proto.MaxFramePlaintext) {
+			id := fragID.Add(1)
+			pieces := fragment.Split(frame, proto.MaxFramePlaintext)
+			for i, pc := range pieces {
+				encrypted, encErr := sessionCipher.Seal(pc)
+				if encErr != nil {
+					return encErr
+				}
+				total := proto.HeaderSize + len(encrypted)
+				bufPtr := sendBufPool.Get().(*[]byte)
+				if cap(*bufPtr) < total {
+					*bufPtr = make([]byte, total)
+				}
+				pkt := (*bufPtr)[:total]
+				proto.Header{
+					Type: proto.FrameDataFrag, HubID: c.Cfg.HubID,
+					SessionID: sessionID,
+					Seq:       proto.PackFragSeq(id, uint8(i), uint8(len(pieces))),
+				}.Marshal(pkt[:proto.HeaderSize])
+				copy(pkt[proto.HeaderSize:], encrypted)
+				sendOnBoth(tr, tr2, pkt)
+				sendBufPool.Put(bufPtr)
+			}
+			stats.bytesTx.Add(uint64(len(frame)))
+			return nil
+		}
 		return pipe.Send(frame)
 	})
 	// mss_clamp: cap inner TCP MSS so full-size frames never fragment through the
@@ -445,12 +482,12 @@ func (c *Client) runSession(ctx context.Context) error {
 
 	recvErr := make(chan error, 1)
 	go func() {
-		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, fecCfg.K, fecCfg.R, downstream, &recvOrderMu, &lastPong, &stats, c.Logf)
+		recvErr <- recvLoop(sessionCtx, tr, sessionID, sessionCipher, pipe, reasm, fecCfg.K, fecCfg.R, downstream, &recvOrderMu, &lastPong, &stats, c.Logf)
 	}()
 
 	if tr2 != nil {
 		go func() {
-			if err := recvLoop(sessionCtx, tr2, sessionID, sessionCipher, pipe, fecCfg.K, fecCfg.R, downstream, &recvOrderMu, &lastPong, &stats, c.Logf); err != nil {
+			if err := recvLoop(sessionCtx, tr2, sessionID, sessionCipher, pipe, reasm, fecCfg.K, fecCfg.R, downstream, &recvOrderMu, &lastPong, &stats, c.Logf); err != nil {
 				c.Logf("secondary recv: %v", err)
 			}
 		}()
@@ -670,6 +707,7 @@ type authResult struct {
 	serverK          uint8  // server's FEC K (0 = not advertised by old server)
 	serverR          uint8  // server's FEC R
 	serverRepairDelay uint16 // server's repair_delay ms (0 = not advertised)
+	serverFlags      uint8  // AuthOK capability flags (proto.FlagFragment, ...)
 }
 
 func authenticate(ctx context.Context, tr transport.Transport, cfg config.ClientConfig) (authResult, error) {
@@ -722,6 +760,7 @@ func authenticate(ctx context.Context, tr transport.Transport, cfg config.Client
 				serverK:           authOK.FecK,
 				serverR:           authOK.FecR,
 				serverRepairDelay: authOK.FecRepairDelay,
+				serverFlags:       authOK.Flags,
 			}, nil
 
 		case proto.AuthMsgError:
@@ -756,7 +795,7 @@ func ServerHost(addr string) string {
 // orderMu is shared by the primary and secondary recvLoops and the FEC stale
 // flush: it makes "FEC decode → push to out" atomic, so concurrent deliveries
 // cannot invert the strict (blockID, pktIdx) order the decoder produces.
-func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, localK, localR int, out chan<- []byte, orderMu *sync.Mutex, lastPong *atomic.Int64, stats *fecStats, logf func(string, ...interface{})) error {
+func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cipher *crypto.Cipher, pipe *fec.Pipe, reasm *fragment.Reassembler, localK, localR int, out chan<- []byte, orderMu *sync.Mutex, lastPong *atomic.Int64, stats *fecStats, logf func(string, ...interface{})) error {
 	var replay crypto.ReplayWindow
 	var fecMismatchLogged bool
 	for {
@@ -799,6 +838,26 @@ func recvLoop(ctx context.Context, tr transport.Transport, sessionID uint32, cip
 					orderMu.Unlock()
 					return ctx.Err()
 				}
+			}
+			orderMu.Unlock()
+
+		case proto.FrameDataFrag:
+			frame, err := cipher.Open(payload, &replay)
+			if err != nil {
+				continue
+			}
+			stats.bytesRx.Add(uint64(len(frame)))
+			fragID, idx, count := proto.UnpackFragSeq(hdr.Seq)
+			whole := reasm.Add(fragID, idx, count, frame)
+			if whole == nil || len(whole) < 14 {
+				continue
+			}
+			orderMu.Lock()
+			select {
+			case out <- whole:
+			case <-ctx.Done():
+				orderMu.Unlock()
+				return ctx.Err()
 			}
 			orderMu.Unlock()
 

@@ -18,6 +18,7 @@ const (
 	FrameData     FrameType = 0x01 // encrypted L2 Ethernet frame
 	FrameRepair   FrameType = 0x02 // FEC repair symbol
 	FrameJoin     FrameType = 0x03 // register secondary path (no payload; SessionID identifies session)
+	FrameDataFrag FrameType = 0x04 // one fragment of an oversized L2 frame (see PackFragSeq)
 	FrameAuth     FrameType = 0x10 // handshake/auth
 	FrameListHubs FrameType = 0x11 // pre-auth hub discovery (no credentials required)
 	FramePing     FrameType = 0x20
@@ -39,6 +40,13 @@ const (
 const (
 	HeaderSize = 1 + 2 + 4 + 8 // type + hub_id + session_id + seq
 	MaxPayload = 1472          // MTU 1500 - UDP 28 - HeaderSize 15
+
+	// MaxFramePlaintext is the largest inner L2 frame that fits one UDP datagram
+	// without IP fragmentation:  MaxPayload(1472) - crypto(24 hdr + 16 tag) = 1432,
+	// held to 1400 for margin on slightly-reduced paths (PPPoE 1492, mobile,
+	// double-NAT). A plaintext frame larger than this must be VPN-fragmented into
+	// FrameDataFrag pieces so it survives DPI (fragmented UDP is dropped by ТСПУ).
+	MaxFramePlaintext = 1400
 )
 
 type Header struct {
@@ -97,6 +105,21 @@ func UnpackRepairSeq(seq uint64) (blockID uint32, repairIdx, blockK, blockR uint
 	return uint32(seq >> 32), uint8(seq >> 24), uint8(seq >> 16), uint8(seq >> 8)
 }
 
+// PackFragSeq packs fragmentation metadata for a FrameDataFrag frame:
+//
+//	[frag_id: 4 bytes][frag_idx: 1 byte][frag_count: 1 byte][padding: 2 bytes]
+//
+// frag_id groups the pieces of one original frame; frag_idx is the piece index
+// [0,frag_count); frag_count is the total number of pieces.
+func PackFragSeq(fragID uint32, fragIdx, fragCount uint8) uint64 {
+	return uint64(fragID)<<32 | uint64(fragIdx)<<24 | uint64(fragCount)<<16
+}
+
+// UnpackFragSeq extracts fragmentation metadata from a FrameDataFrag Seq field.
+func UnpackFragSeq(seq uint64) (fragID uint32, fragIdx, fragCount uint8) {
+	return uint32(seq >> 32), uint8(seq >> 24), uint8(seq >> 16)
+}
+
 // Auth sub-message types (first byte of FrameAuth payload)
 const (
 	AuthMsgHello uint8 = 0x01
@@ -139,26 +162,39 @@ func ParseAuthHello(b []byte) (AuthHello, error) {
 	return AuthHello{HubID: hubID, Login: login, PWHash: pwhash}, nil
 }
 
+// AuthOK flag bits (AuthOK.Flags).
+const (
+	// FlagFragment tells the client the server will VPN-fragment oversized frames
+	// (FrameDataFrag) and expects the client to do the same. Advertised only for
+	// UDP sessions, where an unfragmented full frame would IP-fragment and be
+	// dropped by DPI. Over TLS/Reality the stream transport handles segmentation,
+	// so the flag is not set and both ends stay on plain FrameData.
+	FlagFragment uint8 = 1 << 0
+)
+
 // AuthOK is sent by server on success.
-// Binary: [sub_type:1=0x02][session_id:4][fec_k:1][fec_r:1][fec_repair_delay_ms:2]
+// Binary: [sub_type:1=0x02][session_id:4][fec_k:1][fec_r:1][fec_repair_delay_ms:2][flags:1]
 //
 // FecK, FecR and FecRepairDelay carry the server's active FEC parameters so
 // clients can adopt them automatically without manual config alignment.
 // All three fields are 0 when the server does not advertise FEC params.
-// ParseAuthOK tolerates old shorter messages for backward compatibility.
+// Flags carries capability bits (see FlagFragment). ParseAuthOK tolerates old
+// shorter messages for backward compatibility, so appended fields are optional.
 type AuthOK struct {
 	SessionID      uint32
 	FecK           uint8  // server's FEC K (data pkts per block); 0 = not advertised
 	FecR           uint8  // server's FEC R (repair pkts per block); 0 = not advertised
 	FecRepairDelay uint16 // server's repair_delay in ms; 0 = not advertised
+	Flags          uint8  // capability flags (FlagFragment, ...)
 }
 
 func (a AuthOK) Marshal() []byte {
-	buf := make([]byte, 8)
+	buf := make([]byte, 9)
 	binary.BigEndian.PutUint32(buf[0:4], a.SessionID)
 	buf[4] = a.FecK
 	buf[5] = a.FecR
 	binary.BigEndian.PutUint16(buf[6:8], a.FecRepairDelay)
+	buf[8] = a.Flags
 	return buf
 }
 
@@ -174,6 +210,9 @@ func ParseAuthOK(b []byte) (AuthOK, error) {
 	}
 	if len(b) >= 8 {
 		ok.FecRepairDelay = binary.BigEndian.Uint16(b[6:8])
+	}
+	if len(b) >= 9 {
+		ok.Flags = b[8]
 	}
 	return ok, nil
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/atlanteg/supervpn/internal/config"
 	"github.com/atlanteg/supervpn/internal/crypto"
 	"github.com/atlanteg/supervpn/internal/fec"
+	"github.com/atlanteg/supervpn/internal/fragment"
 	"github.com/atlanteg/supervpn/internal/hub"
 	"github.com/atlanteg/supervpn/internal/proto"
 	"github.com/atlanteg/supervpn/internal/transport"
@@ -147,6 +148,12 @@ type Session struct {
 	cipher        *crypto.Cipher
 	replay        crypto.ReplayWindow
 	pipe          *fec.Pipe
+	// fragEnabled is true for UDP sessions: oversized frames are split into
+	// FrameDataFrag pieces (so they don't IP-fragment and get DPI-dropped) and
+	// reassembled via reasm before forwarding to the hub. Off over TLS/Reality.
+	fragEnabled   bool
+	fragID        atomic.Uint32
+	reasm         *fragment.Reassembler
 	// orderMu makes "FEC decode → hub.Forward" atomic per session. The decoder
 	// releases frames in strict (blockID, pktIdx) order, but its callers run
 	// concurrently (UDP worker pool, secondary path, stale flush) and could
@@ -567,6 +574,8 @@ func (s *Server) handlePacket(ctx context.Context, pkt []byte, sendReply func([]
 		}
 	case proto.FrameData:
 		s.handleData(hdr, payload, sendReply, remoteAddr, secondary)
+	case proto.FrameDataFrag:
+		s.handleFrag(hdr, payload, sendReply, remoteAddr, secondary)
 	case proto.FrameRepair:
 		s.handleRepair(hdr, payload, sendReply, remoteAddr, secondary)
 	case proto.FrameJoin:
@@ -766,6 +775,10 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 	fecCfg := s.cfg.FEC.WithDefaults()
 	now := time.Now()
 
+	// Fragment oversized frames only on UDP, where they would IP-fragment and be
+	// DPI-dropped. Over TLS/Reality the stream transport handles segmentation.
+	fragEnabled := mode == "udp"
+
 	sess := &Session{
 		ID:          sessionID,
 		HubID:       hello.HubID,
@@ -776,6 +789,8 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		sendRaw:     sendReply,
 		closeConn:   closeConn,
 		cipher:      cipher,
+		fragEnabled: fragEnabled,
+		reasm:       fragment.NewReassembler(),
 	}
 	sess.lastSeenNano.Store(now.UnixNano())
 
@@ -810,6 +825,9 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 		Login:     hello.Login,
 		Send: func(frame []byte) error {
 			sess.hubSendCalls.Add(1)
+			if sess.fragEnabled && fragment.NeedsSplit(frame, proto.MaxFramePlaintext) {
+				return s.sendFrag(sess, frame)
+			}
 			return sess.pipe.Send(frame)
 		},
 	}
@@ -831,12 +849,18 @@ func (s *Server) handleAuth(ctx context.Context, payload []byte, sendReply func(
 	log.Printf("auth ok: %s@hub%d session=%d addr=%s mode=%s fec=K%d/R%d delay=%dms",
 		hello.Login, hello.HubID, sessionID, remoteAddr, mode, fecCfg.K, fecCfg.R, fecCfg.RepairDelay)
 
-	// Advertise the server's FEC params so the client can auto-adopt them.
+	// Advertise the server's FEC params so the client can auto-adopt them, plus
+	// the fragmentation capability so the client fragments its oversized frames too.
+	var flags uint8
+	if fragEnabled {
+		flags |= proto.FlagFragment
+	}
 	okMsg := proto.AuthOK{
 		SessionID:      sessionID,
 		FecK:           uint8(fecCfg.K),
 		FecR:           uint8(fecCfg.R),
 		FecRepairDelay: uint16(fecCfg.RepairDelay),
+		Flags:          flags,
 	}
 	p := append([]byte{proto.AuthMsgOK}, okMsg.Marshal()...)
 	hdr := make([]byte, proto.HeaderSize)
@@ -886,6 +910,49 @@ func (s *Server) handleData(hdr proto.Header, payload []byte, sendReply func([]b
 			h.Forward(hdr.SessionID, f)
 		}
 	}
+}
+
+// handleFrag decrypts one FrameDataFrag piece, reassembles the original frame,
+// and forwards it to the hub once complete. Fragments bypass the FEC pipe; their
+// redundancy comes from being sent on both UDP paths (the replay window and the
+// reassembler both drop the duplicate copy).
+func (s *Server) handleFrag(hdr proto.Header, payload []byte, sendReply func([]byte) error, remoteAddr string, secondary bool) {
+	s.mu.RLock()
+	sess, ok := s.sessions[hdr.SessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return
+	}
+	sess.lastSeenNano.Store(time.Now().UnixNano())
+
+	frame, err := sess.cipher.Open(payload, &sess.replay)
+	if err != nil {
+		return
+	}
+
+	if secondary {
+		sess.mu.Lock()
+		if sess.sendRaw2 == nil {
+			sess.sendRaw2 = sendReply
+			sess.secondaryAddr = remoteAddr
+			log.Printf("session %d: secondary UDP path registered from %s", sess.ID, remoteAddr)
+		}
+		sess.mu.Unlock()
+	}
+
+	fragID, idx, count := proto.UnpackFragSeq(hdr.Seq)
+	whole := sess.reasm.Add(fragID, idx, count, frame)
+	if whole == nil || len(whole) < 14 {
+		return
+	}
+	h, ok := s.manager.Get(sess.HubID)
+	if !ok {
+		return
+	}
+	sess.orderMu.Lock()
+	sess.framesRx.Add(1)
+	h.Forward(hdr.SessionID, whole)
+	sess.orderMu.Unlock()
 }
 
 func (s *Server) handleRepair(hdr proto.Header, payload []byte, sendReply func([]byte) error, remoteAddr string, secondary bool) {
@@ -987,6 +1054,43 @@ func (s *Server) sendFECData(sess *Session, blockID uint32, pktIdx uint16, frame
 	}
 	s.sendPktPool.Put(bufPtr)
 	return err
+}
+
+// sendFrag splits an oversized frame into FrameDataFrag pieces and sends each on
+// both paths. Used instead of the FEC pipe for frames larger than one datagram's
+// plaintext budget, so they survive DPI instead of IP-fragmenting.
+func (s *Server) sendFrag(sess *Session, frame []byte) error {
+	id := sess.fragID.Add(1)
+	pieces := fragment.Split(frame, proto.MaxFramePlaintext)
+	sess.mu.Lock()
+	send2 := sess.sendRaw2
+	sess.mu.Unlock()
+	for i, pc := range pieces {
+		encrypted, err := sess.cipher.Seal(pc)
+		if err != nil {
+			return err
+		}
+		total := proto.HeaderSize + len(encrypted)
+		bufPtr := s.sendPktPool.Get().(*[]byte)
+		if cap(*bufPtr) < total {
+			*bufPtr = make([]byte, total)
+		}
+		pkt := (*bufPtr)[:total]
+		proto.Header{
+			Type:      proto.FrameDataFrag,
+			HubID:     sess.HubID,
+			SessionID: sess.ID,
+			Seq:       proto.PackFragSeq(id, uint8(i), uint8(len(pieces))),
+		}.Marshal(pkt[:proto.HeaderSize])
+		copy(pkt[proto.HeaderSize:], encrypted)
+		sess.framesTx.Add(1)
+		_ = sess.sendRaw(pkt)
+		if send2 != nil {
+			_ = send2(pkt)
+		}
+		s.sendPktPool.Put(bufPtr)
+	}
+	return nil
 }
 
 func (s *Server) sendFECRepair(sess *Session, blockID uint32, repairIdx, blockK, blockR uint8, data []byte) error {
