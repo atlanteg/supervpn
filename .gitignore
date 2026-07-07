@@ -26,3 +26,10 @@ dist/superVPN.app/
 dist/README-user.pdf
 reality-private-pool.toml
 tests_FA_all/
+
+# Packet captures — may contain real diagnostic traffic (VINs, addresses). Never commit.
+*.pcapng
+*.pcap
+dumps/
+# Decompiled/extracted third-party resource blobs.
+*.g.resources
